@@ -1,0 +1,21 @@
+{
+  "name": "Applegate CORE Business Operating System",
+  "short_name": "CORE BOS",
+  "description": "A versatile business operating system for desktop, enabling role-based access and management within organizations.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#06b6d4",
+  "orientation": "any",
+  "categories": ["business", "productivity"],
+  "icons": [
+    {
+      "src": "/placeholder.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "screenshots": [],
+  "prefer_related_applications": false
+}

@@ -1,0 +1,1051 @@
+@import url('https://fonts.googleapis.com/css2?family=Goldman:wght@400;700&family=Gruppo&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 222.2 47.4% 11.2%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 222.2 84% 4.9%;
+    --radius: 0.5rem;
+    --chart-1: 12 76% 61%;
+    --chart-2: 173 58% 39%;
+    --chart-3: 197 37% 24%;
+    --chart-4: 43 74% 66%;
+    --chart-5: 27 87% 67%;
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 210 40% 98%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 212.7 26.8% 83.9%;
+    --chart-1: 220 70% 50%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Custom scrollbar - uses CSS custom properties for workspace color matching */
+:root {
+  --scrollbar-color: rgba(0, 255, 255, 0.5);
+  --scrollbar-hover-color: rgba(0, 255, 255, 0.7);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(10, 10, 10, 0.8);
+}
+
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(17,17,17,0.8), var(--scrollbar-color));
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(34,34,34,0.8), var(--scrollbar-hover-color));
+}
+
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-color) rgba(10, 10, 10, 0.8);
+}
+
+
+/* Animations */
+@keyframes slide-in-right {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes slide-in-up {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 20px rgba(6, 182, 212, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 40px rgba(6, 182, 212, 0.5);
+  }
+}
+
+/* NuDarkwave Neon Glow Animations - Subtle Version */
+@keyframes neon-pulse-cyan {
+  0%, 100% {
+    box-shadow: 0 0 3px rgba(0, 255, 255, 0.4), 0 0 6px rgba(0, 255, 255, 0.2), 0 0 12px rgba(0, 180, 216, 0.15), inset 0 0 6px rgba(0, 255, 255, 0.05);
+  }
+  50% {
+    box-shadow: 0 0 5px rgba(0, 255, 255, 0.5), 0 0 10px rgba(0, 255, 255, 0.3), 0 0 20px rgba(0, 180, 216, 0.2), inset 0 0 10px rgba(0, 255, 255, 0.08);
+  }
+}
+
+@keyframes neon-pulse-magenta {
+  0%, 100% {
+    box-shadow: 0 0 3px rgba(255, 0, 255, 0.4), 0 0 6px rgba(255, 0, 255, 0.2), 0 0 12px rgba(192, 38, 211, 0.15), inset 0 0 6px rgba(255, 0, 255, 0.05);
+  }
+  50% {
+    box-shadow: 0 0 5px rgba(255, 0, 255, 0.5), 0 0 10px rgba(255, 0, 255, 0.3), 0 0 20px rgba(192, 38, 211, 0.2), inset 0 0 10px rgba(255, 0, 255, 0.08);
+  }
+}
+
+@keyframes neon-pulse-green {
+  0%, 100% {
+    box-shadow: 0 0 3px rgba(0, 255, 0, 0.4), 0 0 6px rgba(0, 255, 0, 0.2), 0 0 12px rgba(34, 197, 94, 0.15), inset 0 0 6px rgba(0, 255, 0, 0.05);
+  }
+  50% {
+    box-shadow: 0 0 5px rgba(0, 255, 0, 0.5), 0 0 10px rgba(0, 255, 0, 0.3), 0 0 20px rgba(34, 197, 94, 0.2), inset 0 0 10px rgba(0, 255, 0, 0.08);
+  }
+}
+
+@keyframes neon-pulse-orange {
+  0%, 100% {
+    box-shadow: 0 0 3px rgba(255, 153, 0, 0.4), 0 0 6px rgba(255, 153, 0, 0.2), 0 0 12px rgba(234, 88, 12, 0.15), inset 0 0 6px rgba(255, 153, 0, 0.05);
+  }
+  50% {
+    box-shadow: 0 0 5px rgba(255, 153, 0, 0.5), 0 0 10px rgba(255, 153, 0, 0.3), 0 0 20px rgba(234, 88, 12, 0.2), inset 0 0 10px rgba(255, 153, 0, 0.08);
+  }
+}
+
+@keyframes neon-pulse-purple {
+  0%, 100% {
+    box-shadow: 0 0 3px rgba(168, 85, 247, 0.4), 0 0 6px rgba(168, 85, 247, 0.2), 0 0 12px rgba(124, 58, 237, 0.15), inset 0 0 6px rgba(168, 85, 247, 0.05);
+  }
+  50% {
+    box-shadow: 0 0 5px rgba(168, 85, 247, 0.5), 0 0 10px rgba(168, 85, 247, 0.3), 0 0 20px rgba(124, 58, 237, 0.2), inset 0 0 10px rgba(168, 85, 247, 0.08);
+  }
+}
+
+@keyframes neon-pulse-red {
+  0%, 100% {
+    box-shadow: 0 0 3px rgba(255, 0, 0, 0.4), 0 0 6px rgba(255, 0, 0, 0.2), 0 0 12px rgba(239, 68, 68, 0.15), inset 0 0 6px rgba(255, 0, 0, 0.05);
+  }
+  50% {
+    box-shadow: 0 0 5px rgba(255, 0, 0, 0.5), 0 0 10px rgba(255, 0, 0, 0.3), 0 0 20px rgba(239, 68, 68, 0.2), inset 0 0 10px rgba(255, 0, 0, 0.08);
+  }
+}
+
+@keyframes neon-border-flow {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+@keyframes hologram-flicker {
+  0%, 100% { opacity: 1; }
+  92% { opacity: 1; }
+  93% { opacity: 0.9; }
+  94% { opacity: 1; }
+  95% { opacity: 0.95; }
+  96% { opacity: 1; }
+}
+
+@keyframes scan-line {
+  0% {
+    transform: translateY(-100%);
+  }
+  100% {
+    transform: translateY(100vh);
+  }
+}
+
+@keyframes data-stream {
+  0% {
+    background-position: 0 0;
+  }
+  100% {
+    background-position: 0 100%;
+  }
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right 0.3s ease-out;
+}
+
+.animate-slide-in-up {
+  animation: slide-in-up 0.3s ease-out;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* NuDarkwave Theme Classes - Subtle Glow */
+.neon-glow-cyan {
+  animation: neon-pulse-cyan 3s ease-in-out infinite;
+}
+
+.neon-glow-magenta {
+  animation: neon-pulse-magenta 3s ease-in-out infinite;
+}
+
+.neon-glow-green {
+  animation: neon-pulse-green 3s ease-in-out infinite;
+}
+
+.neon-glow-orange {
+  animation: neon-pulse-orange 3s ease-in-out infinite;
+}
+
+.neon-glow-purple {
+  animation: neon-pulse-purple 3s ease-in-out infinite;
+}
+
+.neon-glow-red {
+  animation: neon-pulse-red 3s ease-in-out infinite;
+}
+
+.neon-border {
+  background: linear-gradient(90deg, #0ff, #f0f, #0f0, #0ff);
+  background-size: 300% 300%;
+  animation: neon-border-flow 3s ease infinite;
+}
+
+.hologram {
+  animation: hologram-flicker 4s infinite;
+}
+
+.alien-grid {
+  background-image: 
+    linear-gradient(rgba(0, 255, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 255, 255, 0.02) 1px, transparent 1px),
+    radial-gradient(ellipse at 50% 50%, rgba(0, 255, 255, 0.03) 0%, transparent 70%);
+  background-size: 30px 30px, 30px 30px, 100% 100%;
+}
+
+.hex-pattern {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='49' viewBox='0 0 28 49'%3E%3Cg fill-rule='evenodd'%3E%3Cg fill='%2300ffff' fill-opacity='0.02'%3E%3Cpath d='M13.99 9.25l13 7.5v15l-13 7.5L1 31.75v-15l12.99-7.5zM3 17.9v12.7l10.99 6.34 11-6.35V17.9l-11-6.34L3 17.9zM0 15l12.98-7.5V0h-2v6.35L0 12.69v2.3zm0 18.5L12.98 41v8h-2v-6.85L0 35.81v-2.3zM15 0v7.5L27.99 15H28v-2.31h-.01L17 6.35V0h-2zm0 49v-8l12.99-7.5H28v2.31h-.01L17 42.15V49h-2z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+}
+
+/* NuDarkwave Text Glow - Subtle */
+.neon-text-cyan {
+  color: #0ff;
+  text-shadow: 0 0 3px rgba(0, 255, 255, 0.6), 0 0 6px rgba(0, 180, 216, 0.4);
+}
+
+.neon-text-magenta {
+  color: #f0f;
+  text-shadow: 0 0 3px rgba(255, 0, 255, 0.6), 0 0 6px rgba(192, 38, 211, 0.4);
+}
+
+.neon-text-green {
+  color: #0f0;
+  text-shadow: 0 0 3px rgba(0, 255, 0, 0.6), 0 0 6px rgba(34, 197, 94, 0.4);
+}
+
+.neon-text-purple {
+  color: #a855f7;
+  text-shadow: 0 0 3px rgba(168, 85, 247, 0.6), 0 0 6px rgba(124, 58, 237, 0.4);
+}
+
+.neon-text-orange {
+  color: #f90;
+  text-shadow: 0 0 3px rgba(255, 153, 0, 0.6), 0 0 6px rgba(234, 88, 12, 0.4);
+}
+
+.neon-text-red {
+  color: #ef4444;
+  text-shadow: 0 0 3px rgba(239, 68, 68, 0.6), 0 0 6px rgba(220, 38, 38, 0.4);
+}
+
+/* Glass effect */
+.glass {
+  background: rgba(15, 23, 42, 0.8);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* Gradient text */
+.gradient-text {
+  background: linear-gradient(135deg, #06b6d4 0%, #3b82f6 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Circuit pattern background */
+.circuit-bg {
+  background-image: 
+    linear-gradient(rgba(6, 182, 212, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(6, 182, 212, 0.03) 1px, transparent 1px);
+  background-size: 50px 50px;
+}
+
+/* Focus visible styles */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid rgba(6, 182, 212, 0.5);
+  outline-offset: 2px;
+}
+
+/* Line clamp utilities */
+.line-clamp-1 {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.line-clamp-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* NuDarkwave Scrollbar - Default */
+.darkwave-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.darkwave-scrollbar::-webkit-scrollbar-track {
+  background: #0a0a0a;
+  border-left: 1px solid rgba(0, 255, 255, 0.1);
+}
+
+.darkwave-scrollbar::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #0ff, #f0f);
+  border-radius: 3px;
+}
+
+.darkwave-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #0ff, #a855f7);
+}
+
+/* Workspace-specific scrollbar colors - now linked to global variables */
+.scrollbar-admin, .scrollbar-accounting, .scrollbar-personnel, 
+.scrollbar-main, .scrollbar-data, .scrollbar-security {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-color) rgba(10, 10, 10, 0.8);
+}
+
+.scrollbar-admin::-webkit-scrollbar, .scrollbar-accounting::-webkit-scrollbar, 
+.scrollbar-personnel::-webkit-scrollbar, .scrollbar-main::-webkit-scrollbar, 
+.scrollbar-data::-webkit-scrollbar, .scrollbar-security::-webkit-scrollbar { 
+  width: 6px; 
+  height: 6px; 
+}
+
+.scrollbar-admin::-webkit-scrollbar-track, .scrollbar-accounting::-webkit-scrollbar-track, 
+.scrollbar-personnel::-webkit-scrollbar-track, .scrollbar-main::-webkit-scrollbar-track, 
+.scrollbar-data::-webkit-scrollbar-track, .scrollbar-security::-webkit-scrollbar-track { 
+  background: #0a0a0a; 
+}
+
+/* ⚡ The Magic Part: Link the thumb color to the variable we update in AppLayout */
+.scrollbar-admin::-webkit-scrollbar-thumb, .scrollbar-accounting::-webkit-scrollbar-thumb, 
+.scrollbar-personnel::-webkit-scrollbar-thumb, .scrollbar-main::-webkit-scrollbar-thumb, 
+.scrollbar-data::-webkit-scrollbar-thumb, .scrollbar-security::-webkit-scrollbar-thumb { 
+  background: linear-gradient(180deg, #111, var(--scrollbar-color)); 
+  border-radius: 3px; 
+}
+
+.scrollbar-admin::-webkit-scrollbar-thumb:hover, .scrollbar-accounting::-webkit-scrollbar-thumb:hover, 
+.scrollbar-personnel::-webkit-scrollbar-thumb:hover, .scrollbar-main::-webkit-scrollbar-thumb:hover, 
+.scrollbar-data::-webkit-scrollbar-thumb:hover, .scrollbar-security::-webkit-scrollbar-thumb:hover { 
+  background: linear-gradient(180deg, #222, var(--scrollbar-hover-color)); 
+}
+
+/* Quantum Ball Pulse Animation - Cyan/Blue theme (no purple) - BOX-SHADOW ONLY (no transform to prevent jitter) */
+@keyframes quantum-pulse {
+  0%, 100% {
+    box-shadow: 0 0 15px rgba(0, 255, 255, 0.4), 0 0 30px rgba(0, 140, 255, 0.2), inset 0 0 10px rgba(0, 255, 255, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 25px rgba(0, 255, 255, 0.7), 0 0 50px rgba(0, 140, 255, 0.4), inset 0 0 20px rgba(0, 255, 255, 0.4);
+  }
+}
+
+@keyframes quantum-pulse-expanded {
+  0%, 100% {
+    box-shadow: 0 0 30px rgba(0, 255, 255, 0.6), 0 0 60px rgba(0, 140, 255, 0.4), inset 0 0 20px rgba(0, 255, 255, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 40px rgba(0, 255, 255, 0.9), 0 0 80px rgba(0, 140, 255, 0.6), inset 0 0 30px rgba(0, 255, 255, 0.5);
+  }
+}
+
+/* Touch-friendly: ensure cut-tab buttons and interactive elements respond to touch */
+.cut-tab {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  cursor: pointer;
+}
+
+/* Global touch-friendly styles for all interactive elements */
+button, a, [role="button"], select, input[type="checkbox"], input[type="radio"] {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ============================================
+   WCAG 2.1 Touch Target Utilities
+   Minimum 44x44px touch targets for touch accessibility.
+   Use .touch-target on small interactive elements.
+   Use .touch-target-sm for elements that need 36px minimum (dense UIs).
+   ============================================ */
+.touch-target {
+  min-height: 44px;
+  min-width: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.touch-target-sm {
+  min-height: 36px;
+  min-width: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Ensure all buttons and interactive elements have adequate touch targets on touch devices */
+@media (pointer: coarse) {
+  /* On touch devices, enforce minimum HEIGHT for all buttons (width varies by context) */
+  button:not(.no-touch-resize),
+  [role="button"]:not(.no-touch-resize) {
+    min-height: 44px;
+  }
+  
+  /* Icon-only buttons also need minimum width */
+  .touch-target {
+    min-width: 44px;
+  }
+  
+  /* Chip/pill buttons maintain height with flexible width */
+  .touch-chip {
+    min-height: 44px;
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  
+  /* Select elements need adequate height too */
+  select:not(.no-touch-resize) {
+    min-height: 44px;
+  }
+  
+  /* Ensure scrollable containers allow touch scrolling */
+  .darkwave-scrollbar,
+  [class*="overflow-y-auto"],
+  [class*="overflow-auto"] {
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+
+
+
+
+@keyframes quantum-ring-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes quantum-ring-spin-reverse {
+  0% { transform: rotate(360deg); }
+  100% { transform: rotate(0deg); }
+}
+
+@keyframes quantum-core-glow {
+  0%, 100% {
+    box-shadow: 0 0 8px rgba(0, 255, 255, 0.8), 0 0 16px rgba(0, 140, 255, 0.5);
+    background: radial-gradient(circle, #00ffff, #0088ff);
+  }
+  50% {
+    box-shadow: 0 0 14px rgba(0, 255, 255, 1), 0 0 28px rgba(0, 140, 255, 0.8);
+    background: radial-gradient(circle, #88ffff, #44aaff);
+  }
+}
+
+
+/* Mini App Icon Glow on Hover */
+.miniapp-icon-glow {
+  transition: all 0.3s ease;
+}
+.miniapp-icon-glow:hover svg,
+.miniapp-icon-glow:hover .icon-wrapper {
+  filter: drop-shadow(0 0 8px currentColor) drop-shadow(0 0 16px currentColor);
+}
+
+/* ============================================
+   CUT-CORNER ADMIN PANEL TABS
+   Uses a layered approach: ::before = colored border shape,
+   main element = inner fill, creating visible colored borders
+   on the chamfered corners.
+   ============================================ */
+
+/* Cut-corner tab shape - clean chamfered upper-left and lower-right corners */
+.cut-tab {
+  position: relative;
+  clip-path: polygon(
+    10px 0,
+    100% 0,
+    100% calc(100% - 10px),
+    calc(100% - 10px) 100%,
+    0 100%,
+    0 10px
+  );
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+}
+
+/* Colored border layer - sits BEHIND the tab, same clip-path but acts as the border.
+   We use a background-color on ::before that IS the border color,
+   then the tab's own background covers the interior, leaving the edges visible. */
+.cut-tab::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: var(--tab-border-color, rgba(100,116,139,0.3));
+  clip-path: polygon(
+    10px 0,
+    100% 0,
+    100% calc(100% - 10px),
+    calc(100% - 10px) 100%,
+    0 100%,
+    0 10px
+  );
+  pointer-events: none;
+  transition: background 0.4s ease;
+}
+
+/* Inner fill that covers the center, leaving the colored ::before visible as a border */
+.cut-tab::after {
+  content: '';
+  position: absolute;
+  inset: 1.5px;
+  z-index: 0;
+  background: var(--tab-inner-bg, #000);
+  clip-path: polygon(
+    9px 0,
+    100% 0,
+    100% calc(100% - 9px),
+    calc(100% - 9px) 100%,
+    0 100%,
+    0 9px
+  );
+  pointer-events: none;
+  transition: background 0.4s ease;
+}
+
+/* Ensure tab content sits above the pseudo-elements */
+.cut-tab > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Single sweep animation on selection - ONE TIME only */
+@keyframes cut-tab-color-sweep {
+  0% { opacity: 0.6; background-position: -100% 0; }
+  100% { opacity: 1; background-position: 100% 0; }
+}
+
+/* Continuous gentle pulse for active tabs */
+@keyframes cut-tab-pulse {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.15); }
+}
+
+/* Shimmer sweep - ONE TIME */
+@keyframes cut-tab-shimmer-sweep {
+  0% { left: -40%; opacity: 0; }
+  30% { opacity: 0.5; }
+  100% { left: 120%; opacity: 0; }
+}
+
+/* Active tab - continuous pulse only */
+.cut-tab-active {
+  animation: cut-tab-pulse 2.5s ease-in-out 0.5s infinite;
+}
+
+/* Shimmer element inside active tabs - plays ONCE */
+.cut-tab-active .cut-tab-shimmer-el {
+  position: absolute;
+  top: 0;
+  left: -40%;
+  width: 40%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent);
+  animation: cut-tab-shimmer-sweep 0.6s ease-out forwards;
+  pointer-events: none;
+  z-index: 1;
+}
+
+
+.cut-tab-cyan { --tab-border-color: rgba(0,255,255,0.25); --tab-inner-bg: #000; }
+.cut-tab-cyan:hover { --tab-border-color: rgba(0,255,255,0.5); }
+.cut-tab-cyan.cut-tab-active {
+  --tab-border-color: rgba(0,255,255,0.8);
+  --tab-inner-bg: rgba(0,30,40,0.95);
+  box-shadow: 0 0 16px rgba(0,255,255,0.3), inset 0 0 12px rgba(0,255,255,0.08);
+}
+
+/* PURPLE */
+.cut-tab-purple { --tab-border-color: rgba(168,85,247,0.25); --tab-inner-bg: #000; }
+.cut-tab-purple:hover { --tab-border-color: rgba(168,85,247,0.5); }
+.cut-tab-purple.cut-tab-active {
+  --tab-border-color: rgba(168,85,247,0.8);
+  --tab-inner-bg: rgba(25,10,40,0.95);
+  box-shadow: 0 0 16px rgba(168,85,247,0.3), inset 0 0 12px rgba(168,85,247,0.08);
+}
+
+/* GREEN */
+.cut-tab-green { --tab-border-color: rgba(0,255,0,0.25); --tab-inner-bg: #000; }
+.cut-tab-green:hover { --tab-border-color: rgba(0,255,0,0.5); }
+.cut-tab-green.cut-tab-active {
+  --tab-border-color: rgba(0,255,0,0.8);
+  --tab-inner-bg: rgba(0,30,10,0.95);
+  box-shadow: 0 0 16px rgba(0,255,0,0.3), inset 0 0 12px rgba(0,255,0,0.08);
+}
+
+/* ORANGE */
+.cut-tab-orange { --tab-border-color: rgba(255,153,0,0.25); --tab-inner-bg: #000; }
+.cut-tab-orange:hover { --tab-border-color: rgba(255,153,0,0.5); }
+.cut-tab-orange.cut-tab-active {
+  --tab-border-color: rgba(255,153,0,0.8);
+  --tab-inner-bg: rgba(40,25,0,0.95);
+  box-shadow: 0 0 16px rgba(255,153,0,0.3), inset 0 0 12px rgba(255,153,0,0.08);
+}
+
+/* MAGENTA */
+.cut-tab-magenta { --tab-border-color: rgba(255,0,255,0.25); --tab-inner-bg: #000; }
+.cut-tab-magenta:hover { --tab-border-color: rgba(255,0,255,0.5); }
+.cut-tab-magenta.cut-tab-active {
+  --tab-border-color: rgba(255,0,255,0.8);
+  --tab-inner-bg: rgba(35,0,35,0.95);
+  box-shadow: 0 0 16px rgba(255,0,255,0.3), inset 0 0 12px rgba(255,0,255,0.08);
+}
+
+/* RED */
+.cut-tab-red { --tab-border-color: rgba(239,68,68,0.25); --tab-inner-bg: #000; }
+.cut-tab-red:hover { --tab-border-color: rgba(239,68,68,0.5); }
+.cut-tab-red.cut-tab-active {
+  --tab-border-color: rgba(239,68,68,0.8);
+  --tab-inner-bg: rgba(40,5,5,0.95);
+  box-shadow: 0 0 16px rgba(239,68,68,0.3), inset 0 0 12px rgba(239,68,68,0.08);
+}
+
+/* Quantum Ball Bounce Out Animation */
+@keyframes quantum-bounce-out {
+  0% { transform: scale(0); opacity: 0; }
+  50% { transform: scale(1.15); opacity: 1; }
+  70% { transform: scale(0.92); }
+  85% { transform: scale(1.05); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes quantum-bounce-in {
+  0% { transform: scale(1); opacity: 1; }
+  30% { transform: scale(1.1); opacity: 1; }
+  100% { transform: scale(0); opacity: 0; }
+}
+
+/* Quantum bubble glow pulse */
+@keyframes quantum-bubble-glow {
+  0%, 100% { filter: brightness(1) drop-shadow(0 0 8px var(--bubble-glow-color, rgba(0,255,255,0.8))); }
+  50% { filter: brightness(1.3) drop-shadow(0 0 16px var(--bubble-glow-color, rgba(0,255,255,0.8))); }
+}
+
+/* Radial expand from center - each bubble starts at center and moves outward */
+@keyframes quantum-radial-expand {
+  0% {
+    transform: translate(var(--expand-start-x, 0px), var(--expand-start-y, 0px)) scale(0);
+    opacity: 0;
+  }
+  40% {
+    transform: translate(0, 0) scale(1.2);
+    opacity: 1;
+  }
+  60% {
+    transform: translate(0, 0) scale(0.9);
+  }
+  80% {
+    transform: translate(0, 0) scale(1.08);
+  }
+  100% {
+    transform: translate(0, 0) scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes quantum-radial-collapse {
+  0% {
+    transform: translate(0, 0) scale(1);
+    opacity: 1;
+  }
+  30% {
+    transform: translate(0, 0) scale(1.1);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--expand-start-x, 0px), var(--expand-start-y, 0px)) scale(0);
+    opacity: 0;
+  }
+}
+
+/* Quantum connector line draw animation */
+@keyframes quantum-line-draw {
+  0% {
+    stroke-dashoffset: 300;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* Quantum badge appear */
+@keyframes quantum-badge-appear {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.7);
+  }
+  60% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.05);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+/* Quantum endpoint dot appear */
+@keyframes quantum-dot-appear {
+  0% {
+    opacity: 0;
+    r: 0;
+  }
+  100% {
+    opacity: 0.8;
+    r: 3;
+  }
+}
+
+/* Quantum dot pulse for active indicator */
+@keyframes quantum-dot-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(1.3);
+  }
+}
+
+/* Quantum icon glow animation for in-view bubble */
+@keyframes quantum-icon-glow {
+  0%, 100% {
+    filter: drop-shadow(0 0 8px var(--icon-glow-color, rgba(0,255,255,0.8))) drop-shadow(0 0 3px var(--icon-color, #0ff));
+  }
+  50% {
+    filter: drop-shadow(0 0 18px var(--icon-glow-color, rgba(0,255,255,0.8))) drop-shadow(0 0 8px var(--icon-color, #0ff)) drop-shadow(0 0 25px var(--icon-glow-color, rgba(0,255,255,0.5)));
+  }
+}
+
+/* Unified Admin Panel Scrollbars - Now linked to the active theme variables */
+.scrollbar-admin-cyan, .scrollbar-admin-purple, .scrollbar-admin-green, 
+.scrollbar-admin-orange, .scrollbar-admin-magenta, .scrollbar-admin-red, 
+.scrollbar-admin-emerald {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-color) rgba(10, 10, 10, 0.8);
+}
+
+.scrollbar-admin-cyan::-webkit-scrollbar, .scrollbar-admin-purple::-webkit-scrollbar, 
+.scrollbar-admin-green::-webkit-scrollbar, .scrollbar-admin-orange::-webkit-scrollbar, 
+.scrollbar-admin-magenta::-webkit-scrollbar, .scrollbar-admin-red::-webkit-scrollbar, 
+.scrollbar-admin-emerald::-webkit-scrollbar { 
+  width: 6px; 
+}
+
+.scrollbar-admin-cyan::-webkit-scrollbar-thumb, .scrollbar-admin-purple::-webkit-scrollbar-thumb, 
+.scrollbar-admin-green::-webkit-scrollbar-thumb, .scrollbar-admin-orange::-webkit-scrollbar-thumb, 
+.scrollbar-admin-magenta::-webkit-scrollbar-thumb, .scrollbar-admin-red::-webkit-scrollbar-thumb, 
+.scrollbar-admin-emerald::-webkit-scrollbar-thumb { 
+  background: linear-gradient(180deg, #111, var(--scrollbar-color)); 
+  border-radius: 3px; 
+}
+
+.scrollbar-admin-cyan::-webkit-scrollbar-thumb:hover, .scrollbar-admin-purple::-webkit-scrollbar-thumb:hover, 
+.scrollbar-admin-green::-webkit-scrollbar-thumb:hover, .scrollbar-admin-orange::-webkit-scrollbar-thumb:hover, 
+.scrollbar-admin-magenta::-webkit-scrollbar-thumb:hover, .scrollbar-admin-red::-webkit-scrollbar-thumb:hover, 
+.scrollbar-admin-emerald::-webkit-scrollbar-thumb:hover { 
+  background: linear-gradient(180deg, #222, var(--scrollbar-hover-color)); 
+}
+
+/* Emerald scrollbar for Org Admin Panel */
+.scrollbar-admin-emerald::-webkit-scrollbar { width: 6px; height: 6px; }
+.scrollbar-admin-emerald::-webkit-scrollbar-track { background: #0a0a0a; }
+.scrollbar-admin-emerald::-webkit-scrollbar-thumb { background: linear-gradient(180deg, #111, #10b981); border-radius: 3px; }
+.scrollbar-admin-emerald::-webkit-scrollbar-thumb:hover { background: linear-gradient(180deg, #222, #34d399); }
+
+/* Quantum Badge Slide-Out Animation - slides from line end */
+@keyframes quantum-badge-slide-out {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.5) translateX(-20px);
+  }
+  40% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.05) translateX(2px);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1) translateX(0);
+  }
+}
+
+/* Fix double scrollbar - prevent nested overflow */
+.no-double-scroll {
+  overflow: hidden !important;
+}
+.no-double-scroll > .flex-1 {
+  overflow-y: auto;
+}
+
+/* EMERALD cut-tab variant for Org Admin */
+.cut-tab-emerald { --tab-border-color: rgba(16,185,129,0.25); --tab-inner-bg: #000; }
+.cut-tab-emerald:hover { --tab-border-color: rgba(16,185,129,0.5); }
+.cut-tab-emerald.cut-tab-active {
+  --tab-border-color: rgba(16,185,129,0.8);
+  --tab-inner-bg: rgba(0,30,20,0.95);
+  box-shadow: 0 0 16px rgba(16,185,129,0.3), inset 0 0 12px rgba(16,185,129,0.08);
+}
+
+
+/* Landing Page Blue-Teal Pulsating Text Effect */
+@keyframes landing-blue-glow {
+  0%, 100% {
+    color: #06b6d4;
+    text-shadow: 0 0 10px rgba(6,182,212,0.6), 0 0 20px rgba(20,184,166,0.4), 0 0 40px rgba(8,145,178,0.2);
+  }
+  33% {
+    color: #2dd4bf;
+    text-shadow: 0 0 15px rgba(45,212,191,0.7), 0 0 30px rgba(6,182,212,0.5), 0 0 50px rgba(20,184,166,0.3), 0 0 70px rgba(13,148,136,0.15);
+  }
+  66% {
+    color: #67e8f9;
+    text-shadow: 0 0 20px rgba(103,232,249,0.8), 0 0 40px rgba(6,182,212,0.6), 0 0 60px rgba(20,184,166,0.4), 0 0 80px rgba(8,145,178,0.2);
+  }
+}
+
+.landing-blue-pulse {
+  animation: landing-blue-glow 3s ease-in-out infinite;
+  display: inline;
+}
+
+/* Keep old class as alias for backwards compat */
+.landing-purple-pulse {
+  animation: landing-blue-glow 3s ease-in-out infinite;
+  display: inline;
+}
+
+
+
+
+/* Glass effect for settings panels */
+.glass-panel-dark {
+  background: rgba(0, 0, 0, 0.75) !important;
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+}
+
+/* Login input dark background - prevents browser autofill from turning white */
+.login-input-dark,
+.login-input-dark:-webkit-autofill,
+.login-input-dark:-webkit-autofill:hover,
+.login-input-dark:-webkit-autofill:focus,
+.login-input-dark:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 1000px rgba(0, 0, 0, 0.9) inset !important;
+  box-shadow: 0 0 0 1000px rgba(0, 0, 0, 0.9) inset !important;
+  -webkit-text-fill-color: #ffffff !important;
+  background-color: rgba(0, 0, 0, 0.8) !important;
+  caret-color: #00ffff !important;
+  transition: background-color 5000s ease-in-out 0s !important;
+}
+
+/* Ensure input stays dark on all states */
+input.login-input-dark {
+  color-scheme: dark;
+}
+
+
+
+/* ============================================
+   CROSS-TAB TILE DRAG ANIMATIONS
+   ============================================ */
+
+/* Breathing cyan glow pulse on drag-over tab header */
+@keyframes crossTabGlowPulse {
+  0%, 100% {
+    opacity: 0.4;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.9;
+    transform: scale(1.02);
+  }
+}
+
+/* Pulsing border on drag-over tab header */
+@keyframes crossTabBorderPulse {
+  0%, 100% {
+    border-color: rgba(0, 255, 255, 0.3);
+    box-shadow: inset 0 0 4px rgba(0, 255, 255, 0.1);
+  }
+  50% {
+    border-color: rgba(0, 255, 255, 0.7);
+    box-shadow: inset 0 0 12px rgba(0, 255, 255, 0.2);
+  }
+}
+
+/* Drop success flash on tab header */
+@keyframes crossTabDropFlash {
+  0% {
+    background: rgba(0, 255, 255, 0.3);
+    box-shadow: 0 0 30px rgba(0, 255, 255, 0.5);
+  }
+  100% {
+    background: transparent;
+    box-shadow: none;
+  }
+}
+
+/* Tile count badge bounce on drag enter */
+@keyframes crossTabBadgeBounce {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.25); }
+}
+
+
+
+/* ============================================
+   TAB REORDER DRAG ANIMATIONS
+   ============================================ */
+
+/* Pulsing cyan insertion line between tabs during reorder */
+@keyframes tabInsertLinePulse {
+  0%, 100% {
+    opacity: 0.7;
+    box-shadow: 0 0 6px rgba(0, 255, 255, 0.4), 0 0 12px rgba(0, 255, 255, 0.2);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 10px rgba(0, 255, 255, 0.7), 0 0 20px rgba(0, 255, 255, 0.4), 0 0 30px rgba(0, 255, 255, 0.15);
+  }
+}
+
+/* Tab being dragged - subtle ghost effect */
+@keyframes tabDragGhost {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.45; }
+}
+
+/* Tab reorder drop success flash */
+@keyframes tabReorderDropFlash {
+  0% {
+    box-shadow: 0 0 20px rgba(0, 255, 255, 0.6), inset 0 0 10px rgba(0, 255, 255, 0.15);
+    --tab-border-color: rgba(0, 255, 255, 1);
+  }
+  100% {
+    box-shadow: none;
+    --tab-border-color: rgba(0, 255, 255, 0.25);
+  }
+}
