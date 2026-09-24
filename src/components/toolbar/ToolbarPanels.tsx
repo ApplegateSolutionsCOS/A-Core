@@ -234,11 +234,11 @@ export const ActivityPanel: React.FC<ActivityPanelProps> = ({
   }, [dockedPanels, activePanelId]);
 
   // DYNAMIC LAYOUT LOGIC
-  const panelWidth = isExpanded ? 760 : 380;
+  const panelWidth = isExpanded ? 836 : 418;
   const isFrontExpanded = Object.entries(rightPanelStates || {}).some(([id, state]) => id !== activePanelId && (state === 'expanded' || state === 'side-expanded'));
-  
-  const frontPanelWidth = isFrontExpanded ? 760 : 380;
-  const expansionOffset = (stackIndex > 0 && isFrontExpanded) ? 380 : 0;
+
+  const frontPanelWidth = isFrontExpanded ? 836 : 418;
+  const expansionOffset = (stackIndex > 0 && isFrontExpanded) ? 418 : 0;
   const baseOffset = (stackIndex * 48) + (isHovered && stackIndex > 0 ? 24 : 0);
   
   // ⚡ FIX: If a background panel is explicitly side-by-side OR previously expanded,
@@ -936,14 +936,19 @@ export const InlineActivityPanel: React.FC<InlineActivityPanelProps> = ({
   accentRgb = '34, 211, 238',
   recordContext
 }) => {
-  const { user } = useAuth();
+  const { user, organization } = useAuth(); // ⚡ Destructure organization
   const [userNavColors, setUserNavColors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const fetchColors = async () => {
       const userId = user?.id || (user as any)?.uid;
-      if (!userId) return;
-      const { data } = await supabase.schema('app_private').from('user_preferences').select('nav_colors').eq('user_id', userId).maybeSingle();
+      if (!userId || !organization?.id) return;
+      const { data } = await supabase.schema('app_private')
+        .from('user_preferences')
+        .select('nav_colors')
+        .eq('user_id', userId)
+        .eq('organization_id', organization.id) // ⚡ Scope to org
+        .maybeSingle();
       if (data?.nav_colors) setUserNavColors(data.nav_colors);
     };
     fetchColors();
@@ -1439,29 +1444,51 @@ export const StatusPanel: React.FC<StatusPanelProps> = ({ isOpen, onClose }) => 
   );
 };
 
+// ⚡ NEW: Deterministic color generator for tags (fallback)
+const getTagColor = (tag: string) => {
+  const colors = ['#3b82f6', '#ec4899', '#10b981', '#f59e0b', '#8b5cf6', '#06b6d4', '#f43f5e'];
+  let hash = 0;
+  for (let i = 0; i < tag.length; i++) hash = tag.charCodeAt(i) + ((hash << 5) - hash);
+  const bg = colors[Math.abs(hash) % colors.length];
+  return { bg };
+};
+
 // Task Panel
 interface TaskPanelProps {
   isOpen: boolean;
   onClose: () => void;
   currentView?: string;
+  currentWorkspaceSlug?: string | null;
 }
 
-export const TaskPanel: React.FC<TaskPanelProps> = ({ isOpen, onClose, currentView }) => {
-  const { user } = useAuth();
+export const TaskPanel: React.FC<TaskPanelProps> = ({ isOpen, onClose, currentView, currentWorkspaceSlug }) => {
+  const { user, organization } = useAuth(); // ⚡ Destructure organization
   const currentUserId = user?.id || (user as any)?.uid;
+
+  const { getColor } = useWorkspaceColor();
+  const ac = currentWorkspaceSlug ? getColor(currentWorkspaceSlug) : null;
 
   // ⚡ NEW: Theme State syncing with BottomNav
   const [userNavColors, setUserNavColors] = useState<Record<string, string>>({});
+  const [isColorLoaded, setIsColorLoaded] = useState(false); // ⚡ Track color loading
 
   useEffect(() => {
     const fetchColors = async () => {
-      if (!currentUserId || !isOpen) return;
-      const { data } = await supabase.schema('app_private')
-        .from('user_preferences')
-        .select('nav_colors')
-        .eq('user_id', currentUserId)
-        .maybeSingle();
-      if (data?.nav_colors) setUserNavColors(data.nav_colors);
+      if (!currentUserId || !organization?.id) {
+        setIsColorLoaded(true);
+        return;
+      }
+      try {
+        const { data } = await supabase.schema('app_private')
+          .from('user_preferences')
+          .select('nav_colors')
+          .eq('user_id', currentUserId)
+          .eq('organization_id', organization.id) // ⚡ Scope to org
+          .maybeSingle();
+        if (data?.nav_colors) setUserNavColors(data.nav_colors);
+      } finally {
+        setIsColorLoaded(true);
+      }
     };
     fetchColors();
 
@@ -1470,12 +1497,17 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({ isOpen, onClose, currentVi
     };
     window.addEventListener('navColorsUpdated', handleColorUpdate);
     return () => window.removeEventListener('navColorsUpdated', handleColorUpdate);
-  }, [currentUserId, isOpen]);
+  }, [currentUserId]);
 
-  // Resolve the active task theme color
   const userPrefKey = userNavColors['tasks'];
-  const themeColor = userPrefKey && COLOR_PALETTE[userPrefKey] ? COLOR_PALETTE[userPrefKey].color : '#22c55e';
-  const themeRgb = userPrefKey && COLOR_PALETTE[userPrefKey] ? COLOR_PALETTE[userPrefKey].rgb : '34, 197, 94';
+  
+  const themeColor = (currentWorkspaceSlug && ac) 
+    ? ac.primary 
+    : (userPrefKey && COLOR_PALETTE[userPrefKey] ? COLOR_PALETTE[userPrefKey].color : '#22c55e');
+
+  const themeRgb = (currentWorkspaceSlug && ac) 
+    ? ac.rgb 
+    : (userPrefKey && COLOR_PALETTE[userPrefKey] ? COLOR_PALETTE[userPrefKey].rgb : '34, 197, 94');
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -1486,9 +1518,11 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({ isOpen, onClose, currentVi
   const [recurrenceInterval, setRecurrenceInterval] = useState(1);
   const [assignee, setAssignee] = useState<string>('');
   const [attachTo, setAttachTo] = useState(currentView || '');
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
   
-  // States for fetching users
+  // States for fetching users & tags
   const [orgUsers, setOrgUsers] = useState<{id: string, name: string}[]>([]);
+  const [availableTags, setAvailableTags] = useState<any[]>([]);
   const [orgId, setOrgId] = useState<string | null>(null);
 
   const attachOptions = [
@@ -1497,32 +1531,48 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({ isOpen, onClose, currentVi
     { id: 'workspace-hr', name: 'HR Workspace' },
   ];
 
-  // Fetch users in the same organization
+  // Fetch users in the same organization and tags
   useEffect(() => {
-    if (!currentUserId || !isOpen) return;
+    if (!currentUserId || !isOpen || !organization?.id) return; // ⚡ Require org ID
 
-    const fetchOrgUsers = async () => {
-      const { data: me } = await supabase.schema('app_private')
+    const fetchData = async () => {
+      // ⚡ FIX: Use active organization directly to prevent cross-contamination
+      setOrgId(organization.id);
+      const { data: users } = await supabase.schema('app_private')
         .from('organization_users')
-        .select('organization_id')
-        .eq('id', currentUserId)
+        .select('id, full_name, email')
+        .eq('organization_id', organization.id);
+
+      if (users) {
+        setOrgUsers(users.map(u => ({ id: u.id, name: u.full_name || u.email || 'Unknown' })));
+      }
+      
+      setAssignee(currentUserId); // Default assignee is self
+
+      // Fetch tags securely scoped to org
+      const { data: dbSettings } = await supabase.schema('app_private')
+        .from('user_settings')
+        .select('tags')
+        .eq('user_id', currentUserId)
+        .eq('organization_id', organization.id) // ⚡ Scope to org
         .maybeSingle();
 
-      if (me?.organization_id) {
-        setOrgId(me.organization_id);
-        const { data: users } = await supabase.schema('app_private')
-          .from('organization_users')
-          .select('id, full_name, email')
-          .eq('organization_id', me.organization_id);
-
-        if (users) {
-          setOrgUsers(users.map(u => ({ id: u.id, name: u.full_name || u.email || 'Unknown' })));
-        }
+      if (dbSettings?.tags) {
+        const formattedTags = dbSettings.tags.map((t: any) => {
+          if (typeof t === 'string') {
+            try {
+              const parsed = JSON.parse(t);
+              if (parsed && typeof parsed === 'object' && parsed.id) return parsed;
+            } catch (e) {}
+            return { id: t.toLowerCase().replace(/\s+/g, '_'), name: t, color: getTagColor(t).bg };
+          }
+          return t;
+        });
+        setAvailableTags(formattedTags);
       }
-      setAssignee(currentUserId); // Default assignee is self
     };
 
-    fetchOrgUsers();
+    fetchData();
   }, [currentUserId, isOpen]);
 
   const handleSubmit = async () => {
@@ -1546,7 +1596,8 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({ isOpen, onClose, currentVi
         due_date: dueDateTimestamp,
         recurrence: recurrenceType === 'none' ? 'none' : `${recurrenceInterval} ${recurrenceType}`,
         status: 'pending',
-        app_name: attachTo || null
+        app_name: attachTo || null,
+        tags: selectedTags.length > 0 ? selectedTags : null
       });
 
       // Also log the activity
@@ -1570,10 +1621,12 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({ isOpen, onClose, currentVi
     setDueTime('');
     setRecurrenceType('none');
     setRecurrenceInterval(1);
+    setSelectedTags([]);
     onClose();
   };
 
   if (!isOpen) return null;
+  if (!isColorLoaded) return null; // ⚡ Prevent render until colors resolve
 
   return createPortal(
     <div id="task-panel-modal" className="fixed inset-0 z-[100000] flex items-center justify-center p-4">
@@ -1697,6 +1750,37 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({ isOpen, onClose, currentVi
                 </div>
               )}
             </div>
+          </div>
+
+          {/* Tags */}
+          <div className="mb-4">
+            <p className="text-sm text-gray-400 font-mono mb-2">Tags:</p>
+            {selectedTags.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {selectedTags.map(tagId => {
+                  const tagObj = availableTags.find(t => t.id === tagId) || { name: tagId, color: getTagColor(tagId).bg };
+                  return (
+                    <span key={tagId} className="px-2 py-1 rounded text-[10px] font-mono flex items-center gap-1 uppercase tracking-wider" style={{ backgroundColor: `${tagObj.color || '#3b82f6'}15`, color: tagObj.color || '#3b82f6', border: `1px solid ${tagObj.color || '#3b82f6'}40` }}>
+                      {tagObj.name}
+                      <button onClick={() => setSelectedTags(prev => prev.filter(id => id !== tagId))} className="hover:text-white ml-1 opacity-70 hover:opacity-100">&times;</button>
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+            <select 
+              value="" 
+              onChange={(e) => {
+                if (!e.target.value) return;
+                if (!selectedTags.includes(e.target.value)) setSelectedTags(prev => [...prev, e.target.value]);
+              }}
+              className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-3 text-gray-400 font-mono text-sm focus:outline-none focus:theme-border transition-all cursor-pointer"
+            >
+              <option value="">+ Add Tag</option>
+              {availableTags.filter(t => !selectedTags.includes(t.id)).map(t => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
           </div>
 
           {/* Submit */}

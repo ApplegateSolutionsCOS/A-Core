@@ -68,7 +68,7 @@ const MessagesPanel: React.FC<MessagesPanelProps> = ({
   onMakeSecondary, dockedPanels = [], rightPanelStates = {}, onDockToggle, onLayoutChange,
   workspaceSlug
 }) => {
-  const { user } = useAuth();
+  const { user, organization } = useAuth(); // ⚡ Destructure organization
   
   const [isHovered, setIsHovered] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
@@ -89,12 +89,13 @@ const MessagesPanel: React.FC<MessagesPanelProps> = ({
   useEffect(() => {
     const fetchUserPreferences = async () => {
       const userId = user?.id || (user as any)?.uid;
-      if (!userId) return;
+      if (!userId || !organization?.id) return;
       try {
         const { data, error } = await supabase.schema('app_private')
           .from('user_preferences')
           .select('nav_colors')
           .eq('user_id', userId)
+          .eq('organization_id', organization.id) // ⚡ Scope to org
           .maybeSingle();
           
         if (error) console.error('[MessagesPanel] Error fetching colors:', error);
@@ -122,33 +123,21 @@ const MessagesPanel: React.FC<MessagesPanelProps> = ({
     }
 
     const fetchContacts = async () => {
+      if (!organization?.id) {
+        setDbStatus(`No active organization found.`);
+        return;
+      }
+
       try {
-        setDbStatus(`Checking org for user ID: ${userId}`);
-        
-        const { data: me, error: meError } = await supabase.schema('app_private')
-          .from('organization_users')
-          .select('organization_id')
-          .eq('id', userId)
-          .maybeSingle();
+        setCurrentUserOrg(organization.id);
+        setDbStatus(`Fetching users for Org ID: ${organization.id}`);
 
-        if (meError) {
-          setDbStatus(`Error reading app_private: ${meError.message} (Is the schema exposed in your Supabase API settings?)`);
-          return;
-        }
-
-        if (!me?.organization_id) {
-          setDbStatus(`User ${userId} does not have an organization_id assigned.`);
-          return;
-        }
-        
-        setCurrentUserOrg(me.organization_id);
-        setDbStatus(`Fetching users for Org ID: ${me.organization_id}`);
-
+        // ⚡ FIX: Use the active organization.id directly! No manual lookup!
         const { data: orgUsers, error: usersError } = await supabase.schema('app_private')
           .from('organization_users')
           .select('*')
-          .eq('organization_id', me.organization_id)
-          .neq('id', userId); 
+          .eq('organization_id', organization.id)
+          .neq('id', userId);
 
         if (usersError) {
           setDbStatus(`Error fetching org users: ${usersError.message}`);
@@ -302,11 +291,11 @@ const MessagesPanel: React.FC<MessagesPanelProps> = ({
     }
   }, [dockedPanels]);
 
-  const panelWidth = isExpanded ? 760 : 380;
+  const panelWidth = isExpanded ? 836 : 418;
   const isFrontExpanded = Object.entries(rightPanelStates || {}).some(([id, state]) => id !== activePanelId && (state === 'expanded' || state === 'side-expanded'));
-  
-  const frontPanelWidth = isFrontExpanded ? 760 : 380;
-  const expansionOffset = (stackIndex > 0 && isFrontExpanded) ? 380 : 0;
+
+  const frontPanelWidth = isFrontExpanded ? 836 : 418;
+  const expansionOffset = (stackIndex > 0 && isFrontExpanded) ? 418 : 0;
   const baseOffset = (stackIndex * 48) + (isHovered && stackIndex > 0 ? 24 : 0);
   
   // ⚡ FIX: If a background panel is explicitly side-by-side OR previously expanded,

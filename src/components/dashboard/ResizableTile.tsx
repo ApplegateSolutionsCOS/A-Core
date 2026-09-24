@@ -1,7 +1,56 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { CloseIcon } from '@/components/icons/Icons';
 import { SpatialHashGrid, getMagneticSnap, type SnapLine, type TileRect } from '@/lib/spatialHashGrid';
 import { COLOR_MAP } from '@/contexts/WorkspaceColorContext';
+
+const COLOR_PALETTE: Record<string, { color: string; rgb: string }> = {
+  // Reds & Pinks
+  red: { color: '#ef4444', rgb: '239,68,68' },
+  ruby: { color: '#e11d48', rgb: '225,29,72' },
+  raspberry: { color: '#e83f6f', rgb: '232,63,111' },
+  coral: { color: '#fb7185', rgb: '251,113,133' },
+  melon: { color: '#fca5a5', rgb: '252,165,165' },
+  pink: { color: '#ec4899', rgb: '236,72,153' },
+  fuchsia: { color: '#d946ef', rgb: '217,70,239' },
+  magenta: { color: '#ff00ff', rgb: '255,0,255' },
+
+  // Purples & Blues
+  lilac: { color: '#d8b4fe', rgb: '216,180,254' },
+  lavender: { color: '#c084fc', rgb: '192,132,252' },
+  violet: { color: '#8b5cf6', rgb: '139,92,246' },
+  purple: { color: '#a855f7', rgb: '168,85,247' },
+  indigo: { color: '#6366f1', rgb: '99,102,241' },
+  electric: { color: '#818cf8', rgb: '129,140,248' },
+  blue: { color: '#3b82f6', rgb: '59,130,246' },
+  azure: { color: '#007fff', rgb: '0,127,255' },
+  
+  // Cyans & Greens
+  sky: { color: '#0ea5e9', rgb: '14,165,233' },
+  cyan: { color: '#00ffff', rgb: '0,255,255' },
+  teal: { color: '#14b8a6', rgb: '20,184,166' },
+  mint: { color: '#34d399', rgb: '52,211,153' },
+  emerald: { color: '#10b981', rgb: '16,185,129' },
+  green: { color: '#22c55e', rgb: '34,197,94' },
+  lime: { color: '#84cc16', rgb: '132,204,22' },
+  chartreuse: { color: '#bfff00', rgb: '191,255,0' },
+
+  // Yellows & Oranges
+  yellow: { color: '#eab308', rgb: '234,179,8' },
+  sunflower: { color: '#ffc300', rgb: '255,195,0' },
+  gold: { color: '#fbbf24', rgb: '251,191,36' },
+  amber: { color: '#f59e0b', rgb: '245,158,11' },
+  peach: { color: '#fb923c', rgb: '251,146,60' },
+  orange: { color: '#ff9900', rgb: '255,153,0' },
+  tangerine: { color: '#f97316', rgb: '249,115,22' },
+
+  // Neutrals
+  zinc: { color: '#a1a1aa', rgb: '161,161,170' },
+  slate: { color: '#94a3b8', rgb: '148,163,184' },
+  silver: { color: '#d1d5db', rgb: '209,213,219' },
+  platinum: { color: '#e5e7eb', rgb: '229,231,235' },
+  white: { color: '#ffffff', rgb: '255,255,255' },
+};
 
 // Inline SVG icons for tile header actions
 const NewWindowIcon: React.FC<{ size?: number; className?: string }> = ({ size = 14, className = '' }) => (
@@ -9,9 +58,9 @@ const NewWindowIcon: React.FC<{ size?: number; className?: string }> = ({ size =
     <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" />
   </svg>
 );
-const FullScreenIcon: React.FC<{ size?: number; className?: string }> = ({ size = 14, className = '' }) => (
+const ShrinkExpandIcon: React.FC<{ size?: number; className?: string }> = ({ size = 14, className = '' }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-    <polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" /><line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" />
+    <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
   </svg>
 );
 const TrashSmallIcon: React.FC<{ size?: number; className?: string }> = ({ size = 14, className = '' }) => (
@@ -143,7 +192,20 @@ const ResizableTile: React.FC<ResizableTileProps> = ({
   const [showColorPicker, setShowColorPicker] = useState(false);
   const [longPressReady, setLongPressReady] = useState(false);
   const [overlapFlash, setOverlapFlash] = useState(false); 
+  const [contextMenuPos, setContextMenuPos] = useState<{ x: number; y: number } | null>(null);
+  const [contextMenuView, setContextMenuView] = useState<'menu' | 'color'>('menu');
+  const [isExpanded, setIsExpanded] = useState(false); // NEW: Local expand state
   const tileRef = useRef<HTMLDivElement>(null);
+
+  const handleTileContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // Constrain the menu so it doesn't render off-screen on the right or bottom
+    const safeX = Math.min(e.clientX, window.innerWidth - 280);
+    const safeY = Math.min(e.clientY, window.innerHeight - 200);
+    setContextMenuPos({ x: safeX, y: safeY });
+    setContextMenuView('menu'); // Always start on the main menu
+  }, []);
 
   const onPositionChangeRef = useRef(onPositionChange);
   const onSizeChangeRef = useRef(onSizeChange);
@@ -618,15 +680,28 @@ const ResizableTile: React.FC<ResizableTileProps> = ({
   const c = COLOR_MAP[glowColor] || COLOR_MAP.cyan;
 
   return (
+    <>
+    {isExpanded && (
+      <div 
+        className="fixed inset-0 bg-black/80 backdrop-blur-md animate-in fade-in duration-200" 
+        style={{ zIndex: 9998 }}
+        onClick={(e) => { e.stopPropagation(); setIsExpanded(false); }} 
+      />
+    )}
     <div
       ref={tileRef}
-      // CRITICAL UPDATE: Tailwind classes dynamically override inline coordinate stylings below on mobile breakpoints (`max-md:!relative`, etc).
-      className={`absolute rounded-xl border bg-black/90 backdrop-blur-sm max-md:!relative max-md:!left-auto max-md:!top-auto max-md:!w-full max-md:!transform-none ${
+      className={`${isExpanded ? '!fixed !top-24 !bottom-24 !left-4 !right-4 !w-auto !h-auto z-[9999]' : 'absolute'} rounded-xl border bg-black/90 backdrop-blur-sm max-md:!relative max-md:!left-auto max-md:!top-auto max-md:!w-full max-md:!transform-none ${
         isDropTarget ? 'ring-2 ring-offset-1 ring-offset-black/50 transition-all duration-150'
           : isActive || longPressReady ? 'transition-shadow duration-150'
-            : 'transition-all duration-200'
-      } ${!canDrag ? 'pointer-events-auto' : ''} ${className}`}
-      style={{
+            : 'transition-all duration-300'
+      } ${!canDrag || isExpanded ? 'pointer-events-auto' : ''} ${className}`}
+      style={isExpanded ? {
+        borderColor: c.primary,
+        boxShadow: `0 0 40px rgba(${c.rgb}, 0.4), inset 0 0 20px rgba(${c.rgb}, 0.1)`,
+        transform: 'none',
+        opacity: 1,
+        zIndex: 9999,
+      } : {
         left: displayX, top: displayY, width: size.width, height: size.height,
         zIndex: isActive ? zIndex + 1000 : zIndex,
         transform: isDragging ? 'scale(1.02)' : longPressReady ? 'scale(1.01)' : isDragSource ? 'scale(0.97)' : 'scale(1)',
@@ -635,10 +710,10 @@ const ResizableTile: React.FC<ResizableTileProps> = ({
         borderColor: isDropTarget ? `rgba(${c.rgb}, 0.8)` : isActive || longPressReady ? c.primary : `rgba(${c.rgb}, 0.3)`,
         boxShadow: isDropTarget ? `0 0 30px rgba(${c.rgb}, 0.8), inset 0 0 20px rgba(${c.rgb}, 0.05)` : isActive || longPressReady ? `0 0 40px rgba(${c.rgb}, 0.5)` : `0 0 15px rgba(${c.rgb}, 0.1)`,
       }}
-      onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; onReorderDragOver?.(id); }}
-      onDragEnter={(e) => { e.preventDefault(); onReorderDragOver?.(id); }}
-      onDragLeave={(e) => { if (!tileRef.current?.contains(e.relatedTarget as Node)) onReorderDragOver?.(''); }}
-      onDrop={(e) => { e.preventDefault(); onReorderDrop?.(id); }}
+      onDragOver={(e) => { if(isExpanded) return; e.preventDefault(); e.dataTransfer.dropEffect = 'move'; onReorderDragOver?.(id, position.x, position.y); }}
+      onDragEnter={(e) => { if(isExpanded) return; e.preventDefault(); onReorderDragOver?.(id, position.x, position.y); }}
+      onDragLeave={(e) => { if(isExpanded) return; if (!tileRef.current?.contains(e.relatedTarget as Node)) onReorderDragOver?.('', 0, 0); }}
+      onDrop={(e) => { if(isExpanded) return; e.preventDefault(); onReorderDrop?.(id, position.x, position.y); }}
     >
       {/* Drop target visual overlay */}
       {isDropTarget && (
@@ -655,48 +730,27 @@ const ResizableTile: React.FC<ResizableTileProps> = ({
 
       {/* Drag handle header */}
       <div
-        className={`absolute top-0 left-0 right-0 h-11 flex items-center justify-between px-3 ${canDrag ? 'cursor-grab active:cursor-grabbing max-md:cursor-default' : 'cursor-default'} border-b rounded-t-xl transition-all duration-150`}
+        className={`absolute top-0 left-0 right-0 h-11 flex items-center justify-between px-3 ${canDrag && !isExpanded ? 'cursor-grab active:cursor-grabbing max-md:cursor-default' : 'cursor-default'} border-b rounded-t-xl transition-all duration-150`}
         style={{
           WebkitUserSelect: 'none', userSelect: 'none', WebkitTouchCallout: 'none',
           borderColor: isDragging || longPressReady ? `rgba(${c.rgb}, 0.6)` : `rgba(${c.rgb}, 0.2)`,
           background: isDragging || longPressReady ? `linear-gradient(to right, rgba(${c.rgb}, 0.3), rgba(${c.rgb}, 0.2), rgba(${c.rgb}, 0.3))` : `linear-gradient(to right, rgba(${c.rgb}, 0.2), transparent, rgba(${c.rgb}, 0.2))`,
         }}
-        onMouseDown={handleDragStart} 
-        onTouchStart={handleTouchDragStart}
-        onTouchMove={handleTouchDragMove}
-        onTouchEnd={handleTouchDragEnd}
-        onTouchCancel={handleTouchDragEnd}
+        onMouseDown={(e) => { if (!isExpanded) handleDragStart(e); }} 
+        onContextMenu={handleTileContextMenu}
+        onTouchStart={(e) => { if (!isExpanded) handleTouchDragStart(e); }}
+        onTouchMove={(e) => { if (!isExpanded) handleTouchDragMove(e); }}
+        onTouchEnd={(e) => { if (!isExpanded) handleTouchDragEnd(); }}
+        onTouchCancel={(e) => { if (!isExpanded) handleTouchDragEnd(); }}
       >
         <div className="flex items-center gap-0.5" onMouseDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()} onTouchMove={(e) => e.stopPropagation()} onTouchEnd={(e) => e.stopPropagation()}>
-          {onNewWindow && (<button onClick={(e) => { e.stopPropagation(); onNewWindow(); }} className="p-1 rounded hover:bg-gray-500/20 text-gray-500 hover:text-gray-300 transition-all" title="Open in new window"><NewWindowIcon size={13} /></button>)}
-          {onFullScreen && (<button onClick={(e) => { e.stopPropagation(); onFullScreen(); }} className="p-1 rounded hover:bg-gray-500/20 text-gray-500 hover:text-gray-300 transition-all" title="Full screen"><FullScreenIcon size={13} /></button>)}
-          {onRefresh && (<button onClick={(e) => { e.stopPropagation(); onRefresh(); }} className={`p-1 rounded hover:bg-gray-500/20 text-gray-500 hover:text-gray-300 transition-all ${isRefreshing ? 'animate-spin' : ''}`} title={`Refresh${lastRefreshed ? ` (last: ${formatTimestamp(lastRefreshed)})` : ''}`}><RefreshSmallIcon size={13} /></button>)}
-          {onColorChange && (
-            <div className="relative">
-              <button onClick={(e) => { e.stopPropagation(); setShowColorPicker(!showColorPicker); }} className="p-1 rounded hover:bg-gray-500/20 text-gray-500 hover:text-gray-300 transition-all" title="Change tile color"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="4" fill="currentColor" /></svg></button>
-              {showColorPicker && (
-                <>
-                  <div className="fixed inset-0 z-[60]" onClick={(e) => { e.stopPropagation(); setShowColorPicker(false); }} />
-                  <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 px-2.5 py-2 bg-black/95 border border-gray-700 rounded-lg shadow-xl z-[70] flex items-center gap-2">
-                    {(['cyan', 'magenta', 'green', 'purple', 'orange', 'red', 'slate', 'zinc', 'amber'] as const).map((color) => {
-                      const isActive = glowColor === color;
-                      const mappedC = COLOR_MAP[color] || COLOR_MAP.cyan;
-                      return (
-                        <button
-                          key={color}
-                          onClick={(e) => { e.stopPropagation(); onColorChange(id, color as any); setShowColorPicker(false); }}
-                          className={`w-5 h-5 rounded-full transition-all hover:scale-125 ${isActive ? `ring-2 scale-110` : 'opacity-70 hover:opacity-100'}`}
-                          style={{ backgroundColor: mappedC.primary, '--tw-ring-color': `rgba(${mappedC.rgb}, 0.6)` } as any}
-                          title={color.charAt(0).toUpperCase() + color.slice(1)}
-                        />
-                      );
-                    })}
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-          {canDelete && onClose && (<button onClick={(e) => { e.stopPropagation(); setShowDeleteConfirm(true); }} className="p-1 rounded hover:bg-red-500/20 text-gray-500 hover:text-red-400 transition-all" title="Delete tile"><TrashSmallIcon size={13} /></button>)}
+          <button 
+            onClick={(e) => { e.stopPropagation(); setIsExpanded(!isExpanded); }} 
+            className="p-1 rounded hover:bg-gray-500/20 text-gray-500 hover:text-gray-300 transition-all" 
+            title={isExpanded ? "Shrink" : "Expand"}
+          >
+            <ShrinkExpandIcon size={13} />
+          </button>
         </div>
 
         <div className="absolute left-1/2 -translate-x-1/2 flex items-center justify-center gap-3 pointer-events-none">
@@ -744,7 +798,7 @@ const ResizableTile: React.FC<ResizableTileProps> = ({
       </div>
 
       {/* Resize handles */}
-      {canDrag && (
+      {canDrag && !isExpanded && (
         <>
           <div className="max-md:hidden absolute top-12 bottom-4 -left-1 w-4 cursor-ew-resize transition-colors rounded-l group" style={{ touchAction: 'none', backgroundColor: isResizing === 'w' ? `rgba(${c.rgb}, 0.2)` : undefined }} onMouseDown={(e) => handleResizeStart(e, 'w')} onTouchStart={(e) => handleTouchResizeStart(e, 'w')}>
             <div className="absolute left-1 top-1/2 -translate-y-1/2 w-1 h-10 rounded-full transition-all bg-transparent group-hover:bg-gray-500/50" style={{ backgroundColor: isResizing === 'w' ? c.primary : undefined }} />
@@ -777,7 +831,111 @@ const ResizableTile: React.FC<ResizableTileProps> = ({
       )}
 
       {isDragging && <div className="absolute inset-0 rounded-xl pointer-events-none" style={{ backgroundColor: `rgba(${c.rgb}, 0.05)` }} />}
+      
+      {/* Floating Right-Click Context Menu */}
+      {contextMenuPos && createPortal(
+        <>
+          <div 
+            className="fixed inset-0" 
+            style={{ zIndex: 99998 }}
+            onClick={(e) => { e.stopPropagation(); setContextMenuPos(null); }} 
+            onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setContextMenuPos(null); }}
+          />
+          <div
+            className="fixed bg-black/95 backdrop-blur-xl border border-gray-800 rounded-xl p-4 shadow-2xl flex flex-col gap-3 animate-in fade-in zoom-in duration-200 min-w-[170px]"
+            style={{
+              zIndex: 99999,
+              left: `${contextMenuPos.x}px`,
+              top: `${contextMenuPos.y}px`,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {contextMenuView === 'menu' ? (
+              <div className="flex flex-col gap-1">
+                {onColorChange && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setContextMenuView('color'); }}
+                    className="w-full flex items-center gap-3 px-3 py-2 text-xs font-mono text-gray-300 hover:text-white hover:bg-white/10 rounded transition-colors"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4" fill="currentColor"/></svg>
+                    Change Color
+                  </button>
+                )}
+                {onRefresh && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onRefresh(); setContextMenuPos(null); }}
+                    className="w-full flex items-center gap-3 px-3 py-2 text-xs font-mono text-gray-300 hover:text-white hover:bg-white/10 rounded transition-colors"
+                  >
+                    <RefreshSmallIcon size={14} />
+                    Refresh Data
+                  </button>
+                )}
+                {onNewWindow && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onNewWindow(); setContextMenuPos(null); }}
+                    className="w-full flex items-center gap-3 px-3 py-2 text-xs font-mono text-gray-300 hover:text-white hover:bg-white/10 rounded transition-colors"
+                  >
+                    <NewWindowIcon size={14} />
+                    New Window
+                  </button>
+                )}
+                {onClose && (
+                  <>
+                    <div className="border-t border-gray-700/50 my-1 mx-1" />
+                    <button
+                      onClick={(e) => { 
+                        e.stopPropagation(); 
+                        if (canDelete) { setShowDeleteConfirm(true); } else { onClose(); } 
+                        setContextMenuPos(null); 
+                      }}
+                      className="w-full flex items-center gap-3 px-3 py-2 text-xs font-mono text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded transition-colors"
+                    >
+                      <TrashSmallIcon size={14} />
+                      Delete Tile
+                    </button>
+                  </>
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center gap-2 mb-1">
+                  <button onClick={(e) => { e.stopPropagation(); setContextMenuView('menu'); }} className="p-1 text-gray-400 hover:text-white rounded transition-colors">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+                  </button>
+                  <span className="text-xs font-mono text-gray-400 font-bold uppercase tracking-wider">Set Tile Color</span>
+                </div>
+                <div className="grid grid-cols-6 gap-2">
+                  {Object.entries(COLOR_PALETTE).map(([key, { color }]) => {
+                    const isActive = glowColor === key;
+                    return (
+                      <button
+                        key={key}
+                        onClick={(e) => { e.stopPropagation(); onColorChange?.(id, key as any); setContextMenuPos(null); }}
+                        className="w-8 h-8 rounded-full border-2 transition-transform hover:scale-110"
+                        style={{ 
+                          backgroundColor: `${color}30`, 
+                          borderColor: color, 
+                          boxShadow: isActive ? `0 0 15px ${color}80` : `0 0 8px ${color}40`
+                        }}
+                        title={key.charAt(0).toUpperCase() + key.slice(1)}
+                      />
+                    );
+                  })}
+                </div>
+                <button 
+                  onClick={(e) => { e.stopPropagation(); onColorChange?.(id, 'default' as any); setContextMenuPos(null); }} 
+                  className="mt-2 py-1.5 px-3 rounded text-[10px] font-mono text-gray-400 hover:text-white hover:bg-white/10 transition-colors border border-gray-800"
+                >
+                  Reset to Default
+                </button>
+              </>
+            )}
+          </div>
+        </>,
+        document.body
+      )}
     </div>
+    </>
   );
 };
 

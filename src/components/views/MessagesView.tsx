@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/AuthContext';
+import { useWorkspaceColor } from '@/contexts/WorkspaceColorContext';
 import { 
   SearchIcon, PlusIcon, MessageIcon, ChevronRightIcon, CloseIcon 
 } from '@/components/icons/Icons';
@@ -34,6 +35,7 @@ interface Message {
 interface MessagesViewProps {
   isOpen: boolean;
   onClose: () => void;
+  currentWorkspaceSlug?: string | null;
 }
 
 const COLOR_PALETTE: Record<string, { color: string; rgb: string }> = {
@@ -49,9 +51,34 @@ const COLOR_PALETTE: Record<string, { color: string; rgb: string }> = {
   zinc: { color: '#a1a1aa', rgb: '161,161,170' }, slate: { color: '#94a3b8', rgb: '148,163,184' }, silver: { color: '#d1d5db', rgb: '209,213,219' }, platinum: { color: '#e5e7eb', rgb: '229,231,235' }, white: { color: '#ffffff', rgb: '255,255,255' },
 };
 
-const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose }) => {
+const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWorkspaceSlug }) => {
   const { user } = useAuth();
   const currentUserId = user?.id || (user as any)?.uid;
+
+  const { getColor } = useWorkspaceColor();
+  
+  // ⚡ THE REAL FIX: Inspect the browser's URL directly to find the workspace context!
+  // This guarantees we always know if we are inside a workspace, even if Context is missing.
+  const getSlugFromUrl = () => {
+    if (typeof window === 'undefined') return null;
+    const path = window.location.pathname;
+    
+    // ⚡ FIX: Look for the actual '/workspace/' path used by your router
+    if (path.startsWith('/workspace/')) {
+       const parts = path.split('/');
+       if (parts.length > 2) return parts[2]; // e.g. /workspace/admin
+    }
+    
+    // Check if we are on the main dashboard
+    if (path === '/dashboard' || path === '/app' || path === '/') {
+        return null;
+    }
+    
+    return null;
+  };
+
+  const currentWsSlug = currentWorkspaceSlug || getSlugFromUrl();
+  const ac = currentWsSlug ? getColor(currentWsSlug) : null;
 
   // ⚡ Theme State
   const [userNavColors, setUserNavColors] = useState<Record<string, string>>({});
@@ -77,8 +104,15 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose }) => {
   }, [currentUserId]);
 
   const userPrefKey = userNavColors['messages'];
-  const panelAccentColor = userPrefKey && COLOR_PALETTE[userPrefKey] ? COLOR_PALETTE[userPrefKey].color : '#3b82f6';
-  const panelAccentRGB = userPrefKey && COLOR_PALETTE[userPrefKey] ? COLOR_PALETTE[userPrefKey].rgb : '59,130,246';
+  
+  // ⚡ THE FIX: Use the exact same workspace-first inheritance logic as LeftSlidePanel
+  const panelAccentColor = (currentWsSlug && ac) 
+    ? ac.primary 
+    : (userPrefKey && COLOR_PALETTE[userPrefKey] ? COLOR_PALETTE[userPrefKey].color : '#3b82f6');
+
+  const panelAccentRGB = (currentWsSlug && ac) 
+    ? ac.rgb 
+    : (userPrefKey && COLOR_PALETTE[userPrefKey] ? COLOR_PALETTE[userPrefKey].rgb : '59,130,246');
 
   // DB States
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -374,7 +408,7 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose }) => {
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
       
       {/* Modal Container */}
-      <div className="relative w-full max-w-7xl h-full max-h-[95vh] bg-black/90 backdrop-blur-2xl border rounded-2xl flex flex-col animate-in zoom-in-95 duration-200 overflow-hidden"
+      <div className="relative w-full max-w-[1376px] h-full max-h-[95vh] bg-black/90 backdrop-blur-2xl border rounded-2xl flex flex-col animate-in zoom-in-95 duration-200 overflow-hidden"
            style={{ borderColor: `rgba(${panelAccentRGB}, 0.3)`, boxShadow: `0 0 50px rgba(${panelAccentRGB}, 0.1)` }}>
         <div className="absolute inset-0 bg-gradient-to-br from-blue-950/10 via-transparent to-sky-950/10 pointer-events-none" />
         <div className="absolute inset-0 hex-pattern opacity-5 pointer-events-none" />

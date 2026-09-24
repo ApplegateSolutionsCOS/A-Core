@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
+import { useWorkspaceColor } from '@/contexts/WorkspaceColorContext';
 import { supabase } from '@/lib/supabase';
 import { fetchGlobalActivities } from '@/lib/activityLogger';
 import ActivityHeatmap from './ActivityHeatmap';
@@ -25,6 +26,7 @@ type TabId = 'overview' | 'security' | 'rawlog';
 interface FullViewActivityProps {
   isOpen: boolean;
   onClose: () => void;
+  currentWorkspaceSlug?: string | null;
 }
 
 // ═══════════════ LOGIN HISTORY ITEM ═══════════════
@@ -147,20 +149,25 @@ const COLOR_PALETTE: Record<string, { color: string; rgb: string }> = {
   zinc: { color: '#a1a1aa', rgb: '161,161,170' }, slate: { color: '#94a3b8', rgb: '148,163,184' }, silver: { color: '#d1d5db', rgb: '209,213,219' }, platinum: { color: '#e5e7eb', rgb: '229,231,235' }, white: { color: '#ffffff', rgb: '255,255,255' },
 };
 
-const FullViewActivity: React.FC<FullViewActivityProps> = ({ isOpen, onClose }) => {
-  const { user, isPlatformOwner, isPlatformTechManager } = useAuth();
+const FullViewActivity: React.FC<FullViewActivityProps> = ({ isOpen, onClose, currentWorkspaceSlug }) => {
+  const { user, organization, isPlatformOwner, isPlatformTechManager } = useAuth(); // ⚡ Destructure organization
   const currentUserId = user ? (user as any).id || (user as any).email || '' : '';
+
+  // Get Workspace Colors
+  const { getColor } = useWorkspaceColor();
+  const ac = currentWorkspaceSlug ? getColor(currentWorkspaceSlug) : null;
 
   // ⚡ Theme State
   const [userNavColors, setUserNavColors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const fetchColors = async () => {
-      if (!currentUserId) return;
+      if (!currentUserId || !organization?.id) return;
       const { data } = await supabase.schema('app_private')
         .from('user_preferences')
         .select('nav_colors')
         .eq('user_id', currentUserId)
+        .eq('organization_id', organization.id) // ⚡ Scope to active org
         .maybeSingle();
       if (data?.nav_colors) setUserNavColors(data.nav_colors);
     };
@@ -174,8 +181,15 @@ const FullViewActivity: React.FC<FullViewActivityProps> = ({ isOpen, onClose }) 
   }, [currentUserId]);
 
   const userPrefKey = userNavColors['dashboard']; // Activity ties to the dashboard icon
-  const themeColor = userPrefKey && COLOR_PALETTE[userPrefKey] ? COLOR_PALETTE[userPrefKey].color : '#22d3ee';
-  const themeRgb = userPrefKey && COLOR_PALETTE[userPrefKey] ? COLOR_PALETTE[userPrefKey].rgb : '34,211,238';
+  
+  // ⚡ THE FIX: Prioritize workspace color if one is open, otherwise fall back to personal settings
+  const themeColor = (currentWorkspaceSlug && ac) 
+    ? ac.primary 
+    : (userPrefKey && COLOR_PALETTE[userPrefKey] ? COLOR_PALETTE[userPrefKey].color : '#22d3ee');
+
+  const themeRgb = (currentWorkspaceSlug && ac) 
+    ? ac.rgb 
+    : (userPrefKey && COLOR_PALETTE[userPrefKey] ? COLOR_PALETTE[userPrefKey].rgb : '34, 211, 238');
 
   const [activeTab, setActiveTab] = useState<TabId>('overview');
   const [dateRange, setDateRange] = useState<DateRange>('week');
@@ -356,7 +370,7 @@ const FullViewActivity: React.FC<FullViewActivityProps> = ({ isOpen, onClose }) 
       <div className="absolute inset-0 bg-black/90 backdrop-blur-md" onClick={onClose} />
 
       {/* Main Panel */}
-      <div className="relative w-full max-w-6xl mx-auto my-4 bg-black border rounded-2xl overflow-hidden flex flex-col"
+      <div className="relative w-full max-w-[1248px] mx-auto my-4 bg-black border rounded-2xl overflow-hidden flex flex-col"
            style={{ borderColor: `rgba(${themeRgb}, 0.2)`, boxShadow: `0 0 60px rgba(${themeRgb}, 0.1)` }}>
         {/* Header */}
         <div className="flex-shrink-0 border-b bg-gradient-to-r via-black"

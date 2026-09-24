@@ -38,7 +38,7 @@ interface Invoice {
 }
 
 const OrganizationSettings: React.FC<OrganizationSettingsProps> = ({ isOpen, onClose }) => {
-  const { organization: authOrg, user, isOrganizationAdmin } = useAuth();
+  const { organization: authOrg, user, isOrganizationAdmin, isPlatformOwner } = useAuth();
   const [organization, setOrganization] = useState<any>(authOrg); // Local state for fresh DB data
   const [activeTab, setActiveTab] = useState<'general' | 'users' | 'workspaces' | 'billing' | 'audit_logs'>('general');
 
@@ -82,29 +82,88 @@ const OrganizationSettings: React.FC<OrganizationSettingsProps> = ({ isOpen, onC
   const [editAccentColor, setEditAccentColor] = useState(authOrg?.accent_color || '#3b82f6');
   const [isSavingGeneral, setIsSavingGeneral] = useState(false);
 
-  // ⚡ THE FIX: Reset form state ONLY when the modal opens, not every time background data updates
+  // Use a ref to guarantee we only overwrite inputs on the initial load of the modal
+  const isFirstLoadRef = useRef(true);
+
+  // ⚡ THE FIX: Trigger the fetch only when the modal opens
   useEffect(() => {
-    if (isOpen && authOrg) {
-      setEditOrgName(authOrg.name || '');
-      setEditOrgLogo(authOrg.logo_url || '');
-      setEditPrimaryColor(authOrg.primary_color || '#06b6d4');
-      setEditAccentColor(authOrg.accent_color || '#3b82f6');
+    if (isOpen) {
+      isFirstLoadRef.current = true;
       fetchData();
     }
-  }, [isOpen, authOrg]);
+  }, [isOpen]);
   // --- END NEW STATE ---
 
   const fetchData = async () => {
-    if (!authOrg) return;
+    if (!authOrg?.id) return;
     setIsLoading(true);
     try {
       // 1. Fetch users and workspaces
       const [usersResponse, workspacesResponse] = await Promise.all([
-        db.from('organization_users').select('*').eq('organization_id', authOrg.id),
+        supabase.schema('app_private').from('organization_users').select('*').eq('organization_id', authOrg.id),
         db.from('workspaces').select('*').eq('organization_id', authOrg.id).order('display_order'),
       ]);
 
-      if (usersResponse.data) setUsers(usersResponse.data);
+      if (usersResponse.data) {
+        let fetchedUsers = [...usersResponse.data];
+        
+        // Ensure the current active Admin/Owner is always visible in the Users list, 
+        // even if they are a Platform Owner viewing a demo organization virtually.
+        const currentUserInList = fetchedUsers.some(u => u.email === (user as any)?.email);
+        
+        // Ensure Platform Owners viewing a demo are also injected
+        if (!currentUserInList && user && (isOrganizationAdmin() || (typeof isPlatformOwner === 'function' && isPlatformOwner()))) {
+          const userEmail = (user as any).email || '';
+          let displayName = (user as any).user_metadata?.full_name;
+
+          // 1. If Auth metadata is empty, check the platform_users table
+          if (!displayName) {
+            const { data: pUser } = await supabase
+              .schema('app_private')
+              .from('platform_users')
+              .select('full_name')
+              .eq('id', user.id)
+              .maybeSingle();
+              
+            if (pUser?.full_name) {
+              displayName = pUser.full_name;
+            } else {
+              // 2. If not a platform user, check their home organization_users record
+              const { data: oUser } = await supabase
+                .schema('app_private')
+                .from('organization_users')
+                .select('full_name')
+                .eq('email', userEmail)
+                .limit(1)
+                .maybeSingle();
+                
+              if (oUser?.full_name) displayName = oUser.full_name;
+            }
+          }
+          
+          // 3. If STILL missing, format the email prefix nicely (e.g., "andrew.smith" -> "Andrew Smith")
+          if (!displayName && userEmail) {
+            displayName = userEmail.split('@')[0]
+              .split(/[._-]/)
+              .map((part: string) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+              .join(' ');
+          } else if (!displayName) {
+            displayName = 'Platform Admin';
+          }
+
+          fetchedUsers.unshift({
+            id: (user as any).id || 'virtual-admin-id',
+            organization_id: authOrg.id,
+            email: userEmail,
+            full_name: displayName,
+            role: 'organization_admin',
+            status: 'active',
+            is_org_creator: true
+          } as OrganizationUser);
+        }
+        
+        setUsers(fetchedUsers);
+      }
       if (workspacesResponse.data) setWorkspaces(workspacesResponse.data);
       
       // 2 & 3. Combined Fetch: Get Org Data and Logo in one request
@@ -126,7 +185,6 @@ const OrganizationSettings: React.FC<OrganizationSettingsProps> = ({ isOpen, onC
       let fetchedOrg = { ...combinedData };
 
       // Flatten the logo_url so it's directly accessible on the object
-      // Supabase returns the joined table as an array or object
       const logoData = combinedData?.organization_logos;
       const finalLogoUrl = Array.isArray(logoData) 
         ? logoData[0]?.logo_url 
@@ -137,9 +195,15 @@ const OrganizationSettings: React.FC<OrganizationSettingsProps> = ({ isOpen, onC
       // Sync everything to UI
       setOrganization(fetchedOrg);
       
-      // ⚡ THE FIX: Only pull in the logo if it was missing locally. 
-      // We purposefully DO NOT overwrite editOrgName here to prevent erasing what the user is typing!
-      setEditOrgLogo(prev => prev || fetchedOrg.logo_url || '');
+      // ⚡ THE FIX: Populate the inputs with true DB data on initial load.
+      // This bypasses any stale 'authOrg' state returned from the local cache.
+      if (isFirstLoadRef.current) {
+        setEditOrgName(fetchedOrg.name || '');
+        setEditOrgLogo(fetchedOrg.logo_url || '');
+        setEditPrimaryColor(fetchedOrg.primary_color || '#06b6d4');
+        setEditAccentColor(fetchedOrg.accent_color || '#3b82f6');
+        isFirstLoadRef.current = false;
+      }
 
     } catch (error) {
       console.error('Error fetching data:', error);
@@ -176,7 +240,17 @@ const OrganizationSettings: React.FC<OrganizationSettingsProps> = ({ isOpen, onC
     if (!inviteEmail || !inviteName || !organization) return;
 
     try {
-      const { error } = await db.from('organization_users').insert({
+      // 1. Call your existing Edge Function to create the user and send the email
+      const { data: authData, error: authError } = await supabase.functions.invoke('invite-user', {
+        body: { email: inviteEmail.toLowerCase(), name: inviteName }
+      });
+
+      if (authError) throw new Error(authError.message || 'Failed to send invite');
+      if (!authData?.user?.id) throw new Error('No user ID returned from invite function');
+
+      // 2. Insert the user into your private organization directory using the new Auth ID
+      const { error: dbError } = await supabase.schema('app_private').from('organization_users').insert({
+        id: authData.user.id,
         organization_id: organization.id,
         email: inviteEmail.toLowerCase(),
         full_name: inviteName,
@@ -184,16 +258,18 @@ const OrganizationSettings: React.FC<OrganizationSettingsProps> = ({ isOpen, onC
         is_org_creator: false,
       });
 
+      if (dbError) throw dbError;
 
-      if (error) throw error;
-
+      // 3. Success! Close modal and refresh the list
       setShowInviteModal(false);
       setInviteEmail('');
       setInviteName('');
       setInviteRole('workspace_regular_user');
       fetchData();
-    } catch (error) {
+      
+    } catch (error: any) {
       console.error('Error inviting user:', error);
+      alert(`Failed to invite user: ${error.message}`);
     }
   };
 
@@ -303,7 +379,7 @@ const OrganizationSettings: React.FC<OrganizationSettingsProps> = ({ isOpen, onC
     if (!confirm('Are you sure you want to remove this user?')) return;
     
     try {
-      const { error } = await db
+      const { error } = await supabase.schema('app_private')
         .from('organization_users')
         .delete()
         .eq('id', userId);
@@ -971,56 +1047,90 @@ const OrganizationSettings: React.FC<OrganizationSettingsProps> = ({ isOpen, onC
 
       {/* Invite Modal */}
       {showInviteModal && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/60" onClick={() => setShowInviteModal(false)} />
-          <div className="relative bg-slate-900 border border-slate-700 rounded-xl p-6 w-full max-w-md mx-4">
-            <h3 className="text-lg font-semibold text-white mb-4">Invite Team Member</h3>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">Full Name</label>
+        <div id="invite-modal-panel" className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <style>{`
+            #invite-modal-panel .focus\\:theme-border:focus { border-color: rgba(${primaryRgb}, 0.5) !important; }
+            #invite-modal-panel .submit-btn {
+              background-color: rgba(${primaryRgb}, 0.2);
+              border-color: rgba(${primaryRgb}, 0.5);
+              color: ${primaryColor};
+            }
+            #invite-modal-panel .submit-btn:not(:disabled):hover {
+              background-color: rgba(${primaryRgb}, 0.3);
+            }
+          `}</style>
+          
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setShowInviteModal(false)} />
+          
+          <div 
+            className="relative bg-black border rounded-xl w-full max-w-md transition-all duration-300 shadow-2xl animate-in zoom-in-95"
+            style={{ borderColor: `rgba(${primaryRgb}, 0.5)`, boxShadow: `0 0 40px rgba(${primaryRgb}, 0.2)` }}
+          >
+            <div 
+              className="absolute inset-0 rounded-xl pointer-events-none transition-all duration-300" 
+              style={{ background: `linear-gradient(to bottom right, rgba(${primaryRgb}, 0.15), transparent)` }}
+            />
+            
+            <div className="relative z-10 p-6">
+              {/* Header */}
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-3">
+                  <div 
+                    className="w-10 h-10 rounded-lg border flex items-center justify-center transition-colors duration-300"
+                    style={{ backgroundColor: `rgba(${primaryRgb}, 0.2)`, borderColor: `rgba(${primaryRgb}, 0.5)` }}
+                  >
+                    <InviteIcon size={20} style={{ color: primaryColor }} />
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-mono font-bold text-white">Invite User</h2>
+                    <p className="text-xs text-gray-500 font-mono">Add a new team member</p>
+                  </div>
+                </div>
+                <button onClick={() => setShowInviteModal(false)} className="p-2 text-gray-400 hover:text-white transition-colors">
+                  <CloseIcon size={20} />
+                </button>
+              </div>
+
+              {/* Form Fields */}
+              <div className="space-y-4">
                 <input
                   type="text"
                   value={inviteName}
                   onChange={(e) => setInviteName(e.target.value)}
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-cyan-500"
-                  placeholder="John Smith"
+                  placeholder="Full Name (e.g. John Smith)"
+                  className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-3 text-white font-mono text-sm focus:outline-none focus:theme-border transition-all"
                 />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">Email</label>
+
                 <input
                   type="email"
                   value={inviteEmail}
                   onChange={(e) => setInviteEmail(e.target.value)}
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-cyan-500"
-                  placeholder={`user@${organization?.domain}`}
+                  placeholder={`Email (e.g. user@${organization?.domain || 'domain.com'})`}
+                  className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-3 text-white font-mono text-sm focus:outline-none focus:theme-border transition-all"
                 />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">Role</label>
-                <select
-                  value={inviteRole}
-                  onChange={(e) => setInviteRole(e.target.value as OrganizationRole)}
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-cyan-500"
-                >
-                  {userRoles.map((role) => (
-                    <option key={role.value} value={role.value}>
-                      {role.label} ({role.price})
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex gap-3 pt-4">
-                <button
-                  onClick={() => setShowInviteModal(false)}
-                  className="flex-1 py-2 border border-slate-600 text-slate-300 rounded-lg hover:bg-slate-800 transition-colors"
-                >
-                  Cancel
-                </button>
+
+                <div>
+                  <p className="text-sm text-gray-400 font-mono mb-2">Role:</p>
+                  <select
+                    value={inviteRole}
+                    onChange={(e) => setInviteRole(e.target.value as OrganizationRole)}
+                    className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-3 text-white font-mono text-sm focus:outline-none focus:theme-border transition-all"
+                  >
+                    {userRoles.map((role) => (
+                      <option key={role.value} value={role.value}>
+                        {role.label} ({role.price})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Submit Button */}
                 <button
                   onClick={handleInviteUser}
-                  className="flex-1 py-2 bg-cyan-500 text-white rounded-lg hover:bg-cyan-400 transition-colors"
+                  disabled={!inviteName.trim() || !inviteEmail.trim()}
+                  className="w-full mt-6 py-3 border rounded-lg transition-all font-mono font-bold disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 submit-btn"
                 >
+                  <CheckIcon size={18} />
                   Send Invite
                 </button>
               </div>

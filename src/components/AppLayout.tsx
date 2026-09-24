@@ -681,7 +681,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ initialView, workspaceSlug }) => 
 
       {/* Toolbar Panels */}
       <StatusPanel isOpen={showStatusPanel} onClose={() => setShowStatusPanel(false)} />
-      <TaskPanel isOpen={showTaskPanel} onClose={() => setShowTaskPanel(false)} currentView={activeTab} />
+      <TaskPanel isOpen={showTaskPanel} onClose={() => setShowTaskPanel(false)} currentView={activeTab} currentWorkspaceSlug={activeWorkspace} />
       <EventPanel isOpen={showEventPanel} onClose={() => setShowEventPanel(false)} />
       <ProjectPanel isOpen={showProjectPanel} onClose={() => setShowProjectPanel(false)} />
       <MicrophonePanel isOpen={showMicrophonePanel} onClose={() => setShowMicrophonePanel(false)} />
@@ -736,9 +736,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ initialView, workspaceSlug }) => 
                 workspaceSlug={activeWorkspace}
                 onNavigateToFullView={() => {
                   commonProps.onClose();
-                  setActiveWorkspace(null);
-                  setInitialMiniApp(null);
-                  setInitialAddRecord(false);
+                  // ⚡ FIX: Do NOT clear activeWorkspace! This allows MessagesView to inherit the color and return us here when closed.
                   setActiveTab('messages');
                   navigate('/messages', { replace: true });
                 }}
@@ -814,6 +812,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ initialView, workspaceSlug }) => 
       {/* Full View Overlay Modals */}
       <TasksView 
         isOpen={activeTab === 'tasks'} 
+        currentWorkspaceSlug={activeWorkspace}
         onClose={() => {
           setActiveTab(activeWorkspace ? 'workspace' : 'dashboard');
           navigate(activeWorkspace ? `/workspace/${activeWorkspace}` : '/', { replace: true });
@@ -821,6 +820,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ initialView, workspaceSlug }) => 
       />
       <MessagesView 
         isOpen={activeTab === 'messages'} 
+        currentWorkspaceSlug={activeWorkspace}
         onClose={() => {
           setActiveTab(activeWorkspace ? 'workspace' : 'dashboard');
           navigate(activeWorkspace ? `/workspace/${activeWorkspace}` : '/', { replace: true });
@@ -828,6 +828,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ initialView, workspaceSlug }) => 
       />
       <CalendarView 
         isOpen={activeTab === 'calendar'} 
+        currentWorkspaceSlug={activeWorkspace}
         onClose={() => {
           setActiveTab(activeWorkspace ? 'workspace' : 'dashboard');
           navigate(activeWorkspace ? `/workspace/${activeWorkspace}` : '/', { replace: true });
@@ -867,6 +868,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ initialView, workspaceSlug }) => 
       <FullViewActivity
         isOpen={showFullActivity}
         onClose={() => setShowFullActivity(false)}
+        currentWorkspaceSlug={activeWorkspace}
       />
 
       {/* ⚡ GLOBAL RECORD PANEL: Mounted at the absolute root so it never disappears! */}

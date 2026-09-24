@@ -240,12 +240,13 @@ const TopHeader: React.FC<TopHeaderProps> = ({
   useEffect(() => {
     const fetchUserPreferences = async () => {
       const userId = user?.id || (user as any)?.uid;
-      if (!userId) return;
+      if (!userId || !organization?.id) return;
       try {
         const { data, error } = await supabase.schema('app_private')
           .from('user_preferences')
           .select('header_colors')
           .eq('user_id', userId)
+          .eq('organization_id', organization.id) // ⚡ Scope to current org
           .maybeSingle();
 
         if (error) console.error('[TopHeader] Error fetching colors:', error);
@@ -280,9 +281,10 @@ const TopHeader: React.FC<TopHeaderProps> = ({
         .from('user_preferences')
         .upsert({
           user_id: userId,
+          organization_id: organization.id, // ⚡ Scope to current org
           header_colors: updatedColors,
           updated_at: new Date().toISOString()
-        }, { onConflict: 'user_id' });
+        }, { onConflict: 'user_id, organization_id' }); // ⚡ Use new composite key
         
       if (error) console.error('[TopHeader] Error saving colors to DB:', error);
     } catch (err) {
@@ -957,7 +959,7 @@ const TopHeader: React.FC<TopHeaderProps> = ({
         <div className="flex items-center justify-between h-full px-4 max-w-full mx-auto">
           <div className="flex items-center gap-2">
             <img 
-              src={organization?.logo_url ? `${organization.logo_url}?width=80&height=80&resize=contain` : LOGO_URL} 
+              src={organization?.logo_url || LOGO_URL} 
               alt={organization?.name || "Gruppo"} 
               className={`h-9 w-auto drop-shadow-[0_0_10px_rgba(0,255,255,0.5)] ${organization?.logo_url ? 'rounded-md object-contain max-w-[140px]' : ''}`} 
             />
@@ -1150,7 +1152,7 @@ const TopHeader: React.FC<TopHeaderProps> = ({
             ) : (
               <button onClick={onGoHome} className="flex items-center gap-3 hover:opacity-80 transition-opacity group">
                 <img 
-                  src={organization?.logo_url ? `${organization.logo_url}?width=80&height=80&resize=contain` : LOGO_URL} 
+                  src={organization?.logo_url || LOGO_URL} 
                   alt={organization?.name || "Gruppo"} 
                   className={`h-9 w-auto drop-shadow-[0_0_10px_rgba(0,255,255,0.3)] transition-all duration-300 ${
                     organization?.logo_url ? 'rounded-md object-contain max-w-[140px]' : ''
@@ -1641,6 +1643,44 @@ const TopHeader: React.FC<TopHeaderProps> = ({
                       <UserIcon size={14} className="text-gray-400" />
                       Profile
                     </button>
+                    
+                    {/* ⚡ NEW: Exit Demo Mode Option */}
+                    {isPlatformOwner() && organization?.subscription_tier === 'demo' && (
+                      <>
+                        <div className="h-px w-full bg-gray-800/50 my-1" />
+                        <button
+                          onClick={() => {
+                            setShowAccountDropdown(false);
+                            
+                            // Bypass all network requests to avoid triggering security interceptors.
+                            // Synchronously restore the exact Platform Owner organization.
+                            const corePlatformOrg = {
+                              id: 'c28f0d91-c0df-4092-a2cc-19c860f1824f',
+                              name: 'Applegate Solutions',
+                              subscription_tier: 'expert',
+                              is_active: true,
+                              primary_color: '#06b6d4',
+                              logo_url: 'https://rghtxlzzpuazvacupere.supabase.co/storage/v1/object/public/organization-logos/logos/c28f0d91-c0df-4092-a2cc-19c860f1824f-1777231826845.png'
+                            };
+                            
+                            localStorage.setItem('bos_organization', JSON.stringify(corePlatformOrg));
+                            localStorage.setItem('bos_platform_organization', JSON.stringify(corePlatformOrg));
+                            
+                            // Instantly reload into the home environment
+                            window.location.href = '/'; 
+                          }}
+                          className="flex items-center gap-3 px-4 py-2.5 text-sm font-mono text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10 transition-colors w-full text-left"
+                        >
+                          <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                            <polyline points="16 17 21 12 16 7" />
+                            <line x1="21" y1="12" x2="9" y2="12" />
+                          </svg>
+                          Exit Demo Mode
+                        </button>
+                      </>
+                    )}
+
                     <div className="h-px w-full bg-gray-800/50 my-1" />
                     <button
                       onClick={() => { setShowAccountDropdown(false); logout(); }}

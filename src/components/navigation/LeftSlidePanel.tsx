@@ -1,10 +1,27 @@
   import React, { useEffect, useRef, useCallback, useState } from 'react';
-  import { CloseIcon, TaskIcon, CalendarIcon, ChevronRightIcon, ExternalLinkIcon, PlusIcon, TrashIcon, CheckIcon, UsersIcon, UserIcon, PopoutIcon } from '@/components/icons/Icons';
+  import { 
+    CloseIcon, TaskIcon, CalendarIcon, ChevronRightIcon, ExternalLinkIcon, 
+    PlusIcon, TrashIcon, CheckIcon, UsersIcon, UserIcon, PopoutIcon, ClockIcon,
+    SearchIcon, SettingsIcon 
+  } from '@/components/icons/Icons';
+  import * as LucideIcons from 'lucide-react';
+  import { TaskPanel, InlineActivityPanel } from '@/components/toolbar/ToolbarPanels';
   import { db } from '@/lib/dbProxy';
   import { supabase } from '@/lib/supabase';
 
   import { useAuth } from '@/contexts/AuthContext';
   import { useWorkspaceColor } from '@/contexts/WorkspaceColorContext';
+
+  type SortField = 'due_date' | 'priority' | 'title' | 'created_at';
+  interface SortCriterion { field: SortField; direction: 'asc' | 'desc'; }
+
+  const SortIcon: React.FC<{ size?: number; className?: string }> = ({ size = 24, className = '' }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <line x1="15" y1="18" x2="9" y2="18"></line>
+      <line x1="18" y1="12" x2="6" y2="12"></line>
+      <line x1="21" y1="6" x2="3" y2="6"></line>
+    </svg>
+  );
 
   const COLOR_PALETTE: Record<string, { color: string; rgb: string }> = {
     // Reds & Pinks
@@ -52,6 +69,15 @@
     silver: { color: '#d1d5db', rgb: '209,213,219' },
     platinum: { color: '#e5e7eb', rgb: '229,231,235' },
     white: { color: '#ffffff', rgb: '255,255,255' },
+  };
+
+  // ⚡ FIX: Add the missing getTagColor helper that the transplanted Task components rely on!
+  const getTagColor = (tag: string) => {
+    const colors = ['#3b82f6', '#ec4899', '#10b981', '#f59e0b', '#8b5cf6', '#06b6d4', '#f43f5e'];
+    let hash = 0;
+    for (let i = 0; i < tag.length; i++) hash = tag.charCodeAt(i) + ((hash << 5) - hash);
+    const bg = colors[Math.abs(hash) % colors.length];
+    return { bg };
   };
 
   type PanelType = 'tasks' | 'calendar' | null;
@@ -169,11 +195,19 @@
 
     useEffect(() => {
       const fetchTask = async () => {
-        if (user) {
-          const userId = user.id || (user as any).uid;
-          const { data: dbSettings } = await supabase.schema('app_private').from('user_settings').select('custom_statuses, tags').eq('user_id', userId).maybeSingle();
-          if (dbSettings?.custom_statuses) setAvailableStatuses(dbSettings.custom_statuses);
-          if (dbSettings?.tags) setAvailableTags(dbSettings.tags);
+        if (organization?.id) {
+          const { data: orgSettings } = await supabase.schema('app_private').from('organizations').select('custom_statuses, tags').eq('id', organization.id).maybeSingle();
+          if (orgSettings?.custom_statuses) setAvailableStatuses(orgSettings.custom_statuses);
+          if (orgSettings?.tags) {
+            const formattedTags = orgSettings.tags.map((t: any) => {
+              if (typeof t === 'string') {
+                try { const parsed = JSON.parse(t); if (parsed && typeof parsed === 'object' && parsed.id) return parsed; } catch (e) {}
+                return { id: t.toLowerCase().replace(/\s+/g, '_'), name: t, color: getTagColor(t).bg };
+              }
+              return t;
+            });
+            setAvailableTags(formattedTags);
+          }
         }
         setLoading(true);
         const { data } = await supabase.schema('app_private').from('tasks').select('*').eq('id', taskId).single();
@@ -312,25 +346,48 @@
                   <div>
                     <label className="block text-[11px] font-mono font-medium text-gray-500 mb-2 uppercase tracking-wider">Tags</label>
                     <div className="flex flex-wrap gap-1.5 mb-2">
-                      {(task.tags || []).map((tag: string) => (
-                        <span key={tag} className="px-2 py-1 bg-fuchsia-500/10 text-fuchsia-400 border border-fuchsia-500/30 rounded text-[10px] font-mono flex items-center gap-1 uppercase tracking-wider">
-                          {tag}
-                          <button onClick={() => handleUpdate('tags', task.tags.filter((t: string) => t !== tag))} className="hover:text-red-400 ml-1">&times;</button>
-                        </span>
-                      ))}
+                      {(task.tags || []).map((rawTag: string) => {
+                        let tagId = rawTag;
+                        if (typeof rawTag === 'string' && rawTag.startsWith('{')) {
+                          try { tagId = JSON.parse(rawTag).id || rawTag; } catch(e) {}
+                        }
+                        const tagObj = availableTags?.find(t => t.id === tagId) || { id: tagId, name: tagId, color: getTagColor(tagId).bg };
+                        return (
+                          <span key={rawTag} className="px-2 py-1 rounded text-[10px] font-mono flex items-center gap-1 uppercase tracking-wider" style={{ backgroundColor: `${tagObj.color}15`, color: tagObj.color, border: `1px solid ${tagObj.color}40` }}>
+                            {tagObj.name}
+                            <button onClick={() => handleUpdate('tags', task.tags.filter((t: string) => t !== rawTag))} className="hover:text-white ml-1 opacity-70 hover:opacity-100">&times;</button>
+                          </span>
+                        );
+                      })}
                     </div>
                     <select 
                       value="" 
                       onChange={(e) => {
                         if (!e.target.value) return;
+                        const val = e.target.value;
                         const currentTags = task.tags || [];
-                        if (!currentTags.includes(e.target.value)) handleUpdate('tags', [...currentTags, e.target.value]);
+                        // Clean existing tags to prevent duplicates and legacy corruption
+                        const cleanedTags = currentTags.map((t: string) => {
+                          if (typeof t === 'string' && t.startsWith('{')) {
+                            try { return JSON.parse(t).id; } catch(err) { return t; }
+                          }
+                          return t;
+                        });
+                        if (!cleanedTags.includes(val)) handleUpdate('tags', [...cleanedTags, val]);
                       }}
                       className="w-full bg-black/50 border border-gray-800 rounded-lg px-3 py-2 text-gray-400 font-mono text-sm focus:outline-none hover:border-gray-700 transition-colors cursor-pointer"
                     >
                       <option value="">+ Add Tag</option>
-                      {availableTags.filter(t => !(task.tags || []).includes(t)).map(t => (
-                        <option key={t} value={t}>{t}</option>
+                      {availableTags?.filter(t => {
+                        const currentCleaned = (task.tags || []).map((ct: string) => {
+                          if (typeof ct === 'string' && ct.startsWith('{')) {
+                            try { return JSON.parse(ct).id; } catch(e) { return ct; }
+                          }
+                          return ct;
+                        });
+                        return !currentCleaned.includes(t.id);
+                      }).map(t => (
+                        <option key={t.id} value={t.id}>{t.name}</option>
                       ))}
                     </select>
                   </div>
@@ -360,7 +417,7 @@
     onDockToggle, onMakeSecondary, contextWorkspaceId, contextAppId,
     contextAppName, contextRecordId, contextRecordTitle, currentWorkspaceSlug
   }) => {
-    const { user } = useAuth();
+    const { user, organization } = useAuth(); // ⚡ Destructure organization
     const [isHovered, setIsHovered] = useState(false);
     const [isAnimating, setIsAnimating] = useState(false);
     const [isExpanded, setIsExpanded] = useState(false);
@@ -370,23 +427,30 @@
     
     // ⚡ NEW: User Custom Colors
     const [userNavColors, setUserNavColors] = useState<Record<string, string>>({});
+    const [isColorLoaded, setIsColorLoaded] = useState(false); // Track color loading
 
     // ⚡ FETCH: LeftSlidePanel Colors (Inherits from BottomNav settings)
     useEffect(() => {
       const fetchUserPreferences = async () => {
         const userId = user?.id || (user as any)?.uid;
-        if (!userId) return;
+        if (!userId || !organization?.id) {
+          setIsColorLoaded(true);
+          return;
+        }
         try {
           const { data, error } = await supabase.schema('app_private')
             .from('user_preferences')
             .select('nav_colors')
             .eq('user_id', userId)
+            .eq('organization_id', organization.id) // ⚡ Scope to active org
             .maybeSingle();
             
           if (error) console.error('[LeftSlidePanel] Error fetching colors:', error);
           if (data?.nav_colors) setUserNavColors(data.nav_colors);
         } catch (err) {
           console.error('[LeftSlidePanel] Caught error fetching colors:', err);
+        } finally {
+          setIsColorLoaded(true);
         }
       };
       fetchUserPreferences();
@@ -457,11 +521,11 @@
       }
     }, [dockedPanels, activePanel]);
 
-    const panelWidth = isExpanded ? 760 : 380;
+    const panelWidth = isExpanded ? 836 : 418;
     const isFrontExpanded = Object.values(leftPanelStates || {}).includes('expanded');
-    const expansionOffset = (stackIndex > 0 && isFrontExpanded) ? 380 : 0;
+    const expansionOffset = (stackIndex > 0 && isFrontExpanded) ? 418 : 0;
     const baseOffset = (stackIndex * 48) + (isHovered && stackIndex > 0 ? 24 : 0);
-    const sideBySidePos = 380 + (isFrontExpanded ? 380 : 0);
+    const sideBySidePos = 418 + (isFrontExpanded ? 418 : 0);
     
     // ⚡ FIX: Removed the buggy + baseOffset so they sit perfectly flush
     const leftPos = isSideBySide ? `${sideBySidePos}px` : `${baseOffset + expansionOffset}px`;
@@ -545,6 +609,7 @@
     }, [onClose]);
 
     if (!activePanel) return null;
+    if (!isColorLoaded) return null;
 
     if (isDocked) {
       const combinedDocked = Array.from(new Set([...(dockedPanels || []), ...globalDocked]));
@@ -728,6 +793,7 @@
     created_at: string; updated_at: string; record_id?: string | null; record_title?: string | null; app_name?: string | null;
   }
 
+  let currentOrgCacheId: string | null = null;
   let isTasksCached = { mine: false, delegated: false };
   let globalTasksCache: { mine: Task[]; delegated: Task[] } = { mine: [], delegated: [] };
 
@@ -751,17 +817,199 @@
       { id: 'completed', name: 'Completed', type: 'default', color: '#4ade80' },
       { id: 'cancelled', name: 'Cancelled', type: 'default', color: '#6b7280' }
     ]);
-    const [availableTags, setAvailableTags] = useState<string[]>([]);
+    const [availablePriorities, setAvailablePriorities] = useState([
+      { id: 'low', name: 'Low', type: 'default', color: '#9ca3af' },
+      { id: 'medium', name: 'Medium', type: 'default', color: '#22d3ee' },
+      { id: 'high', name: 'High', type: 'default', color: '#f97316' },
+      { id: 'urgent', name: 'Urgent', type: 'default', color: '#ef4444' }
+    ]);
+    const [availableTags, setAvailableTags] = useState<any[]>([]);
     
+    // ⚡ NEW UI STATES FOR INLINE EDITING
+    const [expandedTasks, setExpandedTasks] = useState<Record<string, boolean>>({});
+    const [activeTaskTags, setActiveTaskTags] = useState<Record<string, string>>({});
+    const [taskColorMode, setTaskColorMode] = useState<'tags' | 'status' | 'priority'>(() => {
+      return (localStorage.getItem('acore_task_color_mode') as 'tags' | 'status' | 'priority') || 'tags';
+    });
+
+    // ⚡ NEW FILTER STATES
+    const [activeFilterCategory, setActiveFilterCategory] = useState<'statuses' | 'tags' | 'priorities'>('statuses');
+    const [statusFilters, setStatusFilters] = useState<string[]>([]);
+    const [tagFilters, setTagFilters] = useState<string[]>([]); 
+    const [priorityFilters, setPriorityFilters] = useState<string[]>([]);
+
+    // ⚡ NEW: Drag-to-Scroll & Cover-Flow Logic for Tags
+    const tagsScrollRef = React.useRef<HTMLDivElement>(null);
+    const [isDraggingTags, setIsDraggingTags] = useState(false);
+    const [startX, setStartX] = useState(0);
+    const [scrollLeft, setScrollLeft] = useState(0);
+
+    const handleMouseDownTags = (e: React.MouseEvent) => {
+      if (!tagsScrollRef.current) return;
+      setIsDraggingTags(true);
+      setStartX(e.pageX - tagsScrollRef.current.offsetLeft);
+      setScrollLeft(tagsScrollRef.current.scrollLeft);
+    };
+    const handleMouseLeaveTags = () => setIsDraggingTags(false);
+    const handleMouseUpTags = () => setIsDraggingTags(false);
+    const handleMouseMoveTags = (e: React.MouseEvent) => {
+      if (!isDraggingTags || !tagsScrollRef.current) return;
+      e.preventDefault();
+      const x = e.pageX - tagsScrollRef.current.offsetLeft;
+      const walk = (x - startX) * 2; 
+      tagsScrollRef.current.scrollLeft = scrollLeft - walk;
+    };
+
+    const updateCarouselVisuals = useCallback(() => {
+      if (!tagsScrollRef.current) return;
+      const container = tagsScrollRef.current;
+      const containerCenter = container.scrollLeft + container.clientWidth / 2;
+      
+      Array.from(container.children).forEach((child: any) => {
+        const childCenter = child.offsetLeft + (child.clientWidth / 2);
+        const centerDiff = childCenter - containerCenter;
+        const absDiff = Math.abs(centerDiff);
+        
+        // Match the sizing from TasksView mapping
+        const offset = centerDiff / 170; 
+        const absOffset = Math.abs(offset);
+        
+        const translateZ = -absOffset * 60;
+        const rotateY = offset * -35; 
+        const translateX = offset === 0 ? 0 : (offset > 0 ? -1 : 1) * (absOffset * 55);
+        
+        const scale = Math.max(0.75, 1 - absOffset * 0.1);
+        const opacity = Math.max(0, 1 - (absOffset * 0.35)); 
+        const zIndex = Math.round(100 - absOffset * 10);
+        
+        const isSelected = child.dataset.selected === 'true';
+        const yOffset = isSelected ? -10 : 0;
+        const scaleMult = isSelected ? 1.05 : 1;
+
+        child.style.transform = `perspective(1000px) translateX(${translateX}px) translateY(${yOffset}px) translateZ(${translateZ}px) rotateY(${rotateY}deg) scale(${scale * scaleMult})`;
+        child.style.opacity = opacity.toString();
+        child.style.zIndex = zIndex.toString();
+        child.style.filter = `brightness(${Math.max(0.3, 1 - absOffset * 0.25)})`;
+      });
+    }, []);
+
+    const handleCarouselScroll = () => {
+      updateCarouselVisuals();
+      const container = tagsScrollRef.current;
+      if (!container || isDraggingTags) return;
+      
+      const setWidth = container.scrollWidth / 9;
+      if (setWidth === 0) return;
+
+      if (container.scrollLeft <= setWidth * 2) {
+        container.style.scrollBehavior = 'auto';
+        container.scrollLeft += setWidth * 3;
+        requestAnimationFrame(() => { if (container) container.style.scrollBehavior = 'smooth'; });
+      } else if (container.scrollLeft >= setWidth * 7) {
+        container.style.scrollBehavior = 'auto';
+        container.scrollLeft -= setWidth * 3;
+        requestAnimationFrame(() => { if (container) container.style.scrollBehavior = 'smooth'; });
+      }
+    };
+
+    // Momentum Desktop Scrolling
+    useEffect(() => {
+      const container = tagsScrollRef.current;
+      if (!container) return;
+      const handleWheel = (e: WheelEvent) => {
+        if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+          e.preventDefault();
+          container.scrollBy({ left: e.deltaY, behavior: 'auto' });
+        }
+      };
+      container.addEventListener('wheel', handleWheel, { passive: false });
+      return () => container.removeEventListener('wheel', handleWheel);
+    }, []);
+
+    useEffect(() => {
+      if (tagsScrollRef.current) {
+        setTimeout(() => {
+          if (tagsScrollRef.current) {
+            const setWidth = tagsScrollRef.current.scrollWidth / 9;
+            tagsScrollRef.current.scrollLeft = (setWidth * 4) + (setWidth / 2) - (tagsScrollRef.current.clientWidth / 2);
+            updateCarouselVisuals();
+          }
+        }, 50);
+      }
+    }, [activeFilterCategory, availableStatuses, availableTags, availablePriorities]);
+
+    useEffect(() => {
+      updateCarouselVisuals();
+      window.addEventListener('resize', updateCarouselVisuals);
+      return () => window.removeEventListener('resize', updateCarouselVisuals);
+    }, [updateCarouselVisuals]);
+
+
+    const toggleTaskExpand = (taskId: string) => setExpandedTasks(prev => ({ ...prev, [taskId]: !prev[taskId] }));
+
+    const hexToRgb = (hex: string) => {
+      const r = parseInt(hex.slice(1, 3), 16) || 0;
+      const g = parseInt(hex.slice(3, 5), 16) || 0;
+      const b = parseInt(hex.slice(5, 7), 16) || 0;
+      return `${r}, ${g}, ${b}`;
+    };
+
+    const getPriorityInfo = (priorityId: string) => {
+      const p = availablePriorities.find(p => p.id === priorityId);
+      const color = p ? p.color : '#9ca3af';
+      return { color, rgb: hexToRgb(color), name: p ? p.name : priorityId };
+    };
+
+    const getPriorityStyle = (priorityId: string): React.CSSProperties => {
+      const { color, rgb } = getPriorityInfo(priorityId);
+      return { backgroundColor: `rgba(${rgb}, 0.2)`, color: color, borderColor: `rgba(${rgb}, 0.4)`, boxShadow: `0 0 8px rgba(${rgb}, 0.3)` };
+    };
+
+    const handleUpdateTaskDetail = async (taskId: string, field: string, value: any) => {
+      try {
+        setTasks(prev => prev.map(t => t.id === taskId ? { ...t, [field]: value } : t));
+        await supabase.schema('app_private').from('tasks').update({ [field]: value, updated_at: new Date().toISOString() }).eq('id', taskId);
+        globalTasksCache[taskFilter] = globalTasksCache[taskFilter].map(t => t.id === taskId ? { ...t, [field]: value } : t);
+        window.dispatchEvent(new CustomEvent('refreshTasks'));
+      } catch (err) { console.error(`Error updating task ${field}:`, err); }
+    };
+
+    const handleUpdateDueDate = async (task: any, newDateStr: string, newTimeStr: string) => {
+      let newIso = null;
+      if (newDateStr) {
+        const timeStr = newTimeStr || '23:59';
+        const d = new Date(`${newDateStr}T${timeStr}`);
+        if (!isNaN(d.getTime())) newIso = d.toISOString();
+      }
+      await handleUpdateTaskDetail(task.id, 'due_date', newIso);
+    };
+
     useEffect(() => {
       const fetchSettings = async () => {
-        if (!userId) return;
-        const { data } = await supabase.schema('app_private').from('user_settings').select('custom_statuses, tags').eq('user_id', userId).maybeSingle();
+        if (!organization?.id) return;
+        const { data } = await supabase.schema('app_private').from('organizations').select('custom_statuses, custom_priorities, tags').eq('id', organization.id).maybeSingle();
         if (data?.custom_statuses) setAvailableStatuses(data.custom_statuses);
-        if (data?.tags) setAvailableTags(data.tags);
+        if (data?.custom_priorities) setAvailablePriorities(data.custom_priorities);
+        if (data?.tags) {
+          const formattedTags = data.tags.map((t: any) => {
+            if (typeof t === 'string') {
+              try { const parsed = JSON.parse(t); if (parsed && typeof parsed === 'object' && parsed.id) return parsed; } catch (e) {}
+              return { id: t.toLowerCase().replace(/\s+/g, '_'), name: t, color: getTagColor(t).bg };
+            }
+            return t;
+          });
+          setAvailableTags(formattedTags);
+        }
       };
       fetchSettings();
-    }, [userId]);
+    }, [userId, organization?.id]);
+
+    // ⚡ WIPE CACHE IF ORGANIZATION CHANGES TO PREVENT DATA BLEED
+    if (currentOrgCacheId !== organization?.id) {
+      currentOrgCacheId = organization?.id || null;
+      isTasksCached = { mine: false, delegated: false };
+      globalTasksCache = { mine: [], delegated: [] };
+    }
 
     const [taskFilter, setTaskFilter] = useState<TaskFilterType>('mine');
     const [tasks, setTasks] = useState<Task[]>(() => globalTasksCache[taskFilter] || []);
@@ -791,13 +1039,15 @@
     const [delegatedCount, setDelegatedCount] = useState(0);
 
     const refreshTaskCounts = useCallback(async () => {
-      if (!userId) return;
+      if (!userId || !organization?.id) return;
       const { count: mCount } = await supabase.schema('app_private').from('tasks').select('*', { count: 'exact', head: true })
+        .eq('organization_id', organization.id) // ⚡ Scope count to active org
         .or(`assigned_to.eq.${userId},and(created_by.eq.${userId},assigned_to.is.null)`);
       const { count: dCount } = await supabase.schema('app_private').from('tasks').select('*', { count: 'exact', head: true })
+        .eq('organization_id', organization.id) // ⚡ Scope count to active org
         .eq('created_by', userId).neq('assigned_to', userId);
       setMineCount(mCount || 0); setDelegatedCount(dCount || 0);
-    }, [userId]);
+    }, [userId, organization?.id]);
 
     useEffect(() => { refreshTaskCounts(); }, [refreshTaskCounts]);
     
@@ -832,11 +1082,15 @@
     }, [organization?.id]);
 
     const fetchTasks = useCallback(async (offset: number = 0, isBackground: boolean = false) => {
-      if (!userId) { setLoading(false); return; }
+      if (!userId || !organization?.id) { setLoading(false); return; }
       try {
         if (!isBackground) setLoading(true);
         setErrorMsg(null);
-        let query = supabase.schema('app_private').from('tasks').select('*');
+        let query = supabase.schema('app_private')
+          .from('tasks')
+          .select('*')
+          .eq('organization_id', organization.id); // ⚡ Scope list to active org
+          
         if (taskFilter === 'mine') query = query.or(`assigned_to.eq.${userId},and(created_by.eq.${userId},assigned_to.is.null)`);
         else query = query.eq('created_by', userId).neq('assigned_to', userId);
 
@@ -1025,22 +1279,133 @@
             </button>
           </div>
 
-          <div className="grid grid-cols-3 gap-2">
-            <div className="bg-gray-900/50 border border-gray-800 rounded-lg p-3 text-center">
-              <p className="text-2xl font-bold text-white font-mono">{tasks.length}</p>
-              <p className="text-xs text-gray-500 font-mono">Total</p>
-            </div>
-            <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 text-center">
-              <p className="text-2xl font-bold text-yellow-400 font-mono">{tasks.filter(t => t.status === 'pending').length}</p>
-              <p className="text-xs text-gray-500 font-mono">Pending</p>
-            </div>
-            <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-center">
-              <p className="text-2xl font-bold text-red-400 font-mono">{tasks.filter(t => t.priority === 'urgent').length}</p>
-              <p className="text-xs text-gray-500 font-mono">Urgent</p>
-            </div>
+          {/* Category Toggle Switch */}
+          <div className="flex bg-black/50 border border-gray-800 rounded-lg p-1 shadow-inner h-[32px] items-center mt-2">
+            {(['statuses', 'tags', 'priorities'] as const).map(cat => {
+              const isActive = activeFilterCategory === cat;
+              const filterCount = cat === 'statuses' ? statusFilters.length : cat === 'tags' ? tagFilters.length : priorityFilters.length;
+              
+              return (
+                <button
+                  key={cat}
+                  onClick={() => setActiveFilterCategory(cat)}
+                  className={`relative flex-1 py-1 rounded-md font-mono text-[10px] uppercase tracking-wider transition-all h-full flex items-center justify-center ${
+                    isActive 
+                      ? 'bg-white/10 text-white shadow-sm font-bold border border-white/20' 
+                      : 'text-gray-500 hover:text-gray-300 hover:bg-white/5 border border-transparent'
+                  }`}
+                  style={isActive ? { color: accentColor, borderColor: `rgba(${accentRgb}, 0.5)`, backgroundColor: `rgba(${accentRgb}, 0.15)` } : {}}
+                >
+                  {cat}
+                  {filterCount > 0 && (
+                    <span 
+                      className="absolute -top-3 -right-1 px-1 py-0.5 rounded border bg-black text-[8px] font-bold pointer-events-none leading-none z-10"
+                      style={{ color: accentColor, borderColor: accentColor, boxShadow: `0 0 8px rgba(${accentRgb}, 0.3)` }}
+                    >
+                      {filterCount}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Filter Cards (Carousel) */}
+          <div 
+            ref={tagsScrollRef}
+            onScroll={handleCarouselScroll}
+            onMouseDown={handleMouseDownTags}
+            onMouseLeave={handleMouseLeaveTags}
+            onMouseUp={handleMouseUpTags}
+            onMouseMove={handleMouseMoveTags}
+            className="flex overflow-x-auto gap-6 py-8 px-[calc(50%-75px)] no-scrollbar snap-x snap-mandatory cursor-grab active:cursor-grabbing"
+            style={{ 
+              scrollBehavior: 'smooth',
+              maskImage: 'linear-gradient(to right, transparent, black 15%, black 85%, transparent)', 
+              WebkitMaskImage: 'linear-gradient(to right, transparent, black 15%, black 85%, transparent)' 
+            }}
+          >
+            {(() => {
+              let activeItems: any[] = [];
+              if (activeFilterCategory === 'statuses') activeItems = availableStatuses.map(s => ({ ...s, type: 'status' }));
+              else if (activeFilterCategory === 'tags') activeItems = availableTags.map(t => ({ ...t, type: 'tag' }));
+              else if (activeFilterCategory === 'priorities') activeItems = availablePriorities.map(p => ({ ...p, type: 'priority' }));
+
+              if (activeItems.length === 0) return null;
+
+              // Create 9 identical sets for seamless 3D infinite scrolling
+              const infiniteItems = Array(9).fill(activeItems).flat().map((item, idx) => ({ ...item, _loopId: idx }));
+
+              return infiniteItems.map(item => {
+                const count = tasks.filter(t => {
+                  // Base View Mode logic - kept identical to LeftSlidePanel requirements
+                  if (taskFilter === 'mine' && !(t.assigned_to === userId || (t.created_by === userId && !t.assigned_to))) return false;
+                  if (taskFilter === 'delegated' && !(t.created_by === userId && t.assigned_to !== userId)) return false;
+
+                  // Cross-Category Filtering
+                  if (item.type !== 'status' && statusFilters.length > 0 && !statusFilters.includes(t.status)) return false;
+                  if (item.type !== 'priority' && priorityFilters.length > 0 && !priorityFilters.includes(t.priority)) return false;
+                  if (item.type !== 'tag' && tagFilters.length > 0 && !tagFilters.some(tf => (t.tags || []).includes(tf))) return false;
+
+                  // Match the specific item itself
+                  if (item.type === 'status' && t.status !== item.id) return false;
+                  if (item.type === 'tag' && !(t.tags || []).includes(item.id)) return false;
+                  if (item.type === 'priority' && t.priority !== item.id) return false;
+
+                  return true;
+                }).length;
+                
+                const rgb = hexToRgb(item.color || '#9ca3af');
+                
+                let isSelected = false;
+                if (item.type === 'status') isSelected = statusFilters.includes(item.id);
+                if (item.type === 'tag') isSelected = tagFilters.includes(item.id);
+                if (item.type === 'priority') isSelected = priorityFilters.includes(item.id);
+
+                const handleClick = () => {
+                  if (item.type === 'status') setStatusFilters(prev => prev.includes(item.id) ? prev.filter(id => id !== item.id) : [...prev, item.id]);
+                  if (item.type === 'tag') setTagFilters(prev => prev.includes(item.id) ? prev.filter(id => id !== item.id) : [...prev, item.id]);
+                  if (item.type === 'priority') setPriorityFilters(prev => prev.includes(item.id) ? prev.filter(id => id !== item.id) : [...prev, item.id]);
+                };
+                
+                return (
+                  <div 
+                    key={item._loopId}
+                    data-selected={isSelected}
+                    onClick={handleClick}
+                    className="snap-center flex-none w-[150px] backdrop-blur-md rounded-xl p-4 relative border cursor-pointer group flex flex-col justify-center items-center text-center will-change-transform"
+                    style={{ 
+                      background: `radial-gradient(circle at center, rgba(0,0,0,0.8) 0%, rgba(${rgb}, 0.25) 100%)`,
+                      borderColor: isSelected ? item.color : `rgba(${rgb}, 0.4)`,
+                      boxShadow: isSelected 
+                        ? `0 0 25px rgba(${rgb}, 0.8), inset 0 0 30px rgba(${rgb}, 0.5)` 
+                        : `0 0 10px rgba(${rgb}, 0.1), inset 0 0 15px rgba(${rgb}, 0.2)`,
+                      transition: 'box-shadow 0.2s, border-color 0.2s, background 0.2s',
+                    }}
+                  >
+                    {/* Corner accents (Brackets) */}
+                    <div className="absolute -top-[1px] -left-[1px] w-3 h-3 border-t-2 border-l-2 rounded-tl-xl" style={{ borderColor: isSelected ? '#fff' : item.color }} />
+                    <div className="absolute -top-[1px] -right-[1px] w-3 h-3 border-t-2 border-r-2 rounded-tr-xl" style={{ borderColor: isSelected ? '#fff' : item.color }} />
+                    <div className="absolute -bottom-[1px] -left-[1px] w-3 h-3 border-b-2 border-l-2 rounded-bl-xl" style={{ borderColor: isSelected ? '#fff' : item.color }} />
+                    <div className="absolute -bottom-[1px] -right-[1px] w-3 h-3 border-b-2 border-r-2 rounded-br-xl" style={{ borderColor: isSelected ? '#fff' : item.color }} />
+                    
+                    <p className="text-xs font-mono uppercase tracking-wider truncate w-full drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" 
+                       style={{ color: isSelected ? '#fff' : `rgba(${rgb}, 0.8)` }} title={item.name}>
+                      {item.name}
+                    </p>
+                    <p 
+                      className="text-3xl font-bold mt-2 font-mono drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]" 
+                      style={{ color: isSelected ? '#fff' : item.color, textShadow: isSelected ? `0 0 12px rgba(255,255,255,0.5)` : `0 0 8px rgba(${rgb}, 0.5)` }}
+                    >
+                      {count}
+                    </p>
+                  </div>
+                );
+              });
+            })()}
           </div>
           
-          <div className="space-y-2">
+          <div className="space-y-2 relative">
             {tasks.length === 0 ? (
               <div className="text-center py-8 text-gray-500 font-mono text-sm">
                 {taskFilter === 'mine' ? 'No tasks yet. Add your first task above!' : 'No tasks delegated to you.'}
@@ -1048,20 +1413,35 @@
             ) : (
               <>
                 {(() => {
+                  let currentGroup: string | null = null;
                   const priorityWeight: Record<string, number> = { urgent: 4, high: 3, medium: 2, low: 1 };
-                  const filtered = tasks.filter(t => taskFilter === 'mine' ? (t.assigned_to === userId || (t.created_by === userId && !t.assigned_to)) : (t.created_by === userId && t.assigned_to !== userId));
+                  
+                  // ⚡ MULTI-FILTER ENGINE
+                  const filtered = tasks.filter(t => {
+                    // 1. View Mode Logic
+                    if (taskFilter === 'mine' && !(t.assigned_to === userId || (t.created_by === userId && !t.assigned_to))) return false;
+                    if (taskFilter === 'delegated' && !(t.created_by === userId && t.assigned_to !== userId)) return false;
+
+                    // 2. Cross-Category Filters
+                    if (statusFilters.length > 0 && !statusFilters.includes(t.status)) return false;
+                    if (priorityFilters.length > 0 && !priorityFilters.includes(t.priority)) return false;
+                    if (tagFilters.length > 0) {
+                      const taskTags = t.tags || [];
+                      if (!tagFilters.some(tf => taskTags.includes(tf))) return false;
+                    }
+
+                    return true;
+                  });
                   
                   // Multi-level sort: Due Date -> Priority -> Created Date
                   return [...filtered].sort((a, b) => {
-                    // ⚡ FORCE COMPLETED TASKS TO BOTTOM
                     if (a.status === 'completed' && b.status !== 'completed') return 1;
                     if (b.status === 'completed' && a.status !== 'completed') return -1;
                     
-                    // If both are completed, sort them by most recently completed first
                     if (a.status === 'completed' && b.status === 'completed') {
                       const compA = new Date(a.completed_at || 0).getTime();
                       const compB = new Date(b.completed_at || 0).getTime();
-                      if (compA !== compB) return compB - compA; // Descending
+                      if (compA !== compB) return compB - compA; 
                     }
 
                     const dateA = a.due_date ? new Date(a.due_date).getTime() : Infinity;
@@ -1073,131 +1453,366 @@
                     if (prioA !== prioB) return prioB - prioA;
                     
                     return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
-                  });
-                })().map((task) => (
-                  <div 
-                    key={task.id} 
-                    onClick={() => onViewTask(task.id)}
-                    className={`p-3 bg-gray-900/50 border border-gray-800 rounded-lg left-panel-theme-border-hover left-panel-theme-bg-hover transition-all cursor-pointer group ${task.status === 'completed' ? 'opacity-60' : ''}`}
-                  >
-                    <div className="flex items-start gap-3">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation(); // Prevent row click when checking the box
-                          handleUpdateStatus(task.id, task.status === 'completed' ? 'pending' : 'completed');
-                        }}
-                        className={`w-5 h-5 rounded border flex items-center justify-center mt-0.5 transition-all ${
-                          task.status === 'completed' ? '' : 'border-gray-600 left-panel-theme-border-hover'
-                        }`}
-                        style={task.status === 'completed' ? { backgroundColor: accentColor, borderColor: accentColor } : {}}
-                      >
-                        {task.status === 'completed' && <CheckIcon size={12} className="text-black" />}
-                      </button>
-                      <div className={`w-2 h-2 rounded-full mt-1.5 ${getPriorityColor(task.priority)}`} />
-                      <div className="flex-1 min-w-0">
-                        <p className={`text-sm font-mono transition-colors ${task.status === 'completed' ? 'line-through text-gray-500' : 'text-white left-panel-group-hover-theme-text'}`}>
-                          {task.title}
-                        </p>
-                        {task.record_id && task.app_name && (
-                          <a 
-                            href={`/app/${currentWorkspaceSlug || 'workspace'}/${task.app_name.toLowerCase().replace(/\s+/g, '-')}/${task.record_id}`}
-                            target="_blank" rel="noopener noreferrer"
-                            className="mt-1.5 inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-mono bg-white/5 border border-white/10 text-gray-400 left-panel-theme-text-hover left-panel-theme-border-hover transition-all"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <ExternalLinkIcon size={10} />
-                            <span className="truncate max-w-[180px]">{task.app_name}: {task.record_title || task.record_id.substring(0, 8)}</span>
-                          </a>
+                  }).map((task) => {
+                    const formattedDate = formatDueDate(task.due_date);
+                    const isPastDue = task.due_date && new Date(task.due_date).getTime() < Date.now() && task.status !== 'completed';
+                    
+                    let groupName = 'Other';
+                    if (task.status === 'completed') {
+                      groupName = 'Completed';
+                    } else {
+                      if (!task.due_date) {
+                        groupName = 'No Due Date';
+                      } else {
+                        const due = new Date(task.due_date);
+                        const today = new Date();
+                        today.setHours(0, 0, 0, 0);
+                        const tomorrow = new Date(today);
+                        tomorrow.setDate(tomorrow.getDate() + 1);
+                        const taskDate = new Date(due);
+                        taskDate.setHours(0, 0, 0, 0);
+
+                        if (taskDate.getTime() < today.getTime()) groupName = 'Overdue';
+                        else if (taskDate.getTime() === today.getTime()) groupName = 'Today';
+                        else if (taskDate.getTime() === tomorrow.getTime()) groupName = 'Tomorrow';
+                        else groupName = 'Upcoming';
+                      }
+                    }
+
+                    const isNewGroup = groupName !== currentGroup;
+                    if (isNewGroup) currentGroup = groupName;
+
+                    // ⚡ Clean legacy JSON tags for the active tag ID
+                    let activeTagId = activeTaskTags[task.id] || (task.tags && task.tags[0]) || null;
+                    if (typeof activeTagId === 'string' && activeTagId.startsWith('{')) {
+                      try { activeTagId = JSON.parse(activeTagId).id || activeTagId; } catch(e) {}
+                    }
+                    const activeTagObj = activeTagId ? (availableTags.find(t => t.id === activeTagId) || { name: activeTagId, color: getTagColor(activeTagId).bg }) : null;
+
+                    let activeColorHex = '#9ca3af';
+                    if (taskColorMode === 'status') {
+                      activeColorHex = getStatusColor(task.status);
+                    } else if (taskColorMode === 'priority') {
+                      activeColorHex = getPriorityInfo(task.priority).color;
+                    } else {
+                      activeColorHex = activeTagObj ? activeTagObj.color : getPriorityInfo(task.priority).color;
+                    }
+                    const activeRgb = hexToRgb(activeColorHex);
+
+                    const defaultBorder = `rgba(${activeRgb}, 0.6)`; 
+                    const defaultBg = `rgba(${activeRgb}, 0.05)`;
+                    const hoverBorder = `rgba(${activeRgb}, 1)`; 
+                    const hoverBg = `rgba(${activeRgb}, 0.12)`;
+                    const hoverShadow = `0 0 35px rgba(${activeRgb}, 0.5)`;
+
+                    return (
+                      <React.Fragment key={task.id}>
+                        {isNewGroup && (
+                          <div className="flex items-center gap-3 mt-7 mb-3 ml-1 opacity-90 animate-in fade-in duration-300">
+                            <h4 className="text-[14px] font-mono font-bold text-gray-400 uppercase tracking-widest whitespace-nowrap"
+                                style={{ color: groupName === 'Overdue' ? '#ef4444' : groupName === 'Today' ? '#f97316' : undefined }}>
+                              {groupName}
+                            </h4>
+                            <div className="h-px flex-1 mt-0.5" style={{ background: `linear-gradient(90deg, rgba(75,85,99,0.8), transparent)` }}></div>
+                          </div>
                         )}
-                        <div className="flex items-center gap-2 mt-1 flex-wrap">
-                          <select
-                            value={task.status}
-                            onChange={(e) => {
-                              e.stopPropagation();
-                              handleUpdateStatus(task.id, e.target.value as any);
-                            }}
-                            onClick={(e) => e.stopPropagation()}
-                            className="bg-transparent focus:outline-none cursor-pointer appearance-none text-xs font-mono font-bold w-fit"
-                            style={{ color: getStatusColor(task.status) }}
-                            title="Change Status"
-                          >
-                            {availableStatuses.map(status => (
-                              <option key={status.id} value={status.id} className="bg-gray-900 font-bold" style={{ color: status.color || '#ffffff' }}>{status.name}</option>
-                            ))}
-                          </select>
+                        <div
+                          id={`task-${task.id}`}
+                          onClick={() => onViewTask(task.id)}
+                          className={`p-3 pl-8 transition-all duration-300 ease-out group rounded-xl border cursor-pointer relative z-10 hover:z-40 hover:scale-[1.015] hover:-translate-y-1 ${
+                            task.status === 'completed' ? 'opacity-60 border-gray-800 bg-black/40 hover:bg-white/5' : ''
+                          }`}
+                          style={task.status !== 'completed' ? { borderColor: defaultBorder, backgroundColor: defaultBg } : {}}
+                          onMouseEnter={(e) => {
+                            if (task.status !== 'completed') {
+                              e.currentTarget.style.borderColor = hoverBorder;
+                              e.currentTarget.style.backgroundColor = hoverBg;
+                              e.currentTarget.style.boxShadow = hoverShadow;
+                            }
+                          }}
+                          onMouseLeave={(e) => {
+                            if (task.status !== 'completed') {
+                              e.currentTarget.style.borderColor = defaultBorder;
+                              e.currentTarget.style.backgroundColor = defaultBg;
+                              e.currentTarget.style.boxShadow = 'none';
+                            }
+                          }}
+                        >
+                          <div className="flex items-start gap-3 sm:gap-4 relative z-10">
+                            {/* Checkbox */}
+                            <button 
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleToggleStatus(e, task);
+                              }}
+                              className={`mt-0.5 w-7 h-7 rounded border-2 flex items-center justify-center transition-all flex-shrink-0 ${
+                              task.status === 'completed'
+                                ? 'bg-green-500/30 border-green-500 shadow-[0_0_8px_rgba(34,197,94,0.4)]'
+                                : 'border-gray-600 hover:border-cyan-500 hover:shadow-[0_0_8px_rgba(0,255,255,0.3)]'
+                            }`}>
+                              {task.status === 'completed' && (
+                                <CheckIcon size={14} className="text-green-400" />
+                              )}
+                            </button>
 
-                          {/* Completed Timestamp Indicator */}
-                          {task.status === 'completed' && task.completed_at && (
-                            <span className="text-[9px] text-green-500/70 font-mono tracking-widest uppercase whitespace-nowrap">
-                              ✓ {new Date(task.completed_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
-                            </span>
-                          )}
+                            {/* Task Content */}
+                            <div className="flex-1 min-w-0">
+                              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 mb-2">
+                                <div className="flex-1 min-w-0 flex items-start gap-2">
+                                  <button 
+                                    onClick={(e) => { e.stopPropagation(); toggleTaskExpand(task.id); }}
+                                    className="mt-0.5 text-gray-500 hover:text-cyan-400 transition-colors flex-shrink-0"
+                                  >
+                                    <ChevronRightIcon size={16} className={`transition-transform duration-200 ${expandedTasks[task.id] ? 'rotate-90' : ''}`} />
+                                  </button>
+                                  <div className="flex-1 min-w-0 flex flex-col gap-1">
+                                    <h3 className={`font-mono font-medium ${task.status === 'completed' ? 'text-gray-500 line-through' : 'text-white'}`}>
+                                      <InlineEdit 
+                                        value={task.title} 
+                                        onSave={(val) => handleUpdateTaskDetail(task.id, 'title', val)} 
+                                        className="max-w-full whitespace-normal break-words sm:truncate inline-block leading-snug"
+                                        inputClassName="min-w-[150px] max-w-full text-xs"
+                                      />
+                                    </h3>
+                                    {/* App Source Link */}
+                                    {task.app_name && (
+                                      <span className="flex items-center gap-1 w-fit px-1.5 py-0.5 rounded text-[8px] bg-black/40 border border-gray-700 text-gray-400 uppercase tracking-widest whitespace-nowrap mt-1">
+                                        <TaskIcon size={10} />
+                                        {task.app_name}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
 
-                          {task.due_date && (
-                            <>
-                              <span className="text-xs text-gray-700">&bull;</span>
-                              <span className={`text-xs font-mono flex items-center gap-1 ${
-                                new Date(task.due_date).getTime() < Date.now() && task.status !== 'completed' 
-                                  ? 'text-red-500 font-bold' 
-                                  : formatDueDate(task.due_date) === 'Today' ? 'text-red-400' : formatDueDate(task.due_date) === 'Tomorrow' ? 'text-orange-400' : 'text-gray-500'
-                              }`}>
-                                {new Date(task.due_date).getTime() < Date.now() && task.status !== 'completed' && <span className="uppercase tracking-widest text-[9px] border border-red-500/50 bg-red-500/10 px-1 rounded animate-pulse">Overdue</span>}
-                                {formatDueDate(task.due_date)}
-                                {task.recurrence && task.recurrence !== 'none' && (
-                                  <span className="opacity-70 text-[10px] ml-1 bg-black/40 px-1 rounded border border-gray-700" title={`Repeats ${formatRecurrenceDisplay(task.recurrence)}`}>
-                                    ↻ {formatRecurrenceDisplay(task.recurrence)}
+                                <div className="flex items-center gap-2 shrink-0">
+                                  <button 
+                                    onClick={(e) => { e.stopPropagation(); handleDeleteTask(task.id); }} 
+                                    className="opacity-0 group-hover:opacity-100 p-1 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded transition-all"
+                                    title="Delete Task"
+                                  >
+                                    <TrashIcon size={14} />
+                                  </button>
+                                </div>
+                              </div>
+
+                              {expandedTasks[task.id] && (
+                                <div className="text-xs text-gray-400 mb-3 ml-6 font-mono break-words flex items-start animate-in slide-in-from-top-2 duration-200" onClick={(e) => e.stopPropagation()}>
+                                  <InlineEdit 
+                                    value={task.description || ''} 
+                                    onSave={(val) => handleUpdateTaskDetail(task.id, 'description', val)} 
+                                    placeholder="Click to add description..."
+                                    multiline={true}
+                                    className="!w-auto !block max-w-full"
+                                  />
+                                </div>
+                              )}
+
+                              <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 text-[10px] sm:text-xs font-mono ml-6 mt-2" onClick={(e) => e.stopPropagation()}>
+                                
+                                <div className="flex items-center gap-1 px-1.5 py-1 rounded bg-black/40 border border-gray-800 hover:border-gray-700 transition-colors">
+                                  <select
+                                    value={task.status}
+                                    onChange={(e) => { e.stopPropagation(); handleUpdateStatus(task.id, e.target.value as any); }}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="bg-transparent focus:outline-none cursor-pointer appearance-none font-bold"
+                                    style={{ color: getStatusColor(task.status) }}
+                                  >
+                                    {availableStatuses.map(status => (
+                                      <option key={status.id} value={status.id} className="bg-gray-900 font-bold" style={{ color: status.color || '#ffffff' }}>{status.name}</option>
+                                    ))}
+                                  </select>
+                                </div>
+
+                                {task.status === 'completed' && task.completed_at && (
+                                  <span className="text-[9px] text-green-500/70 font-mono tracking-widest uppercase whitespace-nowrap">
+                                    ✓ {new Date(task.completed_at).toLocaleString('en-US', { month: 'short', day: 'numeric' })}
                                   </span>
                                 )}
-                              </span>
-                            </>
-                          )}
-                          {task.created_by !== userId && (
-                            <>
-                              <span className="text-xs text-gray-700">&bull;</span>
-                              <span className="text-xs font-mono text-fuchsia-400">From: {task.created_by.substring(0, 8)}...</span>
-                            </>
-                          )}
-                          <>
-                            <span className="text-xs text-gray-700">&bull;</span>
-                            <div className="relative inline-flex items-center">
-                              {/* Visual Text (Shrink-wraps exactly to current value) */}
-                              <span className="text-xs font-mono font-bold hover:opacity-80 cursor-pointer" style={{ color: accentColor }}>
-                                To: {task.assigned_to === userId ? 'Me' : (members.find(m => m.id === task.assigned_to)?.name || 'Unknown')}
-                              </span>
-                              {/* Invisible Select overlapping the text exactly */}
-                              <select
-                                value={task.assigned_to} 
-                                onChange={(e) => {
-                                  e.stopPropagation();
-                                  handleReassign(task.id, e.target.value);
-                                }}
-                                onClick={(e) => e.stopPropagation()}
-                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer appearance-none text-xs font-mono font-bold"
-                                title="Change Assignee"
-                              >
-                                <option className="bg-gray-900 text-white text-xs" value={userId}>To: Me</option>
-                                {members.map(m => <option className="bg-gray-900 text-white text-xs" key={m.id} value={m.id}>To: {m.name}</option>)}
-                              </select>
-                            </div>
-                          </>
-                          {(task.tags || []).length > 0 && (
-                            <>
-                              <span className="text-xs text-gray-700">&bull;</span>
-                              <div className="flex flex-wrap gap-1 items-center">
-                                {task.tags.map((tag: string) => (
-                                  <span key={tag} className="px-1.5 py-0.5 bg-fuchsia-500/10 text-fuchsia-400 border border-fuchsia-500/20 rounded text-[9px] font-mono uppercase tracking-wider">
-                                    {tag}
-                                  </span>
-                                ))}
+
+                                <div className="flex items-center gap-1 px-1.5 py-1 rounded bg-black/40 border border-gray-800 hover:border-gray-700 transition-colors">
+                                  <UserIcon size={12} className="text-gray-600" />
+                                  <select
+                                    value={task.assigned_to}
+                                    onChange={(e) => { e.stopPropagation(); handleReassign(task.id, e.target.value); }}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="bg-transparent focus:outline-none cursor-pointer appearance-none text-gray-400 hover:text-white transition-colors max-w-[70px] truncate"
+                                  >
+                                    <option value={userId}>Me</option>
+                                    {members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                                  </select>
+                                </div>
+
+                                <div className={`flex items-center gap-x-1 px-1.5 py-1 rounded border transition-colors ${
+                                  isPastDue ? 'border-red-500/50 bg-red-500/10' :
+                                  formattedDate === 'Today' ? 'bg-black/40 border-red-500/30' : 
+                                  formattedDate === 'Tomorrow' ? 'bg-black/40 border-orange-500/30' : 'bg-black/40 border-gray-800'
+                                }`}>
+                                  <div className="flex items-center gap-1 shrink-0">
+                                    {isPastDue && <span className="text-[9px] font-bold text-red-500 uppercase tracking-widest mr-0.5 animate-pulse">OVERDUE</span>}
+                                    <ClockIcon size={12} className={isPastDue ? 'text-red-500' : formattedDate === 'Today' ? 'text-red-400' : formattedDate === 'Tomorrow' ? 'text-orange-400' : 'text-gray-600'} />
+                                  </div>
+                                  <input
+                                    type="date"
+                                    value={task.due_date ? String(new Date(task.due_date).getFullYear()).padStart(4, '0') + '-' + String(new Date(task.due_date).getMonth() + 1).padStart(2, '0') + '-' + String(new Date(task.due_date).getDate()).padStart(2, '0') : ''}
+                                    onChange={(e) => {
+                                      if (e.target.validity.badInput) return; 
+                                      const newDate = e.target.value;
+                                      const existingTime = task.due_date ? String(new Date(task.due_date).getHours()).padStart(2, '0') + ':' + String(new Date(task.due_date).getMinutes()).padStart(2, '0') : '23:59';
+                                      handleUpdateDueDate(task, newDate, existingTime);
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className={`bg-transparent focus:outline-none cursor-pointer appearance-none font-mono text-[10px] sm:text-xs ${
+                                      isPastDue ? 'text-red-500 font-bold' : formattedDate === 'Today' ? 'text-red-400' : formattedDate === 'Tomorrow' ? 'text-orange-400' : 'text-gray-400'
+                                    } [color-scheme:dark] w-[80px] sm:w-[90px]`}
+                                  />
+                                  {task.due_date && (
+                                    <input
+                                      type="time"
+                                      value={task.due_date ? String(new Date(task.due_date).getHours()).padStart(2, '0') + ':' + String(new Date(task.due_date).getMinutes()).padStart(2, '0') : ''}
+                                      onChange={(e) => {
+                                        if (e.target.validity.badInput) return; 
+                                        const newTime = e.target.value;
+                                        const existingDate = String(new Date(task.due_date).getFullYear()).padStart(4, '0') + '-' + String(new Date(task.due_date).getMonth() + 1).padStart(2, '0') + '-' + String(new Date(task.due_date).getDate()).padStart(2, '0');
+                                        handleUpdateDueDate(task, existingDate, newTime);
+                                      }}
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="bg-transparent focus:outline-none cursor-pointer appearance-none font-mono text-[10px] text-gray-500 [color-scheme:dark] w-[50px] sm:w-[60px]"
+                                    />
+                                  )}
+                                </div>
+
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); handleUpdateTaskDetail(task.id, 'show_on_calendar', !task.show_on_calendar); }}
+                                  className={`flex items-center gap-1 px-1.5 py-1 rounded border transition-colors ${task.show_on_calendar ? 'bg-cyan-500/10 border-cyan-500/40 text-cyan-400' : 'bg-black/40 border-gray-800 text-gray-500'}`}
+                                  title={task.show_on_calendar ? "Visible on Calendar" : "Show on Calendar"}
+                                >
+                                  <CalendarIcon size={12} />
+                                </button>
+
+                                <div className="flex items-center gap-1 px-1.5 py-1 rounded bg-black/40 border border-gray-800 transition-colors">
+                                  <span className="text-gray-600 font-mono text-[10px]" title="Repeat Task">↻</span>
+                                  <select
+                                    value={task.recurrence ? (task.recurrence === 'none' ? 'none' : task.recurrence.split(' ')[1] || 'none') : 'none'}
+                                    onChange={(e) => {
+                                       e.stopPropagation();
+                                       const newType = e.target.value;
+                                       if (newType === 'none') {
+                                         handleUpdateTaskDetail(task.id, 'recurrence', 'none');
+                                       } else {
+                                         const currentInt = task.recurrence && task.recurrence !== 'none' ? task.recurrence.split(' ')[0] : '1';
+                                         handleUpdateTaskDetail(task.id, 'recurrence', `${currentInt} ${newType}`);
+                                       }
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="bg-transparent focus:outline-none cursor-pointer appearance-none text-gray-400 hover:text-white transition-colors text-[10px] font-mono font-bold"
+                                  >
+                                    <option value="none" className="bg-gray-900">Once</option>
+                                    <option value="days" className="bg-gray-900">Days</option>
+                                    <option value="weeks" className="bg-gray-900">Weeks</option>
+                                    <option value="months" className="bg-gray-900">Months</option>
+                                    <option value="years" className="bg-gray-900">Years</option>
+                                  </select>
+                                  
+                                  {task.recurrence && task.recurrence !== 'none' && (
+                                     <>
+                                       <span className="text-gray-600 font-mono text-[9px] ml-1 uppercase tracking-widest">Every:</span>
+                                       <input 
+                                         type="number" min="1" 
+                                         value={task.recurrence.split(' ')[0]} 
+                                         onChange={(e) => {
+                                            const newInt = parseInt(e.target.value) || 1;
+                                            const type = task.recurrence.split(' ')[1] || 'days';
+                                            handleUpdateTaskDetail(task.id, 'recurrence', `${newInt} ${type}`);
+                                         }}
+                                         onClick={(e) => e.stopPropagation()}
+                                         className="w-8 bg-black/50 text-cyan-400 border border-cyan-500/30 rounded focus:border-cyan-500 focus:outline-none text-center text-[10px] font-mono font-bold py-0.5"
+                                       />
+                                     </>
+                                  )}
+                                </div>
+
+                                <div className="ml-auto flex items-center shrink-0">
+                                  <select
+                                    value={task.priority}
+                                    onChange={(e) => { e.stopPropagation(); handleUpdateTaskDetail(task.id, 'priority', e.target.value); }}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="bg-transparent focus:outline-none cursor-pointer appearance-none px-1.5 py-0.5 rounded border text-[9px] font-mono font-bold uppercase w-fit"
+                                    style={getPriorityStyle(task.priority)}
+                                  >
+                                    {availablePriorities.map(p => (
+                                      <option key={p.id} value={p.id} className="bg-gray-900 font-bold" style={{ color: p.color }}>{p.name}</option>
+                                    ))}
+                                  </select>
+                                </div>
+
                               </div>
-                            </>
-                          )}
-                        </div>
+                            </div>
+                          </div>
+
+                          {/* ⚡ Left-Edge Hover Cascade with +X Bubble */}
+                          {task.tags && task.tags.length > 0 && (
+                            <div className="absolute left-[1px] top-[1px] bottom-[1px] flex flex-row z-20 group/cascade rounded-l-[11px] overflow-hidden shadow-[4px_0_10px_rgba(0,0,0,0.3)] bg-black">
+                              {task.tags.map((rawTag: string, index: number) => {
+                                let tagId = rawTag;
+                                if (typeof rawTag === 'string' && rawTag.startsWith('{')) {
+                                  try { tagId = JSON.parse(rawTag).id || rawTag; } catch(e) {}
+                                }
+                                const tagObj = availableTags.find(t => t.id === tagId) || { id: tagId, name: tagId, color: getTagColor(tagId).bg };
+                                const tColor = tagObj.color;
+                                const isTagActive = activeTagId === tagId;
+                                const isLast = index === task.tags.length - 1;
+                                const extraCount = task.tags.length - 1;
+                                
+                                return (
+                                  <div 
+                                    key={tagId}
+                                    onClick={(e) => { 
+                                      e.stopPropagation(); 
+                                      setActiveTaskTags(prev => ({...prev, [task.id]: tagId})); 
+                                      const currentTags = [...task.tags];
+                                      const tagIndex = currentTags.indexOf(tagId);
+                                      if (tagIndex > 0) {
+                                        currentTags.splice(tagIndex, 1);
+                                        currentTags.unshift(tagId);      
+                                        handleUpdateTaskDetail(task.id, 'tags', currentTags);
+                                      }
+                                    }}
+                                    className={`h-full flex flex-col items-center justify-center transition-all duration-300 group/tag relative cursor-pointer overflow-hidden
+                                      ${isTagActive 
+                                        ? `w-5 z-20 border-l-[2px] opacity-100 ${!isLast ? 'border-r border-gray-800/50' : ''}` 
+                                        : `w-0 border-l-0 opacity-0 ${!isLast ? 'border-r-0' : ''}`
+                                      } 
+                                      group-hover/cascade:w-5 group-hover/cascade:opacity-100 group-hover/cascade:border-l-[2px]
+                                      ${!isLast ? 'group-hover/cascade:border-r group-hover/cascade:border-gray-800/50' : ''} 
+                                    `}
+                                    style={{ 
+                                      backgroundColor: isTagActive ? '#111111' : '#000000', 
+                                      borderLeftColor: isTagActive ? tColor : `${tColor}80`,
+                                      boxShadow: isTagActive ? `0 0 10px ${tColor}40, inset 0 0 6px rgba(0,0,0,0.4)` : 'inset -1px 0 3px rgba(0,0,0,0.5)',
+                                    }}
+                                  >
+                                  {isTagActive && extraCount > 0 && (
+                                    <div className="absolute top-2 w-3.5 h-3.5 rounded-full bg-black border flex items-center justify-center shadow-[0_0_6px_rgba(0,0,0,0.8)] z-30 transition-opacity duration-300 group-hover/cascade:opacity-0"
+                                         style={{ borderColor: tColor, color: tColor }}>
+                                      <span className="text-[7px] font-bold font-mono leading-none mt-[1px]">+{extraCount}</span>
+                                    </div>
+                                  )}
+                                  <div className={`flex items-center justify-center w-full h-full transition-all duration-300 ${isTagActive || task.tags.length === 1 ? 'opacity-100' : 'opacity-0 group-hover/cascade:opacity-100'} ${isTagActive && extraCount > 0 ? 'pt-6 group-hover/cascade:pt-0' : ''}`}>
+                                    <span className="text-[9px] font-bold uppercase tracking-widest drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] whitespace-nowrap" style={{ color: tColor, writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}>
+                                      {tagObj.name}
+                                    </span>
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
+
                       </div>
-                      <button onClick={() => handleDeleteTask(task.id)} className="opacity-0 group-hover:opacity-100 p-1 text-gray-500 hover:text-red-400 transition-all"><TrashIcon size={14} /></button>
-                    </div>
-                  </div>
-                ))}
+                    </React.Fragment>
+                  );
+                });
+                })()}
                 
                 {hasMore && tasks.length > 0 && (
                   <button
@@ -1363,11 +1978,20 @@
   }
 
   // Global cache variables so events don't flash/reload every time the panel opens
+  let currentCalOrgCacheId: string | null = null;
   let globalCalendarCache: any[] = [];
   let isCalendarCached = false;
 
   const CalendarQuickView: React.FC<CalendarQuickViewProps> = ({ accentColor, accentRgb, onNavigateToFullView, onViewTask }) => {
-    const { user } = useAuth();
+    const { user, organization } = useAuth(); // ⚡ Destructure organization
+    
+    // ⚡ WIPE CACHE IF ORGANIZATION CHANGES TO PREVENT DATA BLEED
+    if (currentCalOrgCacheId !== organization?.id) {
+      currentCalOrgCacheId = organization?.id || null;
+      globalCalendarCache = [];
+      isCalendarCached = false;
+    }
+
     const [events, setEvents] = useState<CalendarEvent[]>(() => globalCalendarCache);
     const [selectedDate, setSelectedDate] = useState<Date>(new Date());
     const [loading, setLoading] = useState(() => !isCalendarCached);
@@ -1393,7 +2017,14 @@
         
         // 1. Fetch Standard Calendar Events
         // ⚡ FIX: Use app_private schema and map to created_by instead of user_id
-        const { data: calData, error } = await supabase.schema('app_private').from('calendar_events').select('*').eq('created_by', userId).gte('start_time', startOfDay.toISOString()).order('start_time', { ascending: true }).range(offset, offset + PAGE_SIZE - 1);
+        const { data: calData, error } = await supabase.schema('app_private')
+          .from('calendar_events')
+          .select('*')
+          .eq('created_by', userId)
+          .eq('organization_id', organization?.id) // ⚡ Scope to active org
+          .gte('start_time', startOfDay.toISOString())
+          .order('start_time', { ascending: true })
+          .range(offset, offset + PAGE_SIZE - 1);
         if (error && offset === 0) { setEvents([]); globalCalendarCache = []; isCalendarCached = true; return; }
 
         // 2. Fetch Tasks mapped to calendar (only on initial load to prevent duplication during pagination)
@@ -1402,6 +2033,7 @@
           const { data: taskData } = await supabase.schema('app_private')
             .from('tasks')
             .select('*')
+            .eq('organization_id', organization?.id) // ⚡ Scope to active org
             .eq('show_on_calendar', true)
             .not('due_date', 'is', null)
             .or(`assigned_to.eq.${userId},created_by.eq.${userId}`);

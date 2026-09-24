@@ -158,47 +158,62 @@ const WorkspaceMenu: React.FC<WorkspaceMenuProps> = ({
   dockedPanels = [], rightPanelStates = {}, onDockToggle, onLayoutChange, onMakeSecondary
 }) => {
   const navigate = useNavigate();
-  const { user } = useAuth(); // Ensure we have the user
+  const { user, organization } = useAuth(); // ⚡ Destructure organization
   const { getColor } = useWorkspaceColor();
   const [isHovered, setIsHovered] = useState(false);
 
-  // ⚡ NEW: Resolve Notification Theme Color from TopHeader Preferences
+  // ⚡ NEW: Resolve Theme Colors from Preferences and Active Workspace
   const [userHeaderColors, setUserHeaderColors] = useState<Record<string, string>>({});
+  const [userNavColors, setUserNavColors] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    const fetchHeaderColors = async () => {
+    const fetchPreferences = async () => {
       const userId = user?.id || (user as any)?.uid;
-      if (!userId || !isOpen) return;
+      if (!userId || !isOpen || !organization?.id) return;
       const { data } = await supabase.schema('app_private')
         .from('user_preferences')
-        .select('header_colors')
+        .select('header_colors, nav_colors')
         .eq('user_id', userId)
+        .eq('organization_id', organization.id) // ⚡ Scope to active org
         .maybeSingle();
       if (data?.header_colors) setUserHeaderColors(data.header_colors);
+      if (data?.nav_colors) setUserNavColors(data.nav_colors);
     };
-    fetchHeaderColors();
+    fetchPreferences();
 
-    // Listen for live updates if they change it while the menu is open
-    const handleColorUpdate = (e: any) => {
-      if (e.detail) setUserHeaderColors(e.detail);
+    const handleHeaderUpdate = (e: any) => { if (e.detail) setUserHeaderColors(e.detail); };
+    const handleNavUpdate = (e: any) => { if (e.detail) setUserNavColors(e.detail); };
+    
+    window.addEventListener('headerColorsUpdated', handleHeaderUpdate);
+    window.addEventListener('navColorsUpdated', handleNavUpdate);
+    return () => {
+      window.removeEventListener('headerColorsUpdated', handleHeaderUpdate);
+      window.removeEventListener('navColorsUpdated', handleNavUpdate);
     };
-    window.addEventListener('headerColorsUpdated', handleColorUpdate);
-    return () => window.removeEventListener('headerColorsUpdated', handleColorUpdate);
   }, [user, isOpen]);
 
   const notifPrefKey = userHeaderColors['notifications'];
-  // Default to yellow (amber-400) if no custom color is set, matching TopHeader defaults
   const notifColor = notifPrefKey && COLOR_PALETTE[notifPrefKey] ? COLOR_PALETTE[notifPrefKey].color : '#facc15';
   const notifRgb = notifPrefKey && COLOR_PALETTE[notifPrefKey] ? COLOR_PALETTE[notifPrefKey].rgb : '250, 204, 21';
   
+  // ⚡ THEME RESOLUTION FOR PANEL
+  const ac = activeWorkspace ? getColor(activeWorkspace) : null;
+  const userPrefKey = userNavColors['workspaces'];
+
+  const panelAccentColor = (activeWorkspace && ac) 
+    ? ac.primary 
+    : (userPrefKey && COLOR_PALETTE[userPrefKey] ? COLOR_PALETTE[userPrefKey].color : '#06b6d4'); // cyan default
+
+  const panelAccentRGB = (activeWorkspace && ac) 
+    ? ac.rgb 
+    : (userPrefKey && COLOR_PALETTE[userPrefKey] ? COLOR_PALETTE[userPrefKey].rgb : '6, 182, 212');
+
   // STATE: Expansion, Docking, and Side-by-Side
   const [isExpanded, setIsExpanded] = useState(false);
   const [isDocked, setIsDocked] = useState(false);
   const [isSideBySide, setIsSideBySide] = useState(false);
 
   const activePanelId = 'workspaces';
-  const panelAccentColor = '#06b6d4'; // cyan
-  const panelAccentRGB = '6, 182, 212';
 
   const prevLayoutRef = useRef<string>('normal');
   useEffect(() => {
@@ -236,11 +251,11 @@ const WorkspaceMenu: React.FC<WorkspaceMenuProps> = ({
   }, [dockedPanels]);
 
   // DYNAMIC LAYOUT LOGIC
-  const panelWidth = isExpanded ? 760 : 380;
+  const panelWidth = isExpanded ? 836 : 418;
   const isFrontExpanded = Object.entries(rightPanelStates || {}).some(([id, state]) => id !== activePanelId && (state === 'expanded' || state === 'side-expanded'));
-  
-  const frontPanelWidth = isFrontExpanded ? 760 : 380;
-  const expansionOffset = (stackIndex > 0 && isFrontExpanded) ? 380 : 0;
+
+  const frontPanelWidth = isFrontExpanded ? 836 : 418;
+  const expansionOffset = (stackIndex > 0 && isFrontExpanded) ? 418 : 0;
   const baseOffset = (stackIndex * 48) + (isHovered && stackIndex > 0 ? 24 : 0);
   
   // ⚡ FIX: If a background panel is explicitly side-by-side OR previously expanded,
@@ -284,7 +299,7 @@ const WorkspaceMenu: React.FC<WorkspaceMenuProps> = ({
 
   const [expandedWorkspaces, setExpandedWorkspaces] = useState<Record<string, boolean>>({});
   const [expandedOrgs, setExpandedOrgs] = useState<Record<string, boolean>>({ primary: true });
-  const { organization, isPlatformOwner, isOrganizationAdmin } = useAuth();
+  const { isPlatformOwner, isOrganizationAdmin } = useAuth(); // ⚡ Removed duplicate 'organization'
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [orgLogo, setOrgLogo] = useState<string | null>(organization?.logo_url || null);
   const [uploadingLogo, setUploadingLogo] = useState(false);
@@ -885,13 +900,14 @@ const WorkspaceMenu: React.FC<WorkspaceMenuProps> = ({
         
         {/* Background effects - Wrapped to prevent bleeding */}
         <div className="absolute inset-0 overflow-hidden pointer-events-none z-0">
-          <div className="absolute inset-0 bg-gradient-to-bl from-cyan-950/20 via-transparent to-fuchsia-950/20" />
+          <div className="absolute inset-0" style={{ background: `linear-gradient(to bottom left, rgba(${panelAccentRGB}, 0.15), transparent, rgba(${panelAccentRGB}, 0.05))` }} />
         </div>
         
         {/* Header: Platform Owner = A-CORE, Org = Company Name + Logo */}
         <div 
           onClick={() => setExpandedOrgs(p => ({ ...p, primary: !p.primary }))}
-          className="relative flex items-center justify-between p-4 border-b border-cyan-500/20 bg-gradient-to-r from-black via-cyan-950/20 to-black cursor-pointer hover:via-cyan-900/30 transition-colors"
+          className="relative flex items-center justify-between p-4 border-b cursor-pointer transition-colors"
+          style={{ borderColor: `rgba(${panelAccentRGB}, 0.2)`, background: `linear-gradient(to right, black, rgba(${panelAccentRGB}, 0.1), black)` }}
         >
           <div className="flex items-center gap-3 flex-1 min-w-0">
             <button
@@ -910,30 +926,31 @@ const WorkspaceMenu: React.FC<WorkspaceMenuProps> = ({
                   <img 
                     src={`${orgLogo}${orgLogo.includes('?') ? '&' : '?'}width=80&height=80&resize=contain`} 
                     alt="" 
-                    className="h-10 w-10 rounded-lg object-contain bg-black border border-cyan-500/30 relative z-10" 
+                    className="h-10 w-10 rounded-lg object-contain bg-black border relative z-10"
+                    style={{ borderColor: `rgba(${panelAccentRGB}, 0.3)` }}
                   />
                 ) : isPlatOwner ? (
                   <div className="relative">
-                    <div className="absolute -inset-1 bg-cyan-500/20 rounded-full blur-md opacity-60" />
+                    <div className="absolute -inset-1 rounded-full blur-md opacity-60" style={{ backgroundColor: `rgba(${panelAccentRGB}, 0.2)` }} />
                     <ApplegateCoreLogo size={32} className="relative z-10" />
                   </div>
                 ) : (
-                  <div className="h-10 w-10 rounded-lg flex items-center justify-center border border-cyan-500/30 bg-cyan-500/10">
-                    <OrgIcon size={20} className="text-cyan-400" />
+                  <div className="h-10 w-10 rounded-lg flex items-center justify-center border" style={{ borderColor: `rgba(${panelAccentRGB}, 0.3)`, backgroundColor: `rgba(${panelAccentRGB}, 0.1)` }}>
+                    <OrgIcon size={20} style={{ color: panelAccentColor }} />
                   </div>
                 )}
 
                 {/* The hidden file upload overlay */}
                 {(isOrgAdmin || isPlatOwner) && (
                   <div onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }} className="absolute inset-0 rounded-lg flex items-center justify-center bg-black/70 opacity-0 group-hover/logo:opacity-100 transition-opacity cursor-pointer z-20">
-                    {uploadingLogo ? <div className="w-4 h-4 border-2 border-cyan-500/30 border-t-cyan-500 rounded-full animate-spin" /> : <UploadIcon size={16} className="text-cyan-400" />}
+                    {uploadingLogo ? <div className="w-4 h-4 border-2 rounded-full animate-spin" style={{ borderColor: `rgba(${panelAccentRGB}, 0.3)`, borderTopColor: panelAccentColor }} /> : <UploadIcon size={16} style={{ color: panelAccentColor }} />}
                   </div>
                 )}
                 <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} />
               </div>
 
               <div className="min-w-0 flex-1">
-                <h3 className="text-sm font-mono font-bold text-white truncate hover:text-cyan-400 transition-colors">
+                <h3 className="text-sm font-mono font-bold text-white truncate transition-colors ws-menu-theme-text-hover">
                   {organization?.name || 'Applegate'}
                 </h3>
                 <p className="text-[10px] text-gray-500 font-mono">
@@ -949,7 +966,7 @@ const WorkspaceMenu: React.FC<WorkspaceMenuProps> = ({
                 e.stopPropagation();
                 onClose();
               }} 
-              className="p-2 text-gray-400 hover:text-cyan-400 hover:bg-cyan-500/10 rounded-lg border border-transparent hover:border-cyan-500/30 transition-all flex-shrink-0 z-10"
+              className="p-2 text-gray-400 rounded-lg border border-transparent transition-all flex-shrink-0 z-10 ws-menu-theme-text-hover ws-menu-theme-bg-hover ws-menu-theme-border-hover"
             >
               <CloseIcon size={20} />
             </button>
@@ -1043,15 +1060,18 @@ const WorkspaceMenu: React.FC<WorkspaceMenuProps> = ({
           </div>
         </div>
 
-        <div className="absolute bottom-0 left-0 right-0 p-4 pb-20 border-t border-cyan-500/20 bg-black/90">
+        <div className="absolute bottom-0 left-0 right-0 p-4 pb-20 border-t bg-black/90" style={{ borderColor: `rgba(${panelAccentRGB}, 0.2)` }}>
           <div className="flex items-center justify-center gap-2 text-gray-600 text-xs font-mono">
-            <LockIcon size={14} className="text-cyan-500/50" /><span>Q-CORE Protected</span>
+            <LockIcon size={14} style={{ color: `rgba(${panelAccentRGB}, 0.5)` }} /><span>Q-CORE Protected</span>
           </div>
         </div>
       </div>
 
       <style>{`
         /* ... */
+        .ws-menu-theme-text-hover:hover { color: ${panelAccentColor} !important; }
+        .ws-menu-theme-bg-hover:hover { background-color: rgba(${panelAccentRGB}, 0.1) !important; }
+        .ws-menu-theme-border-hover:hover { border-color: rgba(${panelAccentRGB}, 0.3) !important; }
         @keyframes slide-in-right { from { transform: translateX(100%); } to { transform: translateX(0); } }
         .animate-slide-in-right { animation: slide-in-right 0.3s ease-out forwards; }
         @keyframes ws-menu-pulse-security { 0%, 100% { box-shadow: 0 0 12px rgba(255,153,0,0.3); } 50% { box-shadow: 0 0 25px rgba(255,153,0,0.6); } }

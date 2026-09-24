@@ -249,12 +249,13 @@ const getRoleDefaultTiles = (roleCategory: UserRoleCategory, containerWidth: num
 // ============================================
 
 const CACHE_VERSION = 'v1';
+let CURRENT_ORG_ID: string | null = null;
 
 const getCacheKey = (userId: string, tabId: string): string =>
-  `dashboard_tiles_${userId}_${tabId}_${CACHE_VERSION}`;
+  `dashboard_tiles_${userId}_${CURRENT_ORG_ID || 'platform'}_${tabId}_${CACHE_VERSION}`;
 
 const getTabsCacheKey = (userId: string): string =>
-  `dashboard_tabs_${userId}_${CACHE_VERSION}`;
+  `dashboard_tabs_${userId}_${CURRENT_ORG_ID || 'platform'}_${CACHE_VERSION}`;
 
 const saveTilesToCache = (userId: string, tabs: DashboardTab[], activeTabId: string, customWidgets: CustomWidgetDefinition[], refreshInterval: number): void => {
   try {
@@ -448,6 +449,8 @@ const CustomTableWidget: React.FC<{ widget: CustomWidgetDefinition }> = ({ widge
 const PersonalDashboard: React.FC = () => {
   const { user, userType, organization, isPlatformOwner, isPlatformUser, isOrganizationAdmin, isOrganizationManager, isPlatformTechAdmin, isPlatformSupportAdmin, isPlatformSalesAdmin, isPlatformManager, getUserRole } = useAuth();
   const isOrgUser = userType === 'organization';
+  
+  CURRENT_ORG_ID = organization?.id || null;
 
   // --- NEW: Dynamic Theme Colors for Scrollbars & Badges ---
   const primaryColor = organization?.primary_color || '#06b6d4';
@@ -622,6 +625,7 @@ const PersonalDashboard: React.FC = () => {
   const [saveError, setSaveError] = useState<string | null>(null);
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isInitialLoadRef = useRef(true);
+  const activeLayoutOrgRef = useRef<string | null | undefined>(undefined);
 
   const [dashboardTabs, setDashboardTabs] = useState<DashboardTab[]>(DEFAULT_TABS);
   const [activeTabId, setActiveTabId] = useState('main');
@@ -775,12 +779,15 @@ const PersonalDashboard: React.FC = () => {
 
   // Load dashboard configs - localStorage first, then server sync
   const loadDashboardConfigs = useCallback(async () => {
-    // ⚡ FIX: Abort immediately if we've already loaded. This prevents random context re-renders 
-    // from triggering a fetch that blindly overwrites the user's active session!
-    if (!userId || !isInitialLoadRef.current) { 
+    const currentOrg = organization?.id || null;
+    
+    // ⚡ FIX: Abort if we already loaded THIS organization's layout
+    if (!userId || (!isInitialLoadRef.current && activeLayoutOrgRef.current === currentOrg)) { 
       setIsLoading(false); 
       return; 
     }
+
+    setIsLoading(true);
 
     // 1) Try loading from localStorage cache first (instant)
     const cached = loadTilesFromCache(userId);
@@ -798,33 +805,44 @@ const PersonalDashboard: React.FC = () => {
 
     // 2) Fetch from server in background (sync)
     try {
-      const { data: configs, error } = await supabase
+      let query = supabase
         .schema('app_private')
         .from('dashboard_configs')
         .select('*')
         .eq('user_id', userId)
-        .not('tab_id', 'ilike', 'ws-%') // ⚡ FIX 1: Ignore all Workspace MiniApp tabs!
-        .order('tab_order', { ascending: true });
+        .not('tab_id', 'ilike', 'ws-%'); // ⚡ FIX 1: Ignore all Workspace MiniApp tabs!
+
+      // 👈 Filter strictly by the current organization context BEFORE ordering
+      if (organization?.id) {
+        query = query.eq('organization_id', organization.id);
+      } else {
+        query = query.is('organization_id', null);
+      }
+
+      // ⚡ Apply ordering AFTER all filters are attached
+      query = query.order('tab_order', { ascending: true });
+
+      const { data: configs, error } = await query;
 
       if (error) throw error;
 
       if (configs && configs.length > 0) {
-      let loadedTabs: DashboardTab[] = configs.map((config: any) => {
-        let parsedTiles = [];
-        try {
-          parsedTiles = typeof config.tiles === 'string' ? JSON.parse(config.tiles) : (config.tiles || []);
-        } catch (e) {
-          console.error('Failed to parse tiles from DB', e);
-        }
+        let loadedTabs: DashboardTab[] = configs.map((config: any) => {
+          let parsedTiles = [];
+          try {
+            parsedTiles = typeof config.tiles === 'string' ? JSON.parse(config.tiles) : (config.tiles || []);
+          } catch (e) {
+            console.error('Failed to parse tiles from DB', e);
+          }
 
-        return {
-          id: config.tab_id, 
-          name: config.tab_name, 
-          tiles: Array.isArray(parsedTiles) ? parsedTiles : [], 
-          isDefault: config.tab_order === 0 || config.tab_id === 'main',
-          accentColor: config.accent_color || 'theme-primary', // 👈 CHANGE THIS LINE
-        };
-      });
+          return {
+            id: config.tab_id, 
+            name: config.tab_name, 
+            tiles: Array.isArray(parsedTiles) ? parsedTiles : [], 
+            isDefault: config.tab_order === 0 || config.tab_id === 'main',
+            accentColor: config.accent_color || 'theme-primary', 
+          };
+        });
 
         // Auto-scale loaded tiles to perfectly fit the screen
         const currentWidth = containerRef.current?.clientWidth || (window.innerWidth - 32); 
@@ -841,20 +859,13 @@ const PersonalDashboard: React.FC = () => {
 
         if (!loadedTabs.some(tab => tab.id === 'main')) loadedTabs.unshift(DEFAULT_TABS[0]);
         
-        // ⚡ FIX: Only overwrite the UI with server data if we don't have a perfectly good local cache, 
-        // OR if the server data is explicitly newer than our cache.
-        const serverLastUpdated = Math.max(...configs.map((c: any) => new Date(c.updated_at || 0).getTime()));
-        const cacheLastUpdated = cached?.cachedAt || 0;
-
-        if (!hasValidCache || serverLastUpdated > cacheLastUpdated) {
-          setDashboardTabs(loadedTabs);
-          const activeConfig = configs.find((c: any) => c.is_active);
-          if (activeConfig) setActiveTabId(activeConfig.tab_id);
-          saveTilesToCache(userId, loadedTabs, activeConfig?.tab_id || 'main', customWidgets, refreshInterval);
-          console.log('[Dashboard] Synced from server');
-        } else {
-          console.log('[Dashboard] Local cache is newer or equal; ignoring server payload.');
-        }
+        // ⚡ FIX: Always use the server as the ultimate source of truth when a successful response is received. 
+        // Comparing timestamps fails when rows are manually deleted from the database.
+        setDashboardTabs(loadedTabs);
+        const activeConfig = configs.find((c: any) => c.is_active);
+        if (activeConfig) setActiveTabId(activeConfig.tab_id);
+        saveTilesToCache(userId, loadedTabs, activeConfig?.tab_id || 'main', customWidgets, refreshInterval);
+        console.log('[Dashboard] Synced from server');
 
       } else if (!hasValidCache) {
         // No server data AND no cache - use role-based defaults
@@ -868,10 +879,11 @@ const PersonalDashboard: React.FC = () => {
     } catch (err) {
       console.warn('[Dashboard] Server sync error:', err);
     } finally { 
+      activeLayoutOrgRef.current = currentOrg;
       setIsLoading(false); 
       isInitialLoadRef.current = false; 
     }
-  }, [userId, getUserRoleCategory]);
+  }, [userId, organization?.id, getUserRoleCategory]);
 
   // ⚡ ACTUALLY CALL THE LOAD FUNCTION ON MOUNT
   useEffect(() => {
@@ -884,6 +896,9 @@ const PersonalDashboard: React.FC = () => {
 
   const saveDashboardConfigs = useCallback(async () => {
     if (!userId || isInitialLoadRef.current) return;
+    
+    // ⚡ FIX: Abort auto-save if the layout currently in state belongs to a different organization
+    if (activeLayoutOrgRef.current !== (organization?.id || null)) return;
     
     // ⚡ Extract the absolutely latest state from our ref
     const { 
@@ -927,26 +942,34 @@ const attemptSave = async (attempt: number): Promise<boolean> => {
   try {
     const savePromises = currentTabs.map(async (tab, i) => {
       const serializedTiles = tab.tiles.map(serializeTile);
-      
+
       const payload = {
         user_id: String(userId),
+        organization_id: organization?.id || null, // 👈 Target specific organization
         tab_id: String(tab.id),
         tab_name: String(tab.name),
         tiles: JSON.stringify(serializedTiles), 
         tab_order: i,
         is_active: tab.id === currentActiveTab,
-        accent_color: tab.accentColor || 'theme-primary', // 👈 ADD THIS LINE
+        accent_color: tab.accentColor || 'theme-primary', 
         updated_at: new Date().toISOString(),
       };
 
           // ⚡ FIX: Manually check if the row exists to bypass strict .upsert() constraints
-          const { data: existing, error: fetchErr } = await supabase
+          let fetchQuery = supabase
             .schema('app_private')
             .from('dashboard_configs')
             .select('id')
             .eq('user_id', String(userId))
-            .eq('tab_id', String(tab.id))
-            .maybeSingle();
+            .eq('tab_id', String(tab.id));
+            
+          if (organization?.id) {
+            fetchQuery = fetchQuery.eq('organization_id', organization.id);
+          } else {
+            fetchQuery = fetchQuery.is('organization_id', null);
+          }
+
+          const { data: existing, error: fetchErr } = await fetchQuery.maybeSingle();
 
           if (fetchErr) throw fetchErr;
 
@@ -1008,7 +1031,7 @@ const attemptSave = async (attempt: number): Promise<boolean> => {
       setSaveError('Sync pending');
     }
     setIsSaving(false);
-  }, [userId]); 
+  }, [userId, organization?.id]); 
 
 
   // ⚡ NEW: Global Auto-Saver ⚡
@@ -1672,21 +1695,47 @@ const attemptSave = async (attempt: number): Promise<boolean> => {
   };
 
 
-  const handleDeleteTab = (tabId: string) => {
+  const handleDeleteTab = async (tabId: string) => {
     const tab = dashboardTabs.find(t => t.id === tabId);
     if (tab?.isDefault) return;
+    
     setDashboardTabs(prev => {
       const updated = prev.filter(t => t.id !== tabId);
       // Immediately persist to localStorage
-      try {
-        const cacheKey = `dashboard_tiles_${userId}`;
-        localStorage.setItem(cacheKey, JSON.stringify({ tabs: updated, activeTabId: updated[0]?.id || 'main' }));
-      } catch {}
+      if (userId) {
+        saveTilesToCache(userId, updated, updated[0]?.id || 'main', customWidgets, refreshInterval);
+      }
       return updated;
     });
-    if (activeTabId === tabId) setActiveTabId(dashboardTabs[0]?.id || 'main');
-    // Immediately save to server (bypass debounce)
     
+    if (activeTabId === tabId) {
+      setActiveTabId(dashboardTabs[0]?.id || 'main');
+    }
+    
+    // Immediately save to server (bypass debounce)
+    if (userId) {
+      try {
+        let query = supabase
+          .schema('app_private')
+          .from('dashboard_configs')
+          .delete()
+          .eq('user_id', String(userId))
+          .eq('tab_id', String(tabId));
+
+        // Safely scope the deletion to the active organization
+        if (organization?.id) {
+          query = query.eq('organization_id', organization.id);
+        } else {
+          query = query.is('organization_id', null);
+        }
+
+        const { error } = await query;
+        if (error) throw error;
+        
+      } catch (err) {
+        console.error('[Dashboard] Failed to delete tab from database:', err);
+      }
+    }
   };
 
 
@@ -1724,24 +1773,26 @@ const attemptSave = async (attempt: number): Promise<boolean> => {
     if (userId) {
       try {
         const serializedTiles = DEFAULT_TILES.map(serializeTile);
-        const { error } = await supabase
-          .schema('app_private')
-          .from('dashboard_configs')
-          .upsert({
-            user_id: String(userId),
-            tab_id: String(activeTabId),
-            tab_name: String(currentTab?.name || 'Main Dashboard'),
-            tiles: JSON.stringify(serializedTiles),
-            tab_order: 0,
-            is_active: true,
-            updated_at: new Date().toISOString()
-          }, { onConflict: 'user_id, tab_id' });
+
+          const { error } = await supabase
+            .schema('app_private')
+            .from('dashboard_configs')
+            .upsert({
+              user_id: String(userId),
+              organization_id: organization?.id || null, // 👈 Target specific organization
+              tab_id: String(activeTabId),
+              tab_name: String(currentTab?.name || 'Main Dashboard'),
+              tiles: JSON.stringify(serializedTiles),
+              tab_order: 0,
+              is_active: true,
+              updated_at: new Date().toISOString()
+            }, { onConflict: 'user_id, organization_id, tab_id' }); // 👈 Assumes you update your DB constraint
           
         if (error) throw error;
-        setLastSaved(new Date());
-      } catch (err) { console.error('Error resetting layout:', err); }
-    }
-  }, [activeTabId, userId, currentTab]);
+          setLastSaved(new Date());
+        } catch (err) { console.error('Error resetting layout:', err); }
+      }
+    }, [activeTabId, userId, organization?.id, currentTab]);
 
   // Widget Library: Add CatalogWidget as TileConfig
   const handleAddCatalogWidget = useCallback((catalogWidget: CatalogWidget) => {
@@ -2614,16 +2665,11 @@ const COLOR_PALETTE: Record<string, { color: string; rgb: string }> = {
     }
   }, []);
 
-  const handleTabSettingsClick = useCallback((e: React.MouseEvent, tabId: string) => {
-    e.stopPropagation();
+  const handleTabContextMenu = useCallback((e: React.MouseEvent, tabId: string) => {
     e.preventDefault();
-    if (tabSettingsPopup?.tabId === tabId) {
-      setTabSettingsPopup(null);
-    } else {
-      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-      setTabSettingsPopup({ tabId, x: rect.left, y: rect.bottom + 6 });
-    }
-  }, [tabSettingsPopup]);
+    e.stopPropagation();
+    setTabSettingsPopup({ tabId, x: e.clientX, y: e.clientY });
+  }, []);
 
   // ============================================
   // INLINE TAB RENAME HANDLERS
@@ -3173,6 +3219,7 @@ const COLOR_PALETTE: Record<string, { color: string; rgb: string }> = {
                   onDragStart={(e) => handleTabDragStart(e, tab.id)}
                   onDragEnd={handleTabDragEnd}
                   onClick={() => setActiveTabId(tab.id)}
+                  onContextMenu={(e) => handleTabContextMenu(e, tab.id)}
                   onDragOver={(e) => {
                     if (crossTabDragTileId && tab.id !== activeTabId) {
                       e.preventDefault();
@@ -3309,16 +3356,6 @@ const COLOR_PALETTE: Record<string, { color: string; rgb: string }> = {
                     {/* Hover action icons: Gear (color picker), New Window, Fullscreen — hidden during drag */}
                     {!isCrossTabDragActive && !isTabReorderActive && (
                       <span className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200 ml-0.5">
-                        {/* Gear icon — opens color picker popup */}
-                        <button
-                          onClick={(e) => handleTabSettingsClick(e, tab.id)}
-                          className="p-0.5 rounded hover:bg-white/10 transition-colors"
-                          title="Tab color"
-                        >
-                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400 hover:text-white">
-                            <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-                          </svg>
-                        </button>
                         {/* New Window icon */}
                         <button
                           onClick={(e) => { e.stopPropagation(); handleTabNewWindow(tab.id); }}

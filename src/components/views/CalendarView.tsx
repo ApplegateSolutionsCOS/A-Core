@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import { db } from '@/lib/dbProxy';
 import { useAuth } from '@/contexts/AuthContext';
+import { useWorkspaceColor } from '@/contexts/WorkspaceColorContext';
 import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, CalendarIcon, CloseIcon, TrashIcon, UserIcon } from '@/components/icons/Icons';
 
 // --- Inline Edit Component ---
@@ -57,6 +58,7 @@ interface CalendarViewProps {
   isOpen: boolean;
   onClose: () => void;
   onNavigateToTask?: (taskId: string) => void;
+  currentWorkspaceSlug?: string | null;
 }
 
 // --- Event Viewer Modal ---
@@ -116,7 +118,7 @@ const EventViewerModal: React.FC<EventViewerModalProps> = ({ eventId, onClose })
     <>
       <div className="fixed inset-0 z-[200] bg-black/80 backdrop-blur-sm" onClick={onClose} />
       <div className="fixed z-[201] flex flex-col pointer-events-none animate-in fade-in zoom-in-95 duration-200" style={{ top: 'calc(2vh + 60px)', left: '2vw', right: '2vw', bottom: '90px' }}>
-        <div className="flex-1 flex flex-col w-full max-w-4xl mx-auto bg-black/95 backdrop-blur-xl rounded-2xl overflow-hidden border shadow-2xl pointer-events-auto border-green-500/40 shadow-[0_0_60px_rgba(34,197,94,0.15)]">
+        <div className="flex-1 flex flex-col w-full max-w-[992px] mx-auto bg-black/95 backdrop-blur-xl rounded-2xl overflow-hidden border shadow-2xl pointer-events-auto border-green-500/40 shadow-[0_0_60px_rgba(34,197,94,0.15)]">
           
           {/* Header */}
           <div className="flex items-center justify-between px-6 py-4 border-b bg-black/40 flex-shrink-0 border-green-500/30">
@@ -249,9 +251,12 @@ const COLOR_PALETTE: Record<string, { color: string; rgb: string }> = {
   white: { color: '#ffffff', rgb: '255,255,255' },
 };
 
-const CalendarView: React.FC<CalendarViewProps> = ({ isOpen, onClose, onNavigateToTask }) => {
+const CalendarView: React.FC<CalendarViewProps> = ({ isOpen, onClose, onNavigateToTask, currentWorkspaceSlug }) => {
   const { user } = useAuth();
   const currentUserId = user?.id || (user as any)?.uid;
+
+  const { getColor } = useWorkspaceColor();
+  const ac = currentWorkspaceSlug ? getColor(currentWorkspaceSlug) : null;
 
   // ⚡ Theme State
   const [userNavColors, setUserNavColors] = useState<Record<string, string>>({});
@@ -268,7 +273,6 @@ const CalendarView: React.FC<CalendarViewProps> = ({ isOpen, onClose, onNavigate
     };
     fetchColors();
 
-    // ⚡ LISTEN: Update local colors instantly if changed in the BottomNav
     const handleColorUpdate = (e: any) => {
       if (e.detail) setUserNavColors(e.detail);
     };
@@ -277,8 +281,14 @@ const CalendarView: React.FC<CalendarViewProps> = ({ isOpen, onClose, onNavigate
   }, [currentUserId]);
 
   const userPrefKey = userNavColors['calendar'];
-  const themeColor = userPrefKey && COLOR_PALETTE[userPrefKey] ? COLOR_PALETTE[userPrefKey].color : '#c4b5fd';
-  const themeRgb = userPrefKey && COLOR_PALETTE[userPrefKey] ? COLOR_PALETTE[userPrefKey].rgb : '196,181,253';
+  
+  const themeColor = (currentWorkspaceSlug && ac) 
+    ? ac.primary 
+    : (userPrefKey && COLOR_PALETTE[userPrefKey] ? COLOR_PALETTE[userPrefKey].color : '#c4b5fd');
+
+  const themeRgb = (currentWorkspaceSlug && ac) 
+    ? ac.rgb 
+    : (userPrefKey && COLOR_PALETTE[userPrefKey] ? COLOR_PALETTE[userPrefKey].rgb : '196,181,253');
 
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
@@ -517,7 +527,7 @@ const CalendarView: React.FC<CalendarViewProps> = ({ isOpen, onClose, onNavigate
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
       
       {/* Modal Container */}
-      <div className="relative w-full max-w-7xl h-full max-h-[95vh] bg-black/90 backdrop-blur-2xl border rounded-2xl flex flex-col animate-in zoom-in-95 duration-200 overflow-hidden"
+      <div className="relative w-full max-w-[1376px] h-full max-h-[95vh] bg-black/90 backdrop-blur-2xl border rounded-2xl flex flex-col animate-in zoom-in-95 duration-200 overflow-hidden"
            style={{ borderColor: `rgba(${themeRgb}, 0.3)`, boxShadow: `0 0 50px rgba(${themeRgb}, 0.1)` }}>
         <div className="absolute inset-0 pointer-events-none" style={{ background: `linear-gradient(to bottom right, rgba(${themeRgb}, 0.1), transparent, rgba(232,121,249,0.1))` }} />
         <div className="absolute inset-0 hex-pattern opacity-5 pointer-events-none" />

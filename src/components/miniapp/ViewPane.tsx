@@ -281,7 +281,7 @@ const ViewPane: React.FC<ViewPaneProps> = ({
 
   return (
     <div
-      className="w-64 h-full flex-shrink-0 bg-black/90 backdrop-blur-xl rounded-xl overflow-hidden flex flex-col transition-all duration-300 animate-in slide-in-from-left-4"
+      className="w-[352px] h-full flex-shrink-0 bg-black/90 backdrop-blur-xl rounded-xl overflow-hidden flex flex-col transition-all duration-300 animate-in slide-in-from-left-4"
       style={{
         border: `1px solid rgba(${wsColor.rgb}, 0.3)`,
         boxShadow: `0 0 20px rgba(${wsColor.rgb}, 0.08)`,

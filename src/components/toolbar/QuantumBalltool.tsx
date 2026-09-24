@@ -81,11 +81,22 @@ const EmailIcon: React.FC<{ size?: number; className?: string }> = ({ size = 24,
   </svg>
 );
 
+// Demo icon
+const DemoIcon: React.FC<{ size?: number; className?: string }> = ({ size = 24, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+    <polygon points="10 8 16 10 10 12 10 8" />
+    <line x1="8" y1="21" x2="16" y2="21" />
+    <line x1="12" y1="17" x2="12" y2="21" />
+  </svg>
+);
+
 interface ToolItem {
   id: string; name: string;
   icon: React.FC<{ size?: number; className?: string }>;
   color: string; glowColor: string; lightColor: string;
   adminOnly?: boolean;
+  platformOwnerOnly?: boolean;
   quickActions?: { label: string; action: string }[];
 }
 
@@ -101,6 +112,7 @@ const tools: ToolItem[] = [
   { id: 'email-mirror', name: 'Email Mirror', icon: EmailIcon, color: '#FF77CC', glowColor: 'rgba(255,119,204,1)', lightColor: '#FFCCEE', quickActions: [{ label: 'View Inbox', action: 'inbox' }, { label: 'Add Account', action: 'add' }, { label: 'Settings', action: 'settings' }] },
   { id: 'report', name: 'Reports', icon: ReportIcon, color: '#CC88FF', glowColor: 'rgba(204,136,255,1)', lightColor: '#E0BBFF', adminOnly: true, quickActions: [{ label: 'New Report', action: 'new' }, { label: 'Templates', action: 'templates' }, { label: 'Scheduled', action: 'scheduled' }] },
   { id: 'workflow', name: 'Workflow', icon: WorkflowIcon, color: '#66DDFF', glowColor: 'rgba(102,221,255,1)', lightColor: '#BBEEFF', adminOnly: true, quickActions: [{ label: 'New Flow', action: 'new' }, { label: 'Active', action: 'active' }, { label: 'Templates', action: 'templates' }] },
+  { id: 'demos', name: 'Demos', icon: DemoIcon, color: '#FFDD66', glowColor: 'rgba(255,221,102,1)', lightColor: '#FFEEAA', platformOwnerOnly: true, quickActions: [{ label: 'View Demos', action: 'view' }, { label: '+ Demo', action: 'add' }] },
 ];
 
 interface Position { x: number; y: number; }
@@ -1176,22 +1188,23 @@ const QuantumBalltool: React.FC<QuantumBalltoolProps> = ({
 
   useEffect(() => {
     const fetchUserPreferences = async () => {
-      if (!user) return;
+      if (!user || !organization?.id) return;
       try {
         const { data, error } = await supabase.schema('app_private')
           .from('user_preferences')
           .select('nav_colors')
           .eq('user_id', user.id)
+          .eq('organization_id', organization.id) // ⚡ Scope colors to current org
           .maybeSingle();
 
         if (data?.nav_colors) setUserNavColors(data.nav_colors);
       } catch (err) {}
     };
     fetchUserPreferences();
-  }, [user]);
+  }, [user, organization?.id]);
 
   const handleColorSelect = async (colorKey: string) => {
-    if (!contextMenu || !user) return;
+    if (!contextMenu || !user || !organization?.id) return;
 
     const updatedColors = { ...userNavColors };
     if (colorKey === 'default') {
@@ -1208,9 +1221,10 @@ const QuantumBalltool: React.FC<QuantumBalltoolProps> = ({
         .from('user_preferences')
         .upsert({
           user_id: user.id,
+          organization_id: organization.id, // ⚡ Scope to current org
           nav_colors: updatedColors,
           updated_at: new Date().toISOString()
-        }, { onConflict: 'user_id' });
+        }, { onConflict: 'user_id, organization_id' }); // ⚡ Use new composite key
     } catch (err) {
       console.error('Failed to save user nav color', err);
     }
@@ -1229,7 +1243,7 @@ const QuantumBalltool: React.FC<QuantumBalltoolProps> = ({
   };
 
   const R = 100, ballSz = 56, bubSz = 44, bubBig = 78;
-  const MOVE_TH = 6, SNAP_TH = 0.5, LP_MS = 500, CLICK_DB = 120;
+  const MOVE_TH = 6, SNAP_TH = 0.5, LP_MS = 1500, CLICK_DB = 120;
 
   const defPos = { x: window.innerWidth - 60, y: window.innerHeight - 120 };
   const LS_DOCKED = 'quantum-ball-docked';
@@ -1249,6 +1263,77 @@ const QuantumBalltool: React.FC<QuantumBalltoolProps> = ({
   const [showEmailMirror, setShowEmailMirror] = useState(false);
   const [showScannerPanel, setShowScannerPanel] = useState(false);
   const [showActivityPanel, setShowActivityPanel] = useState(false);
+  const [showCreateDemoModal, setShowCreateDemoModal] = useState(false);
+  const [showViewDemosModal, setShowViewDemosModal] = useState(false);
+  const [demoName, setDemoName] = useState('');
+  const [demoList, setDemoList] = useState<any[]>([]);
+  const [isLoadingDemos, setIsLoadingDemos] = useState(false);
+  const [isCreatingDemo, setIsCreatingDemo] = useState(false);
+
+  const fetchDemos = async () => {
+    setIsLoadingDemos(true);
+    try {
+      // As a Platform Owner, you don't need to check organization_users.
+      // We bypass the 1:1 user limitation and fetch all demos directly!
+      const { data: orgs, error } = await supabase.schema('app_private')
+        .from('organizations')
+        .select('*')
+        .eq('subscription_tier', 'demo')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setDemoList(orgs || []);
+    } catch (error) {
+      console.error('Error fetching demos:', error);
+    } finally {
+      setIsLoadingDemos(false);
+    }
+  };
+
+  const handleCreateDemo = async () => {
+    if (!demoName.trim()) return;
+    setIsCreatingDemo(true);
+    try {
+      const safeName = demoName.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+      const uniqueDomain = `${safeName}-${Date.now()}.demo.applegate.solutions`;
+
+      // Call the simplified RPC that only creates the organization
+      const { error: orgError } = await supabase
+        .schema('app_private')
+        .rpc('create_demo_organization', {
+          p_name: demoName.trim(),
+          p_domain: uniqueDomain,
+          p_tier: 'demo'
+        });
+
+      if (orgError) throw orgError;
+
+      setShowCreateDemoModal(false);
+      setDemoName('');
+      
+      // Refresh the demo list immediately
+      fetchDemos();
+      window.dispatchEvent(new CustomEvent('workspacesUpdated'));
+      
+    } catch (error) {
+      console.error('Error creating demo:', error);
+      alert('Failed to create demo. See console for details.');
+    } finally {
+      setIsCreatingDemo(false);
+    }
+  };
+
+  const handleSwitchToDemo = async (demo: any) => {
+    // 1. Inject the Platform Owner role into the cached object so AuthContext accepts the session
+    const demoWithRole = { ...demo, role: 'platform_owner' };
+    
+    // 2. ⚡ Set the correct bos_organization key that AuthContext actually reads
+    localStorage.setItem('bos_organization', JSON.stringify(demoWithRole));
+    
+    // 3. Close the modal and safely route to the dashboard
+    setShowViewDemosModal(false);
+    window.location.href = '/';
+  };
 
   const [isSnappingToTool, setIsSnappingToTool] = useState(false);
   const pendingFireToolRef = useRef<string | null>(null);
@@ -1302,6 +1387,10 @@ const QuantumBalltool: React.FC<QuantumBalltoolProps> = ({
   const lpFired = useRef(false);
   const lastClick = useRef(0);
   const expandTimer = useRef<any>(null);
+  const hoverTimer = useRef<any>(null);
+  const hoveredToolRef = useRef<string | null>(null);
+  const activeSubMenuRef = useRef<string | null>(null);
+  const preventNextClickRef = useRef(false);
 
   const savePosDb = useRef(debounce((p: Position) => saveLS(LS_POS, p), 300)).current;
   const saveRotDb = useRef(debounce((r: number) => saveLS(LS_ROT, r), 500)).current;
@@ -1350,7 +1439,16 @@ const QuantumBalltool: React.FC<QuantumBalltoolProps> = ({
     };
   }, [isDocked, ballSz, savePosDb, isExpanded]);
 
-  const vis = useMemo(() => tools.filter(t => !t.adminOnly || isAdmin), [isAdmin]);
+  const vis = useMemo(() => tools.filter(t => {
+    if (t.adminOnly && !isAdmin) return false;
+    // ⚡ FIX: Use the robust isPlatformOwner() check so the button doesn't vanish inside Demos!
+    if (t.platformOwnerOnly && !isPlatformOwner()) return false;
+    
+    // Restrict Demos button exclusively to Applegate Solutions
+    if (t.id === 'demos' && organization?.name !== 'Applegate Solutions') return false;
+    
+    return true;
+  }), [isAdmin, isPlatformOwner, organization?.name]);
   const N = vis.length;
 
   const [wsC, setWsC] = useState<WsColorSet>(targetWsC);
@@ -1525,8 +1623,12 @@ const QuantumBalltool: React.FC<QuantumBalltoolProps> = ({
     }
   }, [vis, getBubPos]);
 
-  const fireTool = useCallback((toolId: string) => {
+  const fireTool = useCallback((toolId: string, actionId?: string) => {
     setShowReportBuilder(false); setShowWorkflowBuilder(false); setShowPhoneMirror(false); setShowEmailMirror(false); setShowScannerPanel(false); setShowActivityPanel(false); setShowFavoritesPanel(false);
+
+    if (hoverTimer.current) clearTimeout(hoverTimer.current);
+    hoveredToolRef.current = null;
+    activeSubMenuRef.current = null;
 
     setSelectedTool(toolId); setActiveTool(toolId); setExpandAnim('collapsing');
     badgeToolRef.current = null; setBadgeToolId(null); setLongPressMenu(null); setIsSnappingToTool(false);
@@ -1545,6 +1647,14 @@ const QuantumBalltool: React.FC<QuantumBalltoolProps> = ({
       case 'email-mirror': setShowEmailMirror(true); break;
       case 'workflow': setShowWorkflowBuilder(true); break;
       case 'report': setShowReportBuilder(true); setReportStep('source'); setSelectedDataSource(''); setSelectedChartType('donut'); setReportName(''); setPinnedDashboard(''); break;
+      case 'demos': 
+        if (actionId === 'add') {
+          setShowCreateDemoModal(true);
+        } else {
+          fetchDemos();
+          setShowViewDemosModal(true);
+        }
+        break;
     }
     setTimeout(() => setSelectedTool(null), 300);
   }, [onOpenActivity, onOpenStatus, onOpenTask, onOpenEvent, onOpenMicrophone]);
@@ -1731,7 +1841,10 @@ const QuantumBalltool: React.FC<QuantumBalltoolProps> = ({
 
   useEffect(() => {
     if (!longPressMenu) return;
-    const h = () => setLongPressMenu(null);
+    const h = () => {
+      activeSubMenuRef.current = null;
+      setLongPressMenu(null);
+    };
     const t = setTimeout(() => window.addEventListener('pointerdown', h, { once: true }), 100);
     return () => { clearTimeout(t); window.removeEventListener('pointerdown', h); };
   }, [longPressMenu]);
@@ -1755,6 +1868,32 @@ const QuantumBalltool: React.FC<QuantumBalltoolProps> = ({
 
   const hitBubbleOnDownRef = useRef<string | null>(null);
 
+  const handleOverlayHover = useCallback((e: React.MouseEvent) => {
+    if (!isExpanded || expandAnim !== 'idle') return;
+    
+    const hitId = hitBubble(e.clientX, e.clientY);
+    
+    if (hitId !== hoveredToolRef.current) {
+      hoveredToolRef.current = hitId;
+      
+      if (hoverTimer.current) {
+        clearTimeout(hoverTimer.current);
+        hoverTimer.current = null;
+      }
+      
+      if (hitId) {
+        hoverTimer.current = setTimeout(() => {
+          const idx = vis.findIndex(t => t.id === hitId);
+          if (idx >= 0) {
+            const { x, y } = getBubPos(idx, rotRef.current);
+            activeSubMenuRef.current = hitId;
+            setLongPressMenu({ toolId: hitId, x, y });
+          }
+        }, 1500); 
+      }
+    }
+  }, [isExpanded, expandAnim, hitBubble, vis, getBubPos]);
+
   const WHEEL_SENSITIVITY = 0.08;
   const handleWheel = useCallback((e: React.WheelEvent | WheelEvent) => {
     if (!isExpanded || expandAnim !== 'idle') return;
@@ -1776,6 +1915,17 @@ const QuantumBalltool: React.FC<QuantumBalltoolProps> = ({
 
   const handleDown = useCallback((cx: number, cy: number, isBall: boolean) => {
     if (isSnappingToTool) return; 
+    
+    if (activeSubMenuRef.current) {
+      preventNextClickRef.current = true;
+    } else {
+      preventNextClickRef.current = false;
+    }
+    activeSubMenuRef.current = null;
+
+    if (hoverTimer.current) clearTimeout(hoverTimer.current);
+    hoveredToolRef.current = null;
+
     pStartRef.current = { x: cx, y: cy }; movedRef.current = false; clearLP(); lpFired.current = false; setLongPressMenu(null);
     hitBubbleOnDownRef.current = null; 
 
@@ -1810,7 +1960,11 @@ const QuantumBalltool: React.FC<QuantumBalltoolProps> = ({
           const hitId = hitBubbleOnDownRef.current;
           if (hitId) {
             const idx = vis.findIndex(t => t.id === hitId);
-            if (idx >= 0) { const { x, y } = getBubPos(idx, rotRef.current); setLongPressMenu({ toolId: hitId, x, y }); }
+            if (idx >= 0) { 
+              const { x, y } = getBubPos(idx, rotRef.current); 
+              activeSubMenuRef.current = hitId;
+              setLongPressMenu({ toolId: hitId, x, y }); 
+            }
           }
         }, LP_MS);
       }
@@ -1895,6 +2049,11 @@ const QuantumBalltool: React.FC<QuantumBalltoolProps> = ({
     interRef.current = 'none'; clearLP();
     hitBubbleOnDownRef.current = null; 
 
+    if (preventNextClickRef.current) {
+      preventNextClickRef.current = false;
+      snapBackToViewport();
+      return;
+    }
     if (lpFired.current) { lpFired.current = false; snapBackToViewport(); return; }
     if (isSnappingToTool) return; 
     const now = Date.now();
@@ -2066,6 +2225,9 @@ const QuantumBalltool: React.FC<QuantumBalltoolProps> = ({
   const activeColor = activeTool ? getToolColors(tools.find(t => t.id === activeTool) || tools[0]).color : wsC.core1;
   const badgeToolData = badgeToolId ? vis.find(t => t.id === badgeToolId) : null;
   const badgeColors = badgeToolData ? getToolColors(badgeToolData) : null;
+  
+  const demoToolItem = tools.find(t => t.id === 'demos') || tools[0];
+  const demoColors = getToolColors(demoToolItem);
 
   return (
     <>
@@ -2076,6 +2238,9 @@ const QuantumBalltool: React.FC<QuantumBalltoolProps> = ({
           onMouseDown={e => {
             e.preventDefault();
             e.stopPropagation();
+            if (hoverTimer.current) clearTimeout(hoverTimer.current);
+            hoveredToolRef.current = null;
+            activeSubMenuRef.current = null;
             releasePressedBubble();
             setExpandAnim('collapsing');
             badgeToolRef.current = null;
@@ -2087,6 +2252,9 @@ const QuantumBalltool: React.FC<QuantumBalltoolProps> = ({
           onTouchStart={e => {
             e.preventDefault();
             e.stopPropagation();
+            if (hoverTimer.current) clearTimeout(hoverTimer.current);
+            hoveredToolRef.current = null;
+            activeSubMenuRef.current = null;
             releasePressedBubble();
             setExpandAnim('collapsing');
             badgeToolRef.current = null;
@@ -2103,6 +2271,11 @@ const QuantumBalltool: React.FC<QuantumBalltoolProps> = ({
           onMouseDown={e => { if (e.button !== 0) return; e.preventDefault(); e.stopPropagation(); const { cx, cy } = getCXY(); if (Math.sqrt((e.clientX - cx) ** 2 + (e.clientY - cy) ** 2) < ballSz / 2 + 5) return; handleDown(e.clientX, e.clientY, false); }}
           onTouchStart={e => { e.preventDefault(); e.stopPropagation(); const t = e.touches[0]; const { cx, cy } = getCXY(); if (Math.sqrt((t.clientX - cx) ** 2 + (t.clientY - cy) ** 2) < ballSz / 2 + 5) return; handleDown(t.clientX, t.clientY, false); }}
           onWheel={handleWheel as any}
+          onMouseMove={handleOverlayHover}
+          onMouseLeave={() => {
+            hoveredToolRef.current = null;
+            if (hoverTimer.current) clearTimeout(hoverTimer.current);
+          }}
           onContextMenu={e => {
             e.preventDefault();
             e.stopPropagation();
@@ -2194,14 +2367,18 @@ const QuantumBalltool: React.FC<QuantumBalltoolProps> = ({
         return (
           <div className="fixed pointer-events-auto" style={{ zIndex: 10002, left: longPressMenu.x, top: longPressMenu.y, transform: 'translate(-50%, -50%)' }}>
             {tool.quickActions.map((a, i) => {
-              const angle = -90 + (i - (tool.quickActions!.length - 1) / 2) * 50;
+              const angle = -90 + (i - (tool.quickActions!.length - 1) / 2) * 75;
               const rad = (angle * Math.PI) / 180;
               return (
-                <button key={a.action} className="absolute rounded-lg px-3 py-1.5 text-xs font-mono font-bold whitespace-nowrap" style={{
-                  left: Math.cos(rad) * 70, top: Math.sin(rad) * 70, transform: 'translate(-50%, -50%)',
-                  background: 'rgba(0,0,0,0.95)', border: `1.5px solid ${tColors.color}`, color: tColors.color,
-                  boxShadow: `0 0 12px ${tColors.color}60`, animation: `quantum-radial-expand 0.25s cubic-bezier(0.34,1.56,0.64,1) both`, animationDelay: `${i * 50}ms`,
-                }} onMouseDown={e => e.stopPropagation()} onTouchStart={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); fireTool(tool.id); }}>
+                <button key={a.action} className="absolute rounded-full px-4 py-2 text-xs font-mono font-bold whitespace-nowrap backdrop-blur-md" style={{
+                  left: Math.cos(rad) * 95, top: Math.sin(rad) * 95, transform: 'translate(-50%, -50%)',
+                  background: 'rgba(0,0,0,0.85)', border: `1.5px solid ${tColors.color}`, color: tColors.color,
+                  boxShadow: `0 0 15px ${tColors.glowColor}60`, animation: `quantum-radial-expand 0.25s cubic-bezier(0.34,1.56,0.64,1) both`, animationDelay: `${i * 40}ms`,
+                }} 
+                onPointerDown={e => e.stopPropagation()} 
+                onMouseDown={e => e.stopPropagation()} 
+                onTouchStart={e => e.stopPropagation()} 
+                onClick={e => { e.stopPropagation(); fireTool(tool.id, a.action); }}>
                   {a.label}
                 </button>
               );
@@ -2274,6 +2451,101 @@ const QuantumBalltool: React.FC<QuantumBalltoolProps> = ({
             </button>
           </div>
         </>
+      )}
+
+      {showCreateDemoModal && (
+        <div className="fixed inset-0 flex items-center justify-center p-4" style={{ zIndex: 10010 }}>
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setShowCreateDemoModal(false)} />
+          <div className="relative bg-black border rounded-2xl w-full max-w-md p-6 shadow-2xl animate-in zoom-in-95 duration-200"
+               style={{ borderColor: demoColors.lightColor, boxShadow: `0 0 40px ${demoColors.lightColor}40` }}>
+            <div className="flex items-center justify-between mb-6">
+               <h3 className="text-xl font-mono font-bold flex items-center gap-3" style={{ color: demoColors.color }}>
+                 <DemoIcon size={24} /> Create New Demo
+               </h3>
+               <button onClick={() => setShowCreateDemoModal(false)} className="text-gray-400 hover:text-white transition-colors">
+                 <CloseIcon size={24} />
+               </button>
+            </div>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-mono font-bold text-gray-500 uppercase tracking-widest mb-2">Demo Organization Name</label>
+                <input 
+                  type="text" 
+                  value={demoName}
+                  onChange={(e) => setDemoName(e.target.value)}
+                  placeholder="e.g. Acme Corp Demo"
+                  autoFocus
+                  className="w-full bg-black/50 border border-gray-700 text-white font-mono text-sm p-3 rounded-lg focus:outline-none transition-all"
+                  style={{ borderBottomColor: demoName ? demoColors.color : undefined }}
+                />
+              </div>
+            </div>
+
+            <div className="mt-8">
+              <button 
+                onClick={handleCreateDemo} 
+                disabled={!demoName.trim() || isCreatingDemo}
+                className="w-full py-3 border rounded-lg transition-all font-mono font-bold text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                style={{ 
+                  backgroundColor: `${demoColors.color}15`, 
+                  color: demoColors.color, 
+                  borderColor: demoColors.color, 
+                  boxShadow: `0 0 15px ${demoColors.lightColor}40` 
+                }}
+              >
+                {isCreatingDemo ? 'CREATING...' : 'CREATE DEMO'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showViewDemosModal && (
+        <div className="fixed inset-0 flex items-center justify-center p-4" style={{ zIndex: 10010 }}>
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setShowViewDemosModal(false)} />
+          <div className="relative bg-black border rounded-2xl w-full max-w-lg p-6 shadow-2xl animate-in zoom-in-95 duration-200 flex flex-col max-h-[80vh]"
+               style={{ borderColor: demoColors.lightColor, boxShadow: `0 0 40px ${demoColors.lightColor}40` }}>
+            <div className="flex items-center justify-between mb-6 shrink-0">
+               <h3 className="text-xl font-mono font-bold flex items-center gap-3" style={{ color: demoColors.color }}>
+                 <DemoIcon size={24} /> Active Demos
+               </h3>
+               <button onClick={() => setShowViewDemosModal(false)} className="text-gray-400 hover:text-white transition-colors">
+                 <CloseIcon size={24} />
+               </button>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto pr-2 darkwave-scrollbar space-y-3">
+              {isLoadingDemos ? (
+                <div className="text-center py-8 font-mono text-sm animate-pulse" style={{ color: demoColors.color }}>
+                  Locating demo environments...
+                </div>
+              ) : demoList.length === 0 ? (
+                <div className="text-center py-8 font-mono text-sm text-gray-500 border border-dashed border-gray-800 rounded-xl">
+                  No demo environments found.
+                </div>
+              ) : (
+                demoList.map(demo => (
+                  <div 
+                    key={demo.id} 
+                    onClick={() => handleSwitchToDemo(demo)}
+                    className="p-4 rounded-xl border bg-black/50 transition-all hover:bg-white/10 hover:shadow-lg flex items-center justify-between cursor-pointer group" 
+                    style={{ borderColor: `${demoColors.color}40` }}
+                  >
+                    <div>
+                      <h4 className="text-white font-mono font-bold group-hover:text-cyan-400 transition-colors">{demo.name}</h4>
+                      <p className="text-xs font-mono text-gray-500 mt-1">Created: {new Date(demo.created_at).toLocaleDateString()}</p>
+                    </div>
+                    <span className="px-2 py-1 rounded text-[10px] font-mono font-bold uppercase tracking-wider border"
+                          style={{ color: demoColors.color, borderColor: demoColors.color, backgroundColor: `${demoColors.color}10` }}>
+                      Switch
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
       {showWorkflowBuilder && (

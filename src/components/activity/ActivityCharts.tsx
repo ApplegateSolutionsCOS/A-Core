@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import { useWorkspaceColor } from '@/contexts/WorkspaceColorContext';
 
 // ═══════════════ FEATURE USAGE BAR CHART ═══════════════
 interface FeatureBarChartProps {
@@ -258,9 +259,28 @@ export const SessionStats: React.FC<SessionStatsProps> = ({ activities }) => {
 // ═══════════════ HOURLY ACTIVITY CHART ═══════════════
 interface HourlyChartProps {
   activities: any[];
+  currentWorkspaceSlug?: string | null;
 }
 
-export const HourlyActivityChart: React.FC<HourlyChartProps> = ({ activities }) => {
+export const HourlyActivityChart: React.FC<HourlyChartProps> = ({ activities, currentWorkspaceSlug }) => {
+  const { getColor } = useWorkspaceColor();
+  
+  // ⚡ FIX: Look for the actual '/workspace/' path used by your router
+  const getSlugFromUrl = () => {
+    if (typeof window === 'undefined') return null;
+    const path = window.location.pathname;
+    if (path.startsWith('/workspace/')) {
+       const parts = path.split('/');
+       if (parts.length > 2) return parts[2];
+    }
+    return null;
+  };
+  
+  const activeSlug = currentWorkspaceSlug || getSlugFromUrl();
+  const ac = activeSlug ? getColor(activeSlug) : null;
+  const themeRgb = ac ? ac.rgb : '0,255,255';
+  const themeColor = ac ? ac.primary : '#00ffff';
+
   const hourData = useMemo(() => {
     const counts = new Array(24).fill(0);
     activities.forEach(act => {
@@ -286,12 +306,12 @@ export const HourlyActivityChart: React.FC<HourlyChartProps> = ({ activities }) 
                 className="w-full rounded-t-sm transition-all"
                 style={{
                   height: `${Math.max(2, pct)}%`,
-                  backgroundColor: isNow ? 'rgba(0,255,255,0.8)' : `rgba(0,255,255,${0.15 + (pct / 100) * 0.5})`,
-                  boxShadow: isNow ? '0 0 8px rgba(0,255,255,0.5)' : count > 0 ? `0 0 4px rgba(0,255,255,${pct / 300})` : 'none',
+                  backgroundColor: isNow ? `rgba(${themeRgb},0.8)` : `rgba(${themeRgb},${0.15 + (pct / 100) * 0.5})`,
+                  boxShadow: isNow ? `0 0 8px rgba(${themeRgb},0.5)` : count > 0 ? `0 0 4px rgba(${themeRgb},${pct / 300})` : 'none',
                 }}
               />
               {count > 0 && (
-                <div className="absolute bottom-full mb-1 px-1.5 py-0.5 bg-black border border-cyan-500/30 rounded text-[8px] font-mono text-cyan-400 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
+                <div className="absolute bottom-full mb-1 px-1.5 py-0.5 bg-black border rounded text-[8px] font-mono opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10" style={{ borderColor: `rgba(${themeRgb}, 0.3)`, color: themeColor }}>
                   {h}:00 — {count}
                 </div>
               )}

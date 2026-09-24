@@ -111,6 +111,28 @@ const OrgIcon: React.FC<{ size?: number; className?: string }> = ({ size = 24, c
   </svg>
 );
 
+// Helper to calculate hue rotation from cyan (~185deg) to target hex color
+const getHueRotation = (hex: string) => {
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h = 0;
+  
+  if (max !== min) {
+    const d = max - min;
+    switch (max) {
+      case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+      case g: h = (b - r) / d + 2; break;
+      case b: h = (r - g) / d + 4; break;
+    }
+    h /= 6;
+  }
+  
+  return Math.round(h * 360) - 185; 
+};
+
 const BottomNav: React.FC<BottomNavProps> = ({
   activeTab, onTabChange, unreadMessages = 0, pendingTasks = 0,
   onSelectWorkspace, onNavigateToMiniApp, currentWorkspace
@@ -124,6 +146,7 @@ const BottomNav: React.FC<BottomNavProps> = ({
   // ⚡ NEW: Context Menu & User Color States
   const [contextMenu, setContextMenu] = useState<{ isOpen: boolean, x: number, y: number, buttonId: string } | null>(null);
   const [userNavColors, setUserNavColors] = useState<Record<string, string>>({});
+  const [isColorLoaded, setIsColorLoaded] = useState(false); // ⚡ Track color loading
 
   const { getColor } = useWorkspaceColor();
   const { organization, isPlatformOwner, isOrganizationAdmin, user } = useAuth();
@@ -273,18 +296,24 @@ const BottomNav: React.FC<BottomNavProps> = ({
   useEffect(() => {
     const fetchUserPreferences = async () => {
       const userId = user?.id || (user as any)?.uid;
-      if (!userId) return;
+      if (!userId || !organization?.id) {
+        setIsColorLoaded(true);
+        return;
+      }
       try {
         const { data, error } = await supabase.schema('app_private')
           .from('user_preferences')
           .select('nav_colors')
           .eq('user_id', userId)
+          .eq('organization_id', organization.id) // ⚡ Scope to current org
           .maybeSingle();
 
         if (error) console.error('[BottomNav] Error fetching colors:', error);
         if (data?.nav_colors) setUserNavColors(data.nav_colors);
       } catch (err) {
         console.error('[BottomNav] Caught error fetching colors:', err);
+      } finally {
+        setIsColorLoaded(true);
       }
     };
     fetchUserPreferences();
@@ -313,9 +342,10 @@ const BottomNav: React.FC<BottomNavProps> = ({
         .from('user_preferences')
         .upsert({
           user_id: userId,
+          organization_id: organization.id, // ⚡ Scope to current org
           nav_colors: updatedColors,
           updated_at: new Date().toISOString()
-        }, { onConflict: 'user_id' });
+        }, { onConflict: 'user_id, organization_id' }); // ⚡ Use new composite key
         
       if (error) console.error('[BottomNav] Error saving colors to DB:', error);
     } catch (err) {
@@ -422,17 +452,43 @@ const BottomNav: React.FC<BottomNavProps> = ({
     { id: 'org-3', name: 'Regional Office', tier: 'expert' as const },
   ] : [];
 
+  // Dynamically calculate the active logo color
+  const activeLogoColor = (currentWorkspace && wc) 
+    ? wc.primary 
+    : (userNavColors['dashboard'] && COLOR_PALETTE[userNavColors['dashboard']] ? COLOR_PALETTE[userNavColors['dashboard']].color : primaryColor);
+    
+  const activeLogoRgb = (currentWorkspace && wc) 
+    ? wc.rgb 
+    : (userNavColors['dashboard'] && COLOR_PALETTE[userNavColors['dashboard']] ? COLOR_PALETTE[userNavColors['dashboard']].rgb : primaryRgb);
+
+  const hueRotateDeg = getHueRotation(activeLogoColor);
+  
+  // ⚡ NEW: Detect if the target color is white/grayscale
+  const activeR = parseInt(activeLogoColor.slice(1, 3), 16) || 0;
+  const activeG = parseInt(activeLogoColor.slice(3, 5), 16) || 0;
+  const activeB = parseInt(activeLogoColor.slice(5, 7), 16) || 0;
+  // If the RGB values are very close to each other, it's grayscale
+  const isGrayscale = Math.max(activeR, activeG, activeB) - Math.min(activeR, activeG, activeB) < 20;
+  const isLight = (activeR + activeG + activeB) / 3 > 150;
+
+  if (!isColorLoaded) return null; // ⚡ NEW: Prevent render until colors resolve
+
   return (
     <>
       <nav className="fixed bottom-0 left-0 right-0 h-16 bg-black/95 backdrop-blur-lg z-40"
         style={{ borderTop: `1px solid rgba(${navBorderRgb}, 0.2)`, WebkitTapHighlightColor: 'transparent' }}>
         <div className="absolute top-0 left-0 right-0 h-px" style={{ background: `linear-gradient(to right, transparent, rgba(${navBorderRgb}, 0.3), transparent)` }} />
         
-        {/* Replacement block in BottomNav.tsx for maximum vibrancy, extreme contrast & intense glow */}
-        <div className="absolute top-1/2 left-4 -translate-y-1/2 opacity-100 pointer-events-none">
-          <ApplegateCoreLogo 
-            className="w-24 h-auto text-cyan-50 drop-shadow-" 
-          />
+        {/* Dynamic Logo Block matching Workspace or User Dashboard preferences */}
+        <div 
+          className="absolute top-1/2 left-4 -translate-y-1/2 opacity-100 pointer-events-none transition-all duration-500"
+          style={{ 
+            filter: isGrayscale 
+              ? `grayscale(100%) brightness(${isLight ? 200 : 120}%) drop-shadow(0 0 12px rgba(${activeLogoRgb}, 0.8))`
+              : `hue-rotate(${hueRotateDeg}deg) drop-shadow(0 0 12px rgba(${activeLogoRgb}, 0.8))` 
+          }}
+        >
+          <ApplegateCoreLogo className="w-24 h-auto transition-all duration-500 brightness-110" />
         </div>
 
         <div className="flex items-center justify-around h-full max-w-lg mx-auto px-2">
@@ -531,6 +587,45 @@ const BottomNav: React.FC<BottomNavProps> = ({
             );
           })}
         </div>
+
+        {/* ⚡ NEW: Demo Mode Badge & Exit Button */}
+        {organization?.subscription_tier === 'demo' && (
+          <div className="absolute top-1/2 right-4 -translate-y-1/2 z-50 flex items-center gap-2 animate-in fade-in duration-500">
+            {/* Exit Demo Button */}
+            <button
+              onClick={() => {
+                const corePlatformOrg = {
+                  id: 'c28f0d91-c0df-4092-a2cc-19c860f1824f',
+                  name: 'Applegate Solutions',
+                  subscription_tier: 'expert',
+                  is_active: true,
+                  primary_color: '#06b6d4',
+                  logo_url: 'https://rghtxlzzpuazvacupere.supabase.co/storage/v1/object/public/organization-logos/logos/c28f0d91-c0df-4092-a2cc-19c860f1824f-1777231826845.png'
+                };
+                
+                localStorage.setItem('bos_organization', JSON.stringify(corePlatformOrg));
+                localStorage.setItem('bos_platform_organization', JSON.stringify(corePlatformOrg));
+                window.location.href = '/'; 
+              }}
+              className="px-2 py-1 bg-black/80 border border-emerald-500/50 text-emerald-400 rounded-full shadow-[0_0_10px_rgba(16,185,129,0.3)] backdrop-blur-md hover:bg-emerald-500/20 hover:scale-105 transition-all flex items-center gap-1"
+              title="Exit Demo Mode"
+            >
+              <CloseIcon size={12} />
+              <span className="text-[10px] font-mono font-bold uppercase tracking-wider">Exit</span>
+            </button>
+
+            {/* Original Demo Mode Indicator */}
+            <div className="relative flex items-center justify-center pointer-events-none">
+              <div className="absolute inset-0 bg-amber-500/20 rounded-full blur-md animate-pulse" />
+              <div className="relative flex items-center gap-2 px-3 py-1.5 bg-black/80 border border-amber-500/50 rounded-full shadow-[0_0_15px_rgba(245,158,11,0.3)] backdrop-blur-md">
+                <div className="w-1.5 h-1.5 rounded-full bg-amber-400 shadow-[0_0_8px_rgba(245,158,11,0.8)] animate-pulse" style={{ animationDuration: '1.5s' }} />
+                <span className="text-amber-400 font-mono text-[10px] sm:text-xs font-bold uppercase tracking-widest drop-shadow-[0_0_5px_rgba(245,158,11,0.5)]">
+                  Demo Mode
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
       </nav>
 
       {/* ⚡ NEW: Custom Color Context Menu */}
