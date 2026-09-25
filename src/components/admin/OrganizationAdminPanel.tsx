@@ -157,7 +157,7 @@ const OrganizationAdminPanel: React.FC<OrganizationAdminPanelProps> = ({ isOpen,
 
   const handleRemoveUser = async (userId: string) => {
     if (!confirm('Remove this user?')) return;
-    try { await db.from('organization_users').delete().eq('id', userId); fetchData(); }
+    try { await db.from('organization_users').delete().eq('id', userId).eq('organization_id', authOrg.id); fetchData(); }
     catch (err) { console.error('Error removing user:', err); }
   };
 

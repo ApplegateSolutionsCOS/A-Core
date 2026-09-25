@@ -1298,17 +1298,38 @@ const QuantumBalltool: React.FC<QuantumBalltoolProps> = ({
       const uniqueDomain = `${safeName}-${Date.now()}.demo.applegate.solutions`;
 
       // Call the simplified RPC that only creates the organization
-      const { error: orgError } = await supabase
-        .schema('app_private')
-        .rpc('create_demo_organization', {
-          p_name: demoName.trim(),
-          p_domain: uniqueDomain,
-          p_tier: 'demo'
-        });
+          const { error: orgError } = await supabase
+            .schema('app_private')
+            .rpc('create_demo_organization', {
+              p_name: demoName.trim(),
+              p_domain: uniqueDomain,
+              p_tier: 'demo'
+            });
 
-      if (orgError) throw orgError;
+          if (orgError) throw orgError;
 
-      setShowCreateDemoModal(false);
+          // Fetch the newly created org by domain to get its ID
+          const { data: newOrg } = await supabase
+            .schema('app_private')
+            .from('organizations')
+            .select('id')
+            .eq('domain', uniqueDomain)
+            .single();
+
+          // Map the current user into the new demo organization
+          if (newOrg && user) {
+            await supabase.schema('app_private').from('organization_users').insert({
+              id: (user as any).id,
+              organization_id: newOrg.id,
+              email: (user as any).email,
+              full_name: (user as any).user_metadata?.full_name || (user as any).email || 'Platform Owner',
+              role: 'organization_admin',
+              status: 'active',
+              is_org_creator: true
+            });
+          }
+
+          setShowCreateDemoModal(false);
       setDemoName('');
       
       // Refresh the demo list immediately

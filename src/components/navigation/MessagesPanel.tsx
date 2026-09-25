@@ -209,7 +209,7 @@ const MessagesPanel: React.FC<MessagesPanelProps> = ({
           setContacts(formattedContacts);
           setDbStatus(''); // Clear status on success
         } else {
-          setDbStatus(`No other users found in organization: ${me.organization_id}`);
+          setDbStatus(`No other users found in organization: ${organization.id}`);
         }
       } catch (err: any) {
         setDbStatus(`Unexpected JS Error: ${err.message || String(err)}`);

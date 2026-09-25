@@ -1033,6 +1033,106 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
     }
   };
 
+  // Memoized array of pinned tasks, sorted by pin_order
+  const pinnedTasks = useMemo(() => {
+    return tasks
+      .filter(t => t.is_pinned)
+      .sort((a, b) => (a.pin_order || 0) - (b.pin_order || 0));
+  }, [tasks]);
+
+  const [stackOffset, setStackOffset] = useState(0);
+
+  // Keep offset valid if tasks are unpinned or added
+  useEffect(() => {
+    if (pinnedTasks.length > 0 && stackOffset >= pinnedTasks.length) {
+      setStackOffset(Math.max(0, pinnedTasks.length - 1));
+    }
+  }, [pinnedTasks.length, stackOffset]);
+
+  const visualPinnedTasks = useMemo(() => {
+    if (pinnedTasks.length === 0) return [];
+    return [
+      ...pinnedTasks.slice(stackOffset),
+      ...pinnedTasks.slice(0, stackOffset)
+    ];
+  }, [pinnedTasks, stackOffset]);
+
+  const [swipeStartY, setSwipeStartY] = useState<number | null>(null);
+  const [swipeOffsetY, setSwipeOffsetY] = useState<number>(0);
+  const [cyclePhase, setCyclePhase] = useState<'idle' | 'up' | 'slideDown' | 'slipBehind'>('idle');
+  const [animatingTaskId, setAnimatingTaskId] = useState<string | null>(null);
+
+  const handleTogglePin = async (taskId: string, currentPinStatus: boolean) => {
+    try {
+      const maxOrder = pinnedTasks.length > 0 ? Math.max(...pinnedTasks.map(t => t.pin_order || 0)) : -1;
+      const newOrder = currentPinStatus ? 0 : maxOrder + 1;
+      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, is_pinned: !currentPinStatus, pin_order: newOrder } : t));
+      await supabase.schema('app_private')
+        .from('tasks')
+        .update({ is_pinned: !currentPinStatus, pin_order: newOrder, updated_at: new Date().toISOString() })
+        .eq('id', taskId);
+    } catch (err) {
+      console.error('Error toggling pin status:', err);
+    }
+  };
+
+  const animateAndCycle = (taskId: string) => {
+    if (pinnedTasks.length <= 1 || cyclePhase !== 'idle') return;
+    setAnimatingTaskId(taskId);
+    
+    const triggerShuffle = () => {
+      setCyclePhase('slideDown');
+      setSwipeOffsetY(140); // Slide entirely below the other cards first
+      
+      setTimeout(() => {
+        setCyclePhase('slipBehind');
+        
+        setTimeout(() => {
+          setStackOffset(prev => (prev + 1) % pinnedTasks.length);
+          setCyclePhase('idle');
+          setAnimatingTaskId(null);
+        }, 500); 
+      }, 400); // Trigger slip behind slightly before slideDown finishes for a fluid arc
+    };
+
+    if (swipeOffsetY > -20) {
+      setCyclePhase('up');
+      setSwipeOffsetY(-40);
+      setTimeout(triggerShuffle, 150);
+    } else {
+      triggerShuffle();
+    }
+  };
+
+  const handleSwipeStart = (e: React.MouseEvent | React.TouchEvent) => {
+    if (cyclePhase !== 'idle') return;
+    const y = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
+    setSwipeStartY(y);
+    setSwipeOffsetY(0);
+  };
+
+  const handleSwipeMove = (e: React.MouseEvent | React.TouchEvent) => {
+    if (swipeStartY === null || cyclePhase !== 'idle') return;
+    const y = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
+    const diff = y - swipeStartY;
+    if (diff < 0) {
+      setSwipeOffsetY(diff); 
+    }
+  };
+
+  const handleSwipeEnd = (e: React.MouseEvent | React.TouchEvent, taskId: string) => {
+    if (swipeStartY === null || cyclePhase !== 'idle') return;
+    if (swipeOffsetY < -40) {
+      animateAndCycle(taskId);
+    } else {
+      setSwipeOffsetY(0);
+      if (Math.abs(swipeOffsetY) < 10) {
+        setViewingTaskId(taskId); 
+      }
+    }
+    setSwipeStartY(null);
+  };
+
   const handleUpdateTaskDetail = async (taskId: string, field: string, value: any) => {
     try {
       setTasks(prev => prev.map(t => t.id === taskId ? { ...t, [field]: value } : t));
@@ -1432,7 +1532,7 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
     return st ? st.name : (statusId || 'Unknown').replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase());
   };
 
-  `const taskCounts = {
+  const taskCounts = {
     all: tasks.length,
     pending: tasks.filter(t => t.status === 'pending').length,
     in_progress: tasks.filter(t => t.status === 'in_progress').length,
@@ -1458,7 +1558,7 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
     return () => window.removeEventListener('resize', updateCarouselVisuals);
   }, [updateCarouselVisuals]);
 
-  // ⚡ FIX: Allow the standalone TaskViewerModal to render if a task is clicked from the banner, even if the main TasksView is closed.`
+  // ⚡ FIX: Allow the standalone TaskViewerModal to render if a task is clicked from the banner, even if the main TasksView is closed.
   if (!isOpen && !viewingTaskId) return null;
 
   if (!isOpen && viewingTaskId) {
@@ -1603,63 +1703,6 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
             >
               <span style={{ color: themeColor, textShadow: `0 0 10px rgba(${themeRgb}, 0.8), 0 0 20px rgba(${themeRgb}, 0.4)` }}>TASKS</span>
             </h1>
-            
-            {/* Moved Toggles */}
-            <div className="flex flex-wrap items-center gap-3">
-              {/* Mine / Delegated Toggles */}
-              <div className="flex border border-gray-800 rounded-lg overflow-hidden shrink-0 h-[38px] shadow-[0_0_10px_rgba(0,0,0,0.3)]">
-                <button
-                  onClick={() => setViewMode('mine')}
-                  className={`flex-1 min-w-[100px] flex items-center justify-center gap-1.5 px-3 text-xs sm:text-sm font-mono transition-all h-full ${
-                    viewMode === 'mine' ? 'bg-cyan-500/20 text-cyan-400 border-r border-cyan-500/40 shadow-[0_0_10px_rgba(0,255,255,0.2)]' : 'bg-gray-900/50 text-gray-500 hover:text-gray-300 border-r border-gray-800'
-                  }`}
-                >
-                  <UserIcon size={14} />
-                  <span>Mine</span>
-                  <span className="px-1 py-0.5 rounded text-[10px] bg-black/50 border border-gray-800">{mineTasksCount}</span>
-                </button>
-                <button
-                  onClick={() => setViewMode('delegated')}
-                  className={`flex-1 min-w-[110px] flex items-center justify-center gap-1.5 px-3 text-xs sm:text-sm font-mono transition-all h-full ${
-                    viewMode === 'delegated' ? 'bg-cyan-500/20 text-cyan-400 shadow-[0_0_10px_rgba(0,255,255,0.2)]' : 'bg-gray-900/50 text-gray-500 hover:text-gray-300'
-                  }`}
-                >
-                  <UsersIcon size={14} />
-                  <span>Delegated</span>
-                  <span className="px-1 py-0.5 rounded text-[10px] bg-black/50 border border-gray-800">{delegatedTasksCount}</span>
-                </button>
-              </div>
-
-              {/* Category Toggle Switch */}
-              <div className="flex bg-black/50 border border-gray-800 rounded-lg p-1 shadow-inner h-[38px] items-center">
-                {(['statuses', 'tags', 'priorities'] as const).map(cat => {
-                  const isActive = activeFilterCategory === cat;
-                  const filterCount = cat === 'statuses' ? statusFilters.length : cat === 'tags' ? tagFilters.length : priorityFilters.length;
-                  
-                  return (
-                    <button
-                      key={cat}
-                      onClick={() => setActiveFilterCategory(cat)}
-                      className={`relative px-4 sm:px-6 py-1 rounded-md font-mono text-xs sm:text-sm uppercase tracking-wider transition-all h-full flex items-center justify-center ${
-                        isActive 
-                          ? 'bg-cyan-500/20 text-cyan-400 shadow-[0_0_10px_rgba(0,255,255,0.2)] font-bold' 
-                          : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
-                      }`}
-                    >
-                      {cat}
-                      {filterCount > 0 && (
-                        <span 
-                          className="absolute -top-5 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded border bg-black text-[10px] font-bold animate-in slide-in-from-bottom-2 fade-in duration-200 pointer-events-none leading-none z-10"
-                          style={{ color: themeColor, borderColor: themeColor, boxShadow: `0 0 10px rgba(${themeRgb}, 0.3)` }}
-                        >
-                          {filterCount}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
           </div>
           
           <div className="flex items-center gap-3 shrink-0">
@@ -1691,23 +1734,56 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
           
           {/* Expandable Top Section */}
           {isControlsExpanded && (
-            <div className="animate-in fade-in slide-in-from-top-4 duration-300 shrink-0">
+            <div className="animate-in fade-in slide-in-from-top-4 duration-300 shrink-0 flex flex-col lg:flex-row gap-6 mb-4">
               
-          {/* Filter Cards (Carousel) */}
-          <div 
-            ref={tagsScrollRef}
-            onScroll={handleCarouselScroll}
-            onMouseDown={handleMouseDownTags}
-            onMouseLeave={handleMouseLeaveTags}
-            onMouseUp={handleMouseUpTags}
-            onMouseMove={handleMouseMoveTags}
-            className="flex overflow-x-auto gap-6 py-8 px-[calc(50%-75px)] no-scrollbar snap-x snap-mandatory cursor-grab active:cursor-grabbing"
-            style={{ 
-              scrollBehavior: 'smooth',
-              maskImage: 'linear-gradient(to right, transparent, black 15%, black 85%, transparent)', 
-              WebkitMaskImage: 'linear-gradient(to right, transparent, black 15%, black 85%, transparent)' 
-            }}
-          >
+              {/* Left 50%: Categories & Carousel */}
+              <div className="w-full lg:w-1/2 flex flex-col items-center border border-gray-800/50 rounded-xl bg-black/20 overflow-hidden relative pb-4 pt-4">
+                
+                {/* Category Toggle Switch (Moved from Header) */}
+                <div className="flex bg-black/50 border border-gray-800 rounded-lg p-1 shadow-inner h-[38px] items-center z-10 mb-2">
+                  {(['statuses', 'tags', 'priorities'] as const).map(cat => {
+                    const isActive = activeFilterCategory === cat;
+                    const filterCount = cat === 'statuses' ? statusFilters.length : cat === 'tags' ? tagFilters.length : priorityFilters.length;
+                    
+                    return (
+                      <button
+                        key={cat}
+                        onClick={() => setActiveFilterCategory(cat)}
+                        className={`relative px-4 sm:px-6 py-1 rounded-md font-mono text-xs sm:text-sm uppercase tracking-wider transition-all h-full flex items-center justify-center ${
+                          isActive 
+                            ? 'bg-cyan-500/20 text-cyan-400 shadow-[0_0_10px_rgba(0,255,255,0.2)] font-bold' 
+                            : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
+                        }`}
+                      >
+                        {cat}
+                        {filterCount > 0 && (
+                          <span 
+                            className="absolute -top-5 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded border bg-black text-[10px] font-bold animate-in slide-in-from-bottom-2 fade-in duration-200 pointer-events-none leading-none z-10"
+                            style={{ color: themeColor, borderColor: themeColor, boxShadow: `0 0 10px rgba(${themeRgb}, 0.3)` }}
+                          >
+                            {filterCount}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Filter Cards (Carousel) */}
+                <div 
+                  ref={tagsScrollRef}
+                  onScroll={handleCarouselScroll}
+                  onMouseDown={handleMouseDownTags}
+                  onMouseLeave={handleMouseLeaveTags}
+                  onMouseUp={handleMouseUpTags}
+                  onMouseMove={handleMouseMoveTags}
+                  className="flex overflow-x-auto gap-6 py-8 px-[calc(50%-75px)] no-scrollbar snap-x snap-mandatory cursor-grab active:cursor-grabbing w-full"
+                  style={{ 
+                    scrollBehavior: 'smooth',
+                    maskImage: 'linear-gradient(to right, transparent, black 15%, black 85%, transparent)', 
+                    WebkitMaskImage: 'linear-gradient(to right, transparent, black 15%, black 85%, transparent)' 
+                  }}
+                >
             {(() => {
               // 1. Build the active list dynamically based on toggle
               let activeItems: any[] = [];
@@ -1787,9 +1863,193 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
                 );
               });
             })()}
-          </div>
-          </div>
-        )}
+                </div>
+              </div>
+
+              {/* Right 50%: Pinned Tasks */}
+              <div className="w-full lg:w-1/2 flex flex-col border border-gray-800/50 rounded-xl bg-black/20 p-4">
+                 <h3 className="text-white font-mono text-sm uppercase tracking-widest mb-3 font-bold flex items-center gap-2 border-b border-gray-800/50 pb-2 z-20">
+                    <LucideIcons.Pin size={16} style={{ color: themeColor }} /> Pinned Tasks
+                    <span className="ml-auto bg-black/50 text-gray-400 px-2 py-0.5 rounded text-xs border border-gray-800">{pinnedTasks.length}</span>
+                 </h3>
+                 <div className={`flex-1 relative flex justify-center items-start pt-2 min-h-[150px] ${pinnedTasks.length === 0 ? 'border border-dashed border-gray-800/50 rounded-lg bg-black/40 items-center' : ''}`} style={{ perspective: '1200px' }}>
+                    {pinnedTasks.length === 0 ? (
+                      <p className="text-gray-500 font-mono text-xs text-center p-4">
+                        No pinned tasks yet. <br/> Pin a task to keep it visible here.
+                      </p>
+                    ) : (
+                      visualPinnedTasks.slice(0, 3).map((task, index, arr) => {
+                        const displayedCount = arr.length;
+
+                        let activeTagId = activeTaskTags[task.id] || (task.tags && task.tags[0]) || null;
+                        if (typeof activeTagId === 'string' && activeTagId.startsWith('{')) {
+                          try { activeTagId = JSON.parse(activeTagId).id || activeTagId; } catch(e) {}
+                        }
+                        const activeTagObj = activeTagId ? (availableTags.find(t => t.id === activeTagId) || { name: activeTagId, color: getTagColor(activeTagId).bg }) : null;
+
+                        let activeColorHex = '#9ca3af';
+                        if (taskColorMode === 'status') {
+                          activeColorHex = getStatusColor(task.status);
+                        } else if (taskColorMode === 'priority') {
+                          activeColorHex = getPriorityInfo(task.priority).color;
+                        } else {
+                          activeColorHex = activeTagObj ? activeTagObj.color : getPriorityInfo(task.priority).color;
+                        }
+                        const activeRgb = hexToRgb(activeColorHex);
+
+                        const isAnimatingThis = animatingTaskId === task.id;
+                        const absoluteIndex = pinnedTasks.findIndex(t => t.id === task.id) + 1;
+                        
+                        // ⚡ NEW: Determine visual rank to prevent DOM reordering from breaking the transition
+                        let visualIndex = index;
+                        if (cyclePhase === 'slipBehind') {
+                          if (isAnimatingThis) {
+                            visualIndex = displayedCount - 1; // Send to back visually
+                          } else if (index > 0) {
+                            visualIndex = index - 1; // Shift others forward
+                          }
+                        } else if (cyclePhase === 'slideDown') {
+                          if (!isAnimatingThis && index > 0) {
+                            visualIndex = index - 1; // Others shift forward while active slides down
+                          }
+                        }
+                        
+                        const isFront = visualIndex === 0;
+                        
+                        // Base vertical rolodex stack mapping using visualIndex
+                        let translateY = visualIndex * 18; 
+                        let rotateX = 0;
+                        let scale = 1 - (visualIndex * 0.05);
+                        let opacity = isFront ? 1 : Math.max(0.4, 0.95 - (visualIndex * 0.15));
+                        let zIndex = 20 - visualIndex;
+
+                        if (isAnimatingThis) {
+                          if (cyclePhase === 'up') {
+                            translateY = swipeOffsetY; 
+                            rotateX = Math.min(60, Math.abs(swipeOffsetY) * 0.4); 
+                            zIndex = 30; 
+                          } else if (cyclePhase === 'slideDown') {
+                            translateY = swipeOffsetY; // Target 140 (below stack)
+                            rotateX = 0;
+                            zIndex = 30; // Stay on top while sliding down
+                            scale = 1; // Keep full size
+                            opacity = 1; // Keep full opacity
+                          } else if (cyclePhase === 'slipBehind') {
+                            zIndex = 0; // Drop behind stack
+                            // translateY and scale use the visualIndex defaults (back of stack)
+                          }
+                        } else if (index === 0 && swipeStartY !== null && cyclePhase === 'idle') {
+                          translateY += swipeOffsetY; // Live drag tracker
+                          rotateX = Math.min(60, Math.abs(swipeOffsetY) * 0.4);
+                        }
+                        
+                        // Disable transition only for the true front card during active drag
+                        const transitionClass = (swipeStartY !== null && index === 0 && cyclePhase === 'idle') 
+                          ? 'transition-none' 
+                          : 'transition-all duration-500 ease-in-out'; // Fluid 500ms steps
+
+                          return (
+                            <div 
+                              key={`pinned-stack-${task.id}`} 
+                              onMouseDown={isFront ? handleSwipeStart : undefined}
+                              onMouseMove={isFront ? handleSwipeMove : undefined}
+                              onMouseUp={isFront ? (e) => handleSwipeEnd(e, task.id) : undefined}
+                            onTouchStart={isFront ? handleSwipeStart : undefined}
+                            onTouchMove={isFront ? handleSwipeMove : undefined}
+                            onTouchEnd={isFront ? (e) => handleSwipeEnd(e, task.id) : undefined}
+                            onMouseLeave={isFront && swipeStartY !== null ? (e) => handleSwipeEnd(e, task.id) : undefined}
+                            className={`absolute left-[5%] right-[5%] w-[90%] h-[120px] rounded-xl p-4 border flex flex-col justify-between group ${isFront ? 'cursor-grab active:cursor-grabbing shadow-[0_20px_40px_rgba(0,0,0,0.8)]' : 'pointer-events-none'} ${transitionClass}`}
+                            style={{ 
+                              transform: `translateY(${translateY}px) scale(${scale}) rotateX(${rotateX}deg)`,
+                              transformOrigin: 'bottom center', // Rotates backwards from the bottom edge
+                              zIndex,
+                              opacity,
+                              background: isFront ? `linear-gradient(135deg, rgba(15,15,15,0.98) 0%, rgba(5,5,5,0.95) 100%)` : `linear-gradient(135deg, rgba(20,20,20,0.95) 0%, rgba(10,10,10,0.9) 100%)`,
+                              borderColor: isFront ? activeColorHex : `rgba(${activeRgb}, 0.5)`,
+                              boxShadow: isFront ? `0 0 20px rgba(${activeRgb}, 0.35), inset 0 0 15px rgba(${activeRgb}, 0.25)` : `inset 0 0 10px rgba(${activeRgb}, 0.3)`,
+                            }}
+                          >
+                            <div className="absolute inset-0 pointer-events-none rounded-xl" style={{ background: `radial-gradient(circle at center, rgba(${activeRgb}, ${isFront ? 0.15 : 0.05}) 0%, transparent 100%)` }} />
+
+                            {/* Corner accents */}
+                            <div className="absolute -top-[1px] -left-[1px] w-2.5 h-2.5 border-t-2 border-l-2 rounded-tl-xl transition-colors duration-300" style={{ borderColor: isFront ? activeColorHex : `rgba(${activeRgb}, 0.6)` }} />
+                            <div className="absolute -top-[1px] -right-[1px] w-2.5 h-2.5 border-t-2 border-r-2 rounded-tr-xl transition-colors duration-300" style={{ borderColor: isFront ? activeColorHex : `rgba(${activeRgb}, 0.6)` }} />
+                            <div className="absolute -bottom-[1px] -left-[1px] w-2.5 h-2.5 border-b-2 border-l-2 rounded-bl-xl transition-colors duration-300" style={{ borderColor: isFront ? activeColorHex : `rgba(${activeRgb}, 0.6)` }} />
+                            <div className="absolute -bottom-[1px] -right-[1px] w-2.5 h-2.5 border-b-2 border-r-2 rounded-br-xl transition-colors duration-300" style={{ borderColor: isFront ? activeColorHex : `rgba(${activeRgb}, 0.6)` }} />
+
+                            <div className="flex justify-between items-start w-full relative z-10">
+                               <div className="flex items-center gap-2 max-w-[80%]">
+                                 <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: getStatusColor(task.status), boxShadow: `0 0 5px ${getStatusColor(task.status)}` }} />
+                                 <h4 className={`font-mono font-bold text-sm sm:text-base truncate drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] ${task.status === 'completed' ? 'text-gray-500 line-through' : 'text-white'}`}>
+                                   {task.title || 'Untitled Task'}
+                                 </h4>
+                               </div>
+                               
+                               <div className="flex flex-col items-end gap-1">
+                                 <span className="text-[10px] text-gray-300 font-mono font-bold bg-black/80 px-1.5 py-0.5 rounded border border-gray-600 shadow-[0_0_8px_rgba(0,0,0,0.5)]">
+                                   {absoluteIndex} / {pinnedTasks.length}
+                                 </span>
+                                 {isFront && (
+                                   <button 
+                                     onClick={(e) => { e.stopPropagation(); handleTogglePin(task.id, task.is_pinned); }}
+                                     onMouseDown={(e) => e.stopPropagation()}
+                                     onTouchStart={(e) => e.stopPropagation()}
+                                     onPointerDown={(e) => e.stopPropagation()}
+                                     className="text-gray-400 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity p-1 mt-1 z-[60] cursor-pointer"
+                                     title="Unpin Task"
+                                   >
+                                     <LucideIcons.PinOff size={14} />
+                                   </button>
+                                 )}
+                               </div>
+                            </div>
+
+                            <div className="flex justify-between items-end w-full mt-auto relative z-10">
+                               <span className="text-[10px] font-mono uppercase tracking-widest px-2 py-0.5 rounded border bg-black/80 shadow-[0_0_8px_rgba(0,0,0,0.5)]" style={getPriorityStyle(task.priority)}>
+                                  {getPriorityInfo(task.priority).name}
+                               </span>
+                               
+                               {task.due_date ? (
+                                  <span className={`text-[10px] font-mono px-2 py-0.5 rounded flex items-center gap-1.5 border bg-black/80 shadow-[0_0_8px_rgba(0,0,0,0.5)] ${new Date(task.due_date).getTime() < Date.now() && task.status !== 'completed' ? 'text-red-400 border-red-500/40' : 'text-gray-200 border-gray-600'}`}>
+                                     <ClockIcon size={12} className={new Date(task.due_date).getTime() < Date.now() && task.status !== 'completed' ? 'animate-pulse' : ''} /> 
+                                     {formatDueDate(task.due_date)} • {new Date(task.due_date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                                  </span>
+                               ) : (
+                                  <span className="text-[10px] font-mono text-gray-400 uppercase tracking-widest bg-black/50 px-2 py-0.5 rounded border border-gray-800">
+                                     No Due Date
+                                  </span>
+                               )}
+                            </div>
+
+                            {isFront && pinnedTasks.length > 1 && (
+                               <button
+                                 onClick={(e) => { e.preventDefault(); e.stopPropagation(); animateAndCycle(task.id); }}
+                                 onMouseDown={(e) => e.stopPropagation()}
+                                 onTouchStart={(e) => e.stopPropagation()}
+                                 onPointerDown={(e) => e.stopPropagation()}
+                                 className="absolute -left-4 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center bg-black border border-cyan-500 text-cyan-400 rounded-full opacity-0 group-hover:opacity-100 hover:bg-cyan-500/20 transition-all z-[60] shadow-[0_0_15px_rgba(0,255,255,0.4)] cursor-pointer"
+                                 title="Send to Back"
+                               >
+                                 <LucideIcons.ArrowUp size={14} />
+                               </button>
+                            )}
+
+                            {isFront && pinnedTasks.length > 1 && (
+                               <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-black/90 border border-gray-600 px-3 py-0.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none flex items-center gap-1.5 shadow-[0_0_10px_rgba(0,0,0,0.8)] z-30">
+                                  <LucideIcons.ChevronUp size={12} className="text-cyan-400 animate-bounce" />
+                                  <span className="text-[9px] font-mono text-gray-200 uppercase tracking-widest font-bold">Swipe Up</span>
+                               </div>
+                            )}
+
+                          </div>
+                        );
+                      })
+                    )}
+                 </div>
+              </div>
+
+            </div>
+          )}
 
         {/* ⚡ Faint Collapse/Expand Bar */}
         <div 
@@ -2010,6 +2270,32 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
               </>
             )}
           </div>
+          </div>
+
+          {/* Center: Mine / Delegated Toggle */}
+          <div className="flex items-center justify-center flex-1">
+            <div className="flex border border-gray-800 rounded-lg overflow-hidden shrink-0 h-[32px] shadow-[0_0_10px_rgba(0,0,0,0.3)]">
+              <button
+                onClick={() => setViewMode('mine')}
+                className={`min-w-[100px] flex items-center justify-center gap-1.5 px-3 text-xs font-mono transition-all h-full ${
+                  viewMode === 'mine' ? 'bg-cyan-500/20 text-cyan-400 border-r border-cyan-500/40 shadow-[0_0_10px_rgba(0,255,255,0.2)]' : 'bg-gray-900/50 text-gray-500 hover:text-gray-300 border-r border-gray-800'
+                }`}
+              >
+                <UserIcon size={14} />
+                <span>Mine</span>
+                <span className="px-1 py-0.5 rounded text-[10px] bg-black/50 border border-gray-800">{mineTasksCount}</span>
+              </button>
+              <button
+                onClick={() => setViewMode('delegated')}
+                className={`min-w-[110px] flex items-center justify-center gap-1.5 px-3 text-xs font-mono transition-all h-full ${
+                  viewMode === 'delegated' ? 'bg-cyan-500/20 text-cyan-400 shadow-[0_0_10px_rgba(0,255,255,0.2)]' : 'bg-gray-900/50 text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                <UsersIcon size={14} />
+                <span>Delegated</span>
+                <span className="px-1 py-0.5 rounded text-[10px] bg-black/50 border border-gray-800">{delegatedTasksCount}</span>
+              </button>
+            </div>
           </div>
 
           {/* Right Side: Search & New Task */}
@@ -2250,14 +2536,24 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
                             </div>
                           </div>
 
-                          {/* Right-side Actions: Delete Only */}
-                          <div className="flex items-center gap-3 shrink-0">
+                          {/* Right-side Actions */}
+                          <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+                            <button 
+                              onClick={(e) => { 
+                                e.stopPropagation(); 
+                                handleTogglePin(task.id, task.is_pinned); 
+                              }} 
+                              className={`p-1.5 rounded-md transition-all ${task.is_pinned ? 'text-cyan-500 opacity-100' : 'text-gray-500 opacity-0 group-hover:opacity-100 hover:text-cyan-400 hover:bg-cyan-500/10'}`}
+                              title={task.is_pinned ? "Unpin Task" : "Pin Task"}
+                            >
+                              {task.is_pinned ? <LucideIcons.Pin size={16} className="fill-current" /> : <LucideIcons.Pin size={16} />}
+                            </button>
                             <button 
                               onClick={(e) => { 
                                 e.stopPropagation(); 
                                 handleDeleteTask(task.id); 
                               }} 
-                              className="opacity-0 group-hover:opacity-100 p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-md transition-all ml-1"
+                              className="opacity-0 group-hover:opacity-100 p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-md transition-all"
                               title="Delete Task"
                             >
                               <TrashIcon size={16} />

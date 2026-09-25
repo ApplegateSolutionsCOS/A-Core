@@ -61,7 +61,7 @@ const OrganizationSettings: React.FC<OrganizationSettingsProps> = ({ isOpen, onC
   const [isLoading, setIsLoading] = useState(true);
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
-  const [inviteRole, setInviteRole] = useState<OrganizationRole>('workspace_regular_user');
+  const [inviteRole, setInviteRole] = useState<OrganizationRole>('organization_tech_user');
   const [inviteName, setInviteName] = useState('');
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   
@@ -134,6 +134,7 @@ const OrganizationSettings: React.FC<OrganizationSettingsProps> = ({ isOpen, onC
                 .from('organization_users')
                 .select('full_name')
                 .eq('email', userEmail)
+                .eq('organization_id', authOrg.id)
                 .limit(1)
                 .maybeSingle();
                 
@@ -240,32 +241,60 @@ const OrganizationSettings: React.FC<OrganizationSettingsProps> = ({ isOpen, onC
     if (!inviteEmail || !inviteName || !organization) return;
 
     try {
-      // 1. Call your existing Edge Function to create the user and send the email
-      const { data: authData, error: authError } = await supabase.functions.invoke('invite-user', {
-        body: { email: inviteEmail.toLowerCase(), name: inviteName }
+      // 1. Call the Edge Function with the exact parameters it expects
+      const { data, error } = await supabase.functions.invoke('invite-user', {
+        body: { 
+          email: inviteEmail.toLowerCase(), 
+          full_name: inviteName, 
+          role: inviteRole, 
+          org_id: organization.id 
+          // Note: 'type' is omitted here so it defaults to the 'organization_users' flow in your Edge Function
+        }
       });
 
-      if (authError) throw new Error(authError.message || 'Failed to send invite');
-      if (!authData?.user?.id) throw new Error('No user ID returned from invite function');
+      // 2. Check for network errors or internal Edge Function errors
+        if (error) throw new Error(error.message || 'Failed to trigger Edge Function');
+        
+        if (data?.error) {
+          // If the user already has an Auth account, we just map them to the new org directly.
+          if (data.error.includes('already been registered')) {
+            const { data: existingUser } = await supabase.schema('app_private')
+              .from('organization_users')
+              .select('id')
+              .eq('email', inviteEmail.toLowerCase())
+              .limit(1)
+              .maybeSingle();
 
-      // 2. Insert the user into your private organization directory using the new Auth ID
-      const { error: dbError } = await supabase.schema('app_private').from('organization_users').insert({
-        id: authData.user.id,
-        organization_id: organization.id,
-        email: inviteEmail.toLowerCase(),
-        full_name: inviteName,
-        role: inviteRole,
-        is_org_creator: false,
-      });
+            if (existingUser) {
+              const { error: insertError } = await supabase.schema('app_private')
+                .from('organization_users')
+                .insert({
+                  id: existingUser.id,
+                  organization_id: organization.id,
+                  email: inviteEmail.toLowerCase(),
+                  full_name: inviteName,
+                  role: inviteRole,
+                  status: 'active',
+                  is_org_creator: false
+                });
 
-      if (dbError) throw dbError;
+              if (insertError) throw new Error(insertError.message);
+            } else {
+              throw new Error('User exists in Auth but could not be located to map them.');
+            }
+          } else {
+            throw new Error(data.error);
+          }
+        }
 
-      // 3. Success! Close modal and refresh the list
-      setShowInviteModal(false);
-      setInviteEmail('');
-      setInviteName('');
-      setInviteRole('workspace_regular_user');
-      fetchData();
+        // 3. Success! The Edge Function or fallback logic handled the database insert
+        setShowInviteModal(false);
+        setInviteEmail('');
+        setInviteName('');
+        setInviteRole('workspace_regular_user' as any);
+        
+        // Refresh the table to show the new user
+        fetchData();
       
     } catch (error: any) {
       console.error('Error inviting user:', error);
@@ -382,7 +411,8 @@ const OrganizationSettings: React.FC<OrganizationSettingsProps> = ({ isOpen, onC
       const { error } = await supabase.schema('app_private')
         .from('organization_users')
         .delete()
-        .eq('id', userId);
+        .eq('id', userId)
+        .eq('organization_id', organization.id);
 
       
       if (error) throw error;

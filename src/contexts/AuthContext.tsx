@@ -390,6 +390,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           .from('organization_users')
           .select('organizations(*, organization_logos(logo_url))')
           .eq('id', userId)
+          .limit(1)
           .maybeSingle();
 
         // Unpack the organization data and flatten the logo
@@ -433,6 +434,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         .from('organization_users')
         .select('*, organizations(*, organization_logos(logo_url))')
         .eq('id', userId) // Using 'id' instead of 'user_id'
+        .limit(1)
         .maybeSingle();
 
       if (orgError) console.warn('[login] Org user check error:', orgError.message);
@@ -531,6 +533,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         .from('organization_users')
         .select('*, organizations(*, organization_logos(logo_url))')
         .eq('id', authData.user.id)
+        .limit(1)
         .maybeSingle();
 
       if (fetchError || !orgUser) {

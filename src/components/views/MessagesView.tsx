@@ -144,6 +144,7 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
           .from('organization_users')
           .select('organization_id')
           .eq('id', currentUserId)
+          .limit(1)
           .maybeSingle();
 
         if (!me?.organization_id) {

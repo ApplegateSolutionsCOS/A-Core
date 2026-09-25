@@ -228,7 +228,7 @@ const PlatformOwnerPanel: React.FC<PlatformOwnerPanelProps> = ({ isOpen, onClose
     if (!userToDelete) return;
     try {
       if (userToDelete.type === 'org') {
-        await supabase.schema('app_private').from('organization_users').delete().eq('id', userToDelete.id);
+        await supabase.schema('app_private').from('organization_users').delete().eq('id', userToDelete.id).eq('organization_id', expandedOrgId);
         setOrgUsers(prev => prev.filter(u => u.id !== userToDelete.id));
       } else {
         await db.from('platform_users').delete().eq('id', userToDelete.id);
