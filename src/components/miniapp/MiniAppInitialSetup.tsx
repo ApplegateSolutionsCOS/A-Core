@@ -52,12 +52,14 @@ interface MiniAppInitialSetupProps {
   onContinue: (config: {
     name: string;
     description: string;
+    itemName?: string; // ⚡ FIX: Added missing property from state
     idPrefix: string;
     uidLength: number;
     itemIdSettings: ItemIdSettings;
     fields?: TemplateField[];
     isPreset?: boolean; 
-    targetOrgIds?: string[]; // ⚡ NEW: Added target orgs to payload
+    targetOrgIds?: string[];
+    autoDeploy?: boolean; // ⚡ FIX: Added missing property from state
   }) => void;
   wsColor: { primary: string; rgb: string; dark: string; tw: string; colorName: string };
   allMiniApps: any[]; 
@@ -295,7 +297,9 @@ const TEMPLATES: MiniAppTemplate[] = [
 // ============================================
 const MiniAppInitialSetup: React.FC<MiniAppInitialSetupProps> = ({ isOpen, onClose, onContinue, wsColor, allMiniApps, workspaceId, isAdmin }) => {
 
-  const { organization } = useAuth();
+  const { organization, getUserRole } = useAuth();
+  const userRole = getUserRole ? getUserRole() : null;
+  const effectiveIsAdmin = isAdmin || userRole === 'organization_admin_user' || userRole === 'organization_admin';
   
   const ac = wsColor;
   const [step, setStep] = useState<'templates' | 'configure'>('templates');
@@ -330,12 +334,12 @@ const MiniAppInitialSetup: React.FC<MiniAppInitialSetupProps> = ({ isOpen, onClo
 
   // ⚡ STAGE 3: Fetch all organizations safely if Admin
   useEffect(() => {
-    if (isAdmin && isOpen) {
+    if (effectiveIsAdmin && isOpen) {
       supabase.rpc('get_all_organizations').then(({ data }) => {
         if (data) setAllOrgs(data);
       });
     }
-  }, [isAdmin, isOpen]);
+  }, [effectiveIsAdmin, isOpen]);
 
   if (!isOpen) return null;
 
@@ -608,7 +612,7 @@ const MiniAppInitialSetup: React.FC<MiniAppInitialSetupProps> = ({ isOpen, onClo
                 )}
               </div>
 
-              {isAdmin && (
+              {effectiveIsAdmin && (
                 <div className="p-4 rounded-xl border mt-6" style={{ borderColor: `rgba(${ac.rgb}, 0.15)`, background: 'rgba(255,255,255,0.02)' }}>
                   <div className="flex items-center justify-between">
                     <div>

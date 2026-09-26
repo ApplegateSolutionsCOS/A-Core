@@ -480,7 +480,8 @@ const PersonalDashboard: React.FC = () => {
       if (role === 'platform_sales_manager') return 'platform_sales_manager';
       return 'platform_tech_manager';
     }
-    if (isOrganizationAdmin()) return 'org_admin';
+    const role = getUserRole ? getUserRole() : null;
+    if (isOrganizationAdmin() || role === 'organization_admin_user') return 'org_admin';
     if (isOrganizationManager()) return 'org_manager';
     if (userType === 'organization') return 'org_user';
     return 'default';
@@ -669,7 +670,8 @@ const PersonalDashboard: React.FC = () => {
   const [libraryAddedIds, setLibraryAddedIds] = useState<string[]>([]);
 
   const userId = user ? (user as any).id || null : null;
-  const canDeleteTiles = isPlatformOwner() || isOrganizationAdmin();
+  const userRoleStr = getUserRole ? getUserRole() : null;
+  const canDeleteTiles = isPlatformOwner() || isOrganizationAdmin() || userRoleStr === 'organization_admin_user';
 
   // ─── Offline Sync State ─────────────────────────────────
   const [offlineSyncState, setOfflineSyncState] = useState<OfflineSyncState>({
@@ -2820,30 +2822,37 @@ const COLOR_PALETTE: Record<string, { color: string; rgb: string }> = {
                 className="text-xs font-mono font-bold bg-clip-text text-transparent tracking-wider uppercase"
                 style={{
                   // Text Gradient: Primary -> Accent
-                  backgroundImage: `linear-gradient(to right, ${primaryColor}, ${accentColor})`
+                  backgroundImage: `linear-gradient(to right, ${primaryColor}, ${accentColor})`,
+                  WebkitBackgroundClip: 'text'
                 }}
               >
                 Platform Owner Admin - GOD MODE
               </span>
             </div>
           )}
-          {isOrgUser && isOrganizationAdmin() && (
+          {isOrgUser && (isOrganizationAdmin() || getUserRole?.() === 'organization_admin_user') && (
             <div 
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg border"
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg border shadow-[0_0_12px_rgba(0,0,0,0.15)]"
               style={{
-                background: `linear-gradient(to right, rgba(${primaryRgb}, 0.15), rgba(${accentRgb}, 0.15), rgba(${primaryRgb}, 0.15))`,
-                borderColor: `rgba(${primaryRgb}, 0.3)`,
-                boxShadow: `0 0 12px rgba(${primaryRgb}, 0.1)`
+                background: `linear-gradient(to right, rgba(${primaryRgb}, 0.2), rgba(${accentRgb}, 0.2))`,
+                borderColor: `rgba(${primaryRgb}, 0.4)`,
               }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: primaryColor }}>
-                <rect x="4" y="2" width="16" height="20" rx="2" ry="2" />
-                <line x1="9" y1="6" x2="9" y2="6.01" /><line x1="15" y1="6" x2="15" y2="6.01" />
-                <line x1="9" y1="10" x2="9" y2="10.01" /><line x1="15" y1="10" x2="15" y2="10.01" />
-                <path d="M9 18h6" />
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
               </svg>
-              <span className="text-xs font-mono font-bold tracking-wider uppercase" style={{ color: primaryColor }}>
-                Organization Admin
+              <span className="text-xs font-mono font-bold tracking-wider uppercase flex items-center gap-1.5">
+                <span style={{ color: primaryColor }}>Owner</span>
+                <span className="text-gray-500">//</span>
+                <span 
+                  className="bg-clip-text text-transparent"
+                  style={{
+                    backgroundImage: `linear-gradient(to right, ${primaryColor}, ${accentColor})`,
+                    WebkitBackgroundClip: 'text'
+                  }}
+                >
+                  Admin Clearance &gt; Unlimited Access
+                </span>
               </span>
             </div>
           )}

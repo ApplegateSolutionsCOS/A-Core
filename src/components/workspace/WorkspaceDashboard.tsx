@@ -225,10 +225,15 @@ const serializeTile = (tile: TileConfig): object => ({
 });
 
 const WorkspaceDashboard: React.FC<WorkspaceDashboardProps> = ({
-  workspaceSlug, onOpenMiniApp, onOpenSettings, isAdmin,
+  workspaceSlug, onOpenMiniApp, onOpenSettings, isAdmin: propIsAdmin,
   initialMiniApp, initialAddRecord, onClearInitialMiniApp
 }) => {
-  const { user, organization, isPlatformOwner, isOrganizationAdmin } = useAuth();
+  const { user, organization, isPlatformOwner, isOrganizationAdmin, getUserRole } = useAuth();
+  
+  // ⚡ FIX: Calculate true admin clearance at the root of the workspace so it cascades everywhere
+  const userRoleStr = typeof getUserRole === 'function' ? getUserRole() : null;
+  const isAdmin = propIsAdmin || (typeof isOrganizationAdmin === 'function' && isOrganizationAdmin()) || userRoleStr === 'organization_admin_user' || userRoleStr === 'organization_admin';
+
   const { getColor } = useWorkspaceColor();
   
   // ⚡ FIX: Provide a safe fallback if the workspace isn't in WORKSPACE_DEFINITIONS

@@ -1059,7 +1059,7 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
 
   const [swipeStartY, setSwipeStartY] = useState<number | null>(null);
   const [swipeOffsetY, setSwipeOffsetY] = useState<number>(0);
-  const [cyclePhase, setCyclePhase] = useState<'idle' | 'up' | 'slideDown' | 'slipBehind'>('idle');
+  const [cyclePhase, setCyclePhase] = useState<'idle' | 'up' | 'slideUp' | 'slipBehind'>('idle');
   const [animatingTaskId, setAnimatingTaskId] = useState<string | null>(null);
 
   const handleTogglePin = async (taskId: string, currentPinStatus: boolean) => {
@@ -1081,8 +1081,8 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
     setAnimatingTaskId(taskId);
     
     const triggerShuffle = () => {
-      setCyclePhase('slideDown');
-      setSwipeOffsetY(140); // Slide entirely below the other cards first
+      setCyclePhase('slideUp');
+      setSwipeOffsetY(-140); // Slide entirely ABOVE the other cards first
       
       setTimeout(() => {
         setCyclePhase('slipBehind');
@@ -1092,7 +1092,7 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
           setCyclePhase('idle');
           setAnimatingTaskId(null);
         }, 500); 
-      }, 400); // Trigger slip behind slightly before slideDown finishes for a fluid arc
+      }, 400); // Trigger slip behind slightly before slideUp finishes for a fluid arc
     };
 
     if (swipeOffsetY > -20) {
@@ -1908,9 +1908,9 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
                           } else if (index > 0) {
                             visualIndex = index - 1; // Shift others forward
                           }
-                        } else if (cyclePhase === 'slideDown') {
+                        } else if (cyclePhase === 'slideUp') {
                           if (!isAnimatingThis && index > 0) {
-                            visualIndex = index - 1; // Others shift forward while active slides down
+                            visualIndex = index - 1; // Others shift forward while active slides up
                           }
                         }
                         
@@ -1928,11 +1928,11 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
                             translateY = swipeOffsetY; 
                             rotateX = Math.min(60, Math.abs(swipeOffsetY) * 0.4); 
                             zIndex = 30; 
-                          } else if (cyclePhase === 'slideDown') {
-                            translateY = swipeOffsetY; // Target 140 (below stack)
-                            rotateX = 0;
-                            zIndex = 30; // Stay on top while sliding down
-                            scale = 1; // Keep full size
+                          } else if (cyclePhase === 'slideUp') {
+                            translateY = swipeOffsetY; // Target -140 (above stack)
+                            rotateX = Math.min(60, Math.abs(swipeOffsetY) * 0.4); // Keep the card tilted back as it gets pulled out
+                            zIndex = 30; // Stay on top while sliding up
+                            scale = 1.05; // Slightly magnify to look like it's pulled toward the user
                             opacity = 1; // Keep full opacity
                           } else if (cyclePhase === 'slipBehind') {
                             zIndex = 0; // Drop behind stack
@@ -1944,9 +1944,10 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
                         }
                         
                         // Disable transition only for the true front card during active drag
+                        // ⚡ FIX: Used 'transition' instead of 'transition-all' so z-index snaps instantly behind the stack
                         const transitionClass = (swipeStartY !== null && index === 0 && cyclePhase === 'idle') 
                           ? 'transition-none' 
-                          : 'transition-all duration-500 ease-in-out'; // Fluid 500ms steps
+                          : 'transition duration-500 ease-in-out'; // Fluid 500ms steps
 
                           return (
                             <div 
@@ -1958,7 +1959,8 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
                             onTouchMove={isFront ? handleSwipeMove : undefined}
                             onTouchEnd={isFront ? (e) => handleSwipeEnd(e, task.id) : undefined}
                             onMouseLeave={isFront && swipeStartY !== null ? (e) => handleSwipeEnd(e, task.id) : undefined}
-                            className={`absolute left-[5%] right-[5%] w-[90%] h-[120px] rounded-xl p-4 border flex flex-col justify-between group ${isFront ? 'cursor-grab active:cursor-grabbing shadow-[0_20px_40px_rgba(0,0,0,0.8)]' : 'pointer-events-none'} ${transitionClass}`}
+                            // ⚡ FIX: Added 'touch-none' to prevent mobile screen scrolling while dragging a card
+                            className={`absolute left-[5%] right-[5%] w-[90%] h-[120px] rounded-xl p-4 border flex flex-col justify-between group ${isFront ? 'cursor-grab active:cursor-grabbing shadow-[0_20px_40px_rgba(0,0,0,0.8)] touch-none' : 'pointer-events-none'} ${transitionClass}`}
                             style={{ 
                               transform: `translateY(${translateY}px) scale(${scale}) rotateX(${rotateX}deg)`,
                               transformOrigin: 'bottom center', // Rotates backwards from the bottom edge
