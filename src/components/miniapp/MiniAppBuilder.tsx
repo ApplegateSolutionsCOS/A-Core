@@ -59,6 +59,7 @@ import SubMenuFieldSettings from './SubMenuFieldSettings';
 import BulkFieldActions from './BulkFieldActions';
 import MiniAppAIAssistant from './MiniAppAIAssistant';
 import MiniAppFooterBuilder from './MiniAppFooterBuilder';
+import MiniAppHeaderBuilder from './MiniAppHeaderBuilder';
 
 
 import { 
@@ -1768,7 +1769,7 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
 
           <div className="hidden md:flex items-center justify-center flex-[2]">
             <div className="flex items-stretch h-full">
-              {(['template', 'workflows', 'pdfs', 'labels', 'settings'] as const).map((tab, index, array) => (
+              {(['template', 'settings', 'workflows', 'pdfs', 'labels'] as const).map((tab, index, array) => (
                 <React.Fragment key={tab}>
                   <button
                     onClick={() => setMainTab(tab)}
@@ -1776,10 +1777,10 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                     style={{ color: mainTab === tab ? ac.primary : '#94a3b8' }}
                   >
                     {tab === 'template' && <BuildIcon size={16} className={mainTab === tab ? '' : 'opacity-60 group-hover:opacity-100 transition-opacity'} />}
+                    {tab === 'settings' && <SettingsIcon size={16} className={mainTab === tab ? '' : 'opacity-60 group-hover:opacity-100 transition-opacity'} />}
                     {tab === 'workflows' && <WorkflowIcon size={16} className={mainTab === tab ? '' : 'opacity-60 group-hover:opacity-100 transition-opacity'} />}
                     {tab === 'pdfs' && <ColumnsIcon size={16} className={mainTab === tab ? '' : 'opacity-60 group-hover:opacity-100 transition-opacity'} />}
                     {tab === 'labels' && <TagIcon size={16} className={mainTab === tab ? '' : 'opacity-60 group-hover:opacity-100 transition-opacity'} />}
-                    {tab === 'settings' && <SettingsIcon size={16} className={mainTab === tab ? '' : 'opacity-60 group-hover:opacity-100 transition-opacity'} />}
                     <span className={mainTab === tab ? '' : 'group-hover:text-slate-300 transition-colors'}>
                       {tab === 'template' ? 'Template' : tab === 'pdfs' ? 'PDFs' : tab.charAt(0).toUpperCase() + tab.slice(1)}
                     </span>
@@ -1947,6 +1948,15 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                     }}
                     onDrop={handleDrop}
                   >
+
+                    <div style={{ gridColumn: 'span 60' }} className="mb-8 mt-2 m-1.5 z-10 relative">
+                      <MiniAppHeaderBuilder
+                        config={appSettings.header || { enabled: false, blocks: [], height: 64 }}
+                        onChange={(next) => setAppSettings({ ...appSettings, header: next })}
+                        connectionFields={fields.filter(f => f.type === 'connection_field').map(f => ({ id: f.id, name: f.name }))}
+                        wsColor={ac}
+                      />
+                    </div>
                     
                     {displayFields.map((field, index) => {
                       const isFieldSelected = selectedField === field.id;
@@ -2111,6 +2121,15 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                       onDrop={handleDrop}
                     >
                       Drag & Drop new fields here
+                    </div>
+
+                    <div style={{ gridColumn: 'span 60' }} className="mt-8 mb-4 m-1.5">
+                      <MiniAppFooterBuilder
+                        config={appSettings.footer || { enabled: false, blocks: [], height: 64 }}
+                        onChange={(next) => setAppSettings({ ...appSettings, footer: next })}
+                        connectionFields={fields.filter(f => f.type === 'connection_field').map(f => ({ id: f.id, name: f.name }))}
+                        wsColor={ac}
+                      />
                     </div>
                   </div>
                 </div>
@@ -3782,14 +3801,7 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                       </div>
                     </div>
 
-                    {/* ⚡ NEW: Frozen Footer Builder */}
-                    <MiniAppFooterBuilder
-                      config={appSettings.footer || { enabled: false, blocks: [], height: 64 }}
-                      onChange={(next) => setAppSettings({ ...appSettings, footer: next })}
-                      connectionFields={fields.filter(f => f.type === 'connection_field').map(f => ({ id: f.id, name: f.name }))}
-                      wsColor={ac}
-                    />
-                  </div>
+                    </div>
                 )}
 
 

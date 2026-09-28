@@ -138,7 +138,7 @@ const TaskCommentsPane: React.FC<{
 }> = ({ taskId, onClose }) => {
   const { user, organization } = useAuth();
   const userId = user ? (user as any).id || (user as any).email || 'anonymous' : 'anonymous';
-  const userName = user ? ((user as any).display_name || (user as any).email || 'User') : 'User';
+  const userName = user ? ((user as any).user_metadata?.full_name || (user as any).user_metadata?.name || (user as any).email || 'User') : 'User';
 
   const [comments, setComments] = useState<TaskComment[]>([]);
   const [newComment, setNewComment] = useState('');
@@ -297,8 +297,8 @@ const TaskViewerModal: React.FC<TaskViewerModalProps> = ({ taskId, onClose, onVi
       setTask(data);
       
       if (organization?.id) {
-        const { data: orgUsers } = await supabase.schema('app_private').from('organization_users').select('id, full_name').eq('organization_id', organization.id);
-        setMembers((orgUsers || []).map(u => ({ id: u.id, name: u.full_name || 'Unknown User' })));
+        const { data: orgUsers } = await supabase.schema('app_private').from('organization_users').select('user_id, full_name').eq('organization_id', organization.id);
+        setMembers((orgUsers || []).map(u => ({ id: u.user_id, name: u.full_name || 'Unknown User' })));
       }
       setLoading(false);
     };
@@ -485,9 +485,10 @@ const TaskViewerModal: React.FC<TaskViewerModalProps> = ({ taskId, onClose, onVi
                 </div>
                 <div>
                   <label className="block text-[11px] font-mono font-medium text-gray-500 mb-2 uppercase tracking-wider">Assigned To</label>
-                  <select value={task.assigned_to || ''} onChange={(e) => handleUpdate('assigned_to', e.target.value)} className="w-full bg-black/50 border border-gray-800 rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none hover:border-gray-700 transition-colors cursor-pointer">
+                  <select value={task.assigned_to || ''} onChange={(e) => handleUpdate('assigned_to', e.target.value === '' ? null : e.target.value)} className="w-full bg-black/50 border border-gray-800 rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none hover:border-gray-700 transition-colors cursor-pointer">
+                    <option value="">Unassigned</option>
                     <option value={user?.id || ''}>Me</option>
-                    {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                    {members.filter(m => m.id !== user?.id).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
                   </select>
                 </div>
                 <div>
@@ -820,7 +821,7 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
     };
     container.addEventListener('wheel', handleWheel, { passive: false });
     return () => container.removeEventListener('wheel', handleWheel);
-  }, []);
+  }, [isControlsExpanded]);
 
   // ⚡ NEW: User preference for task card coloring
   const [taskColorMode, setTaskColorMode] = useState<'tags' | 'status' | 'priority'>(() => {
@@ -863,12 +864,12 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
         // ⚡ FIX: Use active organization directly to prevent cross-contamination
         const { data: orgUsers } = await supabase.schema('app_private')
           .from('organization_users')
-          .select('id, full_name, email')
+          .select('user_id, full_name')
           .eq('organization_id', organization.id);
 
         const uMap: Record<string, string> = {};
         orgUsers?.forEach(u => {
-          uMap[u.id] = u.full_name || u.email || 'Unknown';
+          uMap[u.user_id] = u.full_name || 'Unknown';
         });
         setUsersMap(uMap);
 
@@ -1006,7 +1007,7 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
     }
   };
 
-  const handleReassign = async (taskId: string, newAssignee: string) => {
+  const handleReassign = async (taskId: string, newAssignee: string | null) => {
     try {
       setTasks(prev => prev.map(t => t.id === taskId ? { ...t, assigned_to: newAssignee } : t));
       await supabase.schema('app_private')
@@ -1016,6 +1017,8 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
           updated_at: new Date().toISOString() 
         })
         .eq('id', taskId);
+        
+      window.dispatchEvent(new CustomEvent('refreshTasks'));
     } catch (err) {
       console.error('Error reassigning task:', err);
     }
@@ -1051,16 +1054,24 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
 
   const visualPinnedTasks = useMemo(() => {
     if (pinnedTasks.length === 0) return [];
+    if (pinnedTasks.length === 1) return [pinnedTasks[0]];
+    if (pinnedTasks.length === 2) return [
+      pinnedTasks[stackOffset],
+      pinnedTasks[(stackOffset + 1) % pinnedTasks.length]
+    ];
+    const prevOffset = (stackOffset - 1 + pinnedTasks.length) % pinnedTasks.length;
+    const nextOffset = (stackOffset + 1) % pinnedTasks.length;
     return [
-      ...pinnedTasks.slice(stackOffset),
-      ...pinnedTasks.slice(0, stackOffset)
+      pinnedTasks[stackOffset],
+      pinnedTasks[nextOffset],
+      pinnedTasks[prevOffset]
     ];
   }, [pinnedTasks, stackOffset]);
 
+  const pinnedTasksRef = useRef<HTMLDivElement>(null);
   const [swipeStartY, setSwipeStartY] = useState<number | null>(null);
   const [swipeOffsetY, setSwipeOffsetY] = useState<number>(0);
-  const [cyclePhase, setCyclePhase] = useState<'idle' | 'up' | 'slideUp' | 'slipBehind'>('idle');
-  const [animatingTaskId, setAnimatingTaskId] = useState<string | null>(null);
+  const wheelCooldown = useRef(false);
 
   const handleTogglePin = async (taskId: string, currentPinStatus: boolean) => {
     try {
@@ -1076,60 +1087,67 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
     }
   };
 
-  const animateAndCycle = (taskId: string) => {
-    if (pinnedTasks.length <= 1 || cyclePhase !== 'idle') return;
-    setAnimatingTaskId(taskId);
+  const animateAndCycle = useCallback((direction: 'up' | 'down' = 'up') => {
+    if (pinnedTasks.length <= 1) return;
     
-    const triggerShuffle = () => {
-      setCyclePhase('slideUp');
-      setSwipeOffsetY(-140); // Slide entirely ABOVE the other cards first
-      
-      setTimeout(() => {
-        setCyclePhase('slipBehind');
-        
-        setTimeout(() => {
-          setStackOffset(prev => (prev + 1) % pinnedTasks.length);
-          setCyclePhase('idle');
-          setAnimatingTaskId(null);
-        }, 500); 
-      }, 400); // Trigger slip behind slightly before slideUp finishes for a fluid arc
-    };
-
-    if (swipeOffsetY > -20) {
-      setCyclePhase('up');
-      setSwipeOffsetY(-40);
-      setTimeout(triggerShuffle, 150);
+    if (direction === 'up') {
+      setStackOffset(prev => (prev + 1) % pinnedTasks.length);
     } else {
-      triggerShuffle();
+      setStackOffset(prev => (prev - 1 + pinnedTasks.length) % pinnedTasks.length);
     }
-  };
+  }, [pinnedTasks.length]);
+
+  // ⚡ Pinned Tasks Desktop Scrolling (Mouse wheel interception)
+  useEffect(() => {
+    const container = pinnedTasksRef.current;
+    if (!container) return;
+    
+    const handleWheel = (e: WheelEvent) => {
+      if (pinnedTasks.length <= 1) return;
+      e.preventDefault(); // Prevent page scroll over cards
+      
+      if (wheelCooldown.current) return;
+      
+      if (e.deltaY > 30) {
+        wheelCooldown.current = true;
+        animateAndCycle('up');
+        setTimeout(() => wheelCooldown.current = false, 400);
+      } else if (e.deltaY < -30) {
+        wheelCooldown.current = true;
+        animateAndCycle('down');
+        setTimeout(() => wheelCooldown.current = false, 400);
+      }
+    };
+    
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => container.removeEventListener('wheel', handleWheel);
+  }, [isControlsExpanded, visualPinnedTasks, pinnedTasks.length, animateAndCycle]);
 
   const handleSwipeStart = (e: React.MouseEvent | React.TouchEvent) => {
-    if (cyclePhase !== 'idle') return;
     const y = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
     setSwipeStartY(y);
     setSwipeOffsetY(0);
   };
 
   const handleSwipeMove = (e: React.MouseEvent | React.TouchEvent) => {
-    if (swipeStartY === null || cyclePhase !== 'idle') return;
+    if (swipeStartY === null) return;
     const y = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
     const diff = y - swipeStartY;
-    if (diff < 0) {
-      setSwipeOffsetY(diff); 
-    }
+    setSwipeOffsetY(diff); 
   };
 
   const handleSwipeEnd = (e: React.MouseEvent | React.TouchEvent, taskId: string) => {
-    if (swipeStartY === null || cyclePhase !== 'idle') return;
+    if (swipeStartY === null) return;
     if (swipeOffsetY < -40) {
-      animateAndCycle(taskId);
+      animateAndCycle('up');
+    } else if (swipeOffsetY > 40) {
+      animateAndCycle('down');
     } else {
-      setSwipeOffsetY(0);
       if (Math.abs(swipeOffsetY) < 10) {
         setViewingTaskId(taskId); 
       }
     }
+    setSwipeOffsetY(0);
     setSwipeStartY(null);
   };
 
@@ -1872,7 +1890,7 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
                     <LucideIcons.Pin size={16} style={{ color: themeColor }} /> Pinned Tasks
                     <span className="ml-auto bg-black/50 text-gray-400 px-2 py-0.5 rounded text-xs border border-gray-800">{pinnedTasks.length}</span>
                  </h3>
-                 <div className={`flex-1 relative flex justify-center items-start pt-2 min-h-[150px] ${pinnedTasks.length === 0 ? 'border border-dashed border-gray-800/50 rounded-lg bg-black/40 items-center' : ''}`} style={{ perspective: '1200px' }}>
+                 <div ref={pinnedTasksRef} className={`flex-1 relative flex justify-center items-center min-h-[160px] py-4 ${pinnedTasks.length === 0 ? 'border border-dashed border-gray-800/50 rounded-lg bg-black/40' : ''}`} style={{ perspective: '1200px' }}>
                     {pinnedTasks.length === 0 ? (
                       <p className="text-gray-500 font-mono text-xs text-center p-4">
                         No pinned tasks yet. <br/> Pin a task to keep it visible here.
@@ -1897,57 +1915,40 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
                         }
                         const activeRgb = hexToRgb(activeColorHex);
 
-                        const isAnimatingThis = animatingTaskId === task.id;
                         const absoluteIndex = pinnedTasks.findIndex(t => t.id === task.id) + 1;
                         
-                        // ⚡ NEW: Determine visual rank to prevent DOM reordering from breaking the transition
-                        let visualIndex = index;
-                        if (cyclePhase === 'slipBehind') {
-                          if (isAnimatingThis) {
-                            visualIndex = displayedCount - 1; // Send to back visually
-                          } else if (index > 0) {
-                            visualIndex = index - 1; // Shift others forward
-                          }
-                        } else if (cyclePhase === 'slideUp') {
-                          if (!isAnimatingThis && index > 0) {
-                            visualIndex = index - 1; // Others shift forward while active slides up
-                          }
-                        }
+                        const isFront = index === 0;
+                        const isBottom = index === 1;
+                        const isTop = index === 2;
                         
-                        const isFront = visualIndex === 0;
-                        
-                        // Base vertical rolodex stack mapping using visualIndex
-                        let translateY = visualIndex * 18; 
+                        let translateY = 0;
                         let rotateX = 0;
-                        let scale = 1 - (visualIndex * 0.05);
-                        let opacity = isFront ? 1 : Math.max(0.4, 0.95 - (visualIndex * 0.15));
-                        let zIndex = 20 - visualIndex;
+                        let scale = 1;
+                        let opacity = 1;
+                        let zIndex = 30;
 
-                        if (isAnimatingThis) {
-                          if (cyclePhase === 'up') {
-                            translateY = swipeOffsetY; 
-                            rotateX = Math.min(60, Math.abs(swipeOffsetY) * 0.4); 
-                            zIndex = 30; 
-                          } else if (cyclePhase === 'slideUp') {
-                            translateY = swipeOffsetY; // Target -140 (above stack)
-                            rotateX = Math.min(60, Math.abs(swipeOffsetY) * 0.4); // Keep the card tilted back as it gets pulled out
-                            zIndex = 30; // Stay on top while sliding up
-                            scale = 1.05; // Slightly magnify to look like it's pulled toward the user
-                            opacity = 1; // Keep full opacity
-                          } else if (cyclePhase === 'slipBehind') {
-                            zIndex = 0; // Drop behind stack
-                            // translateY and scale use the visualIndex defaults (back of stack)
-                          }
-                        } else if (index === 0 && swipeStartY !== null && cyclePhase === 'idle') {
-                          translateY += swipeOffsetY; // Live drag tracker
-                          rotateX = Math.min(60, Math.abs(swipeOffsetY) * 0.4);
+                        if (isFront) {
+                          translateY = swipeStartY !== null ? swipeOffsetY : 0; 
+                          rotateX = swipeStartY !== null ? Math.min(60, Math.max(-60, swipeOffsetY * 0.4)) : 0;
+                          zIndex = 30;
+                          scale = 1; 
+                          opacity = 1;
+                        } else if (isBottom) {
+                          translateY = 30;
+                          scale = 0.75;
+                          zIndex = 20;
+                          opacity = 0.3;
+                        } else if (isTop) {
+                          translateY = -30;
+                          scale = 0.75;
+                          zIndex = 20;
+                          opacity = 0.3;
                         }
                         
-                        // Disable transition only for the true front card during active drag
-                        // ⚡ FIX: Used 'transition' instead of 'transition-all' so z-index snaps instantly behind the stack
-                        const transitionClass = (swipeStartY !== null && index === 0 && cyclePhase === 'idle') 
+                        // Fluid 500ms steps
+                        const transitionClass = (swipeStartY !== null && isFront) 
                           ? 'transition-none' 
-                          : 'transition duration-500 ease-in-out'; // Fluid 500ms steps
+                          : 'transition-all duration-500 ease-in-out';
 
                           return (
                             <div 
@@ -1960,10 +1961,10 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
                             onTouchEnd={isFront ? (e) => handleSwipeEnd(e, task.id) : undefined}
                             onMouseLeave={isFront && swipeStartY !== null ? (e) => handleSwipeEnd(e, task.id) : undefined}
                             // ⚡ FIX: Added 'touch-none' to prevent mobile screen scrolling while dragging a card
-                            className={`absolute left-[5%] right-[5%] w-[90%] h-[120px] rounded-xl p-4 border flex flex-col justify-between group ${isFront ? 'cursor-grab active:cursor-grabbing shadow-[0_20px_40px_rgba(0,0,0,0.8)] touch-none' : 'pointer-events-none'} ${transitionClass}`}
+                            className={`absolute top-0 bottom-0 my-auto left-[5%] right-[5%] w-[90%] h-[120px] rounded-xl p-4 border flex flex-col justify-between group ${isFront ? 'cursor-grab active:cursor-grabbing shadow-[0_20px_40px_rgba(0,0,0,0.8)] touch-none' : 'pointer-events-none'} ${transitionClass}`}
                             style={{ 
                               transform: `translateY(${translateY}px) scale(${scale}) rotateX(${rotateX}deg)`,
-                              transformOrigin: 'bottom center', // Rotates backwards from the bottom edge
+                              transformOrigin: 'center center', // Symmetrical scaling
                               zIndex,
                               opacity,
                               background: isFront ? `linear-gradient(135deg, rgba(15,15,15,0.98) 0%, rgba(5,5,5,0.95) 100%)` : `linear-gradient(135deg, rgba(20,20,20,0.95) 0%, rgba(10,10,10,0.9) 100%)`,
@@ -2024,22 +2025,34 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
                             </div>
 
                             {isFront && pinnedTasks.length > 1 && (
-                               <button
-                                 onClick={(e) => { e.preventDefault(); e.stopPropagation(); animateAndCycle(task.id); }}
-                                 onMouseDown={(e) => e.stopPropagation()}
-                                 onTouchStart={(e) => e.stopPropagation()}
-                                 onPointerDown={(e) => e.stopPropagation()}
-                                 className="absolute -left-4 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center bg-black border border-cyan-500 text-cyan-400 rounded-full opacity-0 group-hover:opacity-100 hover:bg-cyan-500/20 transition-all z-[60] shadow-[0_0_15px_rgba(0,255,255,0.4)] cursor-pointer"
-                                 title="Send to Back"
-                               >
-                                 <LucideIcons.ArrowUp size={14} />
-                               </button>
+                               <div className="absolute -left-5 top-1/2 -translate-y-1/2 flex flex-col gap-1.5 z-[60]">
+                                 <button
+                                   onClick={(e) => { e.preventDefault(); e.stopPropagation(); animateAndCycle('up'); }}
+                                   onMouseDown={(e) => e.stopPropagation()}
+                                   onTouchStart={(e) => e.stopPropagation()}
+                                   onPointerDown={(e) => e.stopPropagation()}
+                                   className="w-8 h-8 flex items-center justify-center bg-black border border-cyan-500 text-cyan-400 rounded-full opacity-0 group-hover:opacity-100 hover:bg-cyan-500/20 transition-all shadow-[0_0_15px_rgba(0,255,255,0.4)] cursor-pointer"
+                                   title="Next Task"
+                                 >
+                                   <LucideIcons.ArrowUp size={14} />
+                                 </button>
+                                 <button
+                                   onClick={(e) => { e.preventDefault(); e.stopPropagation(); animateAndCycle('down'); }}
+                                   onMouseDown={(e) => e.stopPropagation()}
+                                   onTouchStart={(e) => e.stopPropagation()}
+                                   onPointerDown={(e) => e.stopPropagation()}
+                                   className="w-8 h-8 flex items-center justify-center bg-black border border-cyan-500 text-cyan-400 rounded-full opacity-0 group-hover:opacity-100 hover:bg-cyan-500/20 transition-all shadow-[0_0_15px_rgba(0,255,255,0.4)] cursor-pointer"
+                                   title="Previous Task"
+                                 >
+                                   <LucideIcons.ArrowDown size={14} />
+                                 </button>
+                               </div>
                             )}
 
                             {isFront && pinnedTasks.length > 1 && (
                                <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-black/90 border border-gray-600 px-3 py-0.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none flex items-center gap-1.5 shadow-[0_0_10px_rgba(0,0,0,0.8)] z-30">
-                                  <LucideIcons.ChevronUp size={12} className="text-cyan-400 animate-bounce" />
-                                  <span className="text-[9px] font-mono text-gray-200 uppercase tracking-widest font-bold">Swipe Up</span>
+                                  <LucideIcons.ChevronsUpDown size={12} className="text-cyan-400 animate-pulse" />
+                                  <span className="text-[9px] font-mono text-gray-200 uppercase tracking-widest font-bold">Scroll / Swipe</span>
                                </div>
                             )}
 
@@ -2603,13 +2616,14 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
                           <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-black/40 border border-gray-800 hover:border-gray-700 transition-colors">
                             <UserIcon size={14} className="text-gray-600" />
                             <select
-                              value={task.assigned_to}
-                              onChange={(e) => { e.stopPropagation(); handleReassign(task.id, e.target.value); }}
+                              value={task.assigned_to || ''}
+                              onChange={(e) => { e.stopPropagation(); handleReassign(task.id, e.target.value === '' ? null : e.target.value); }}
                               onClick={(e) => e.stopPropagation()}
                               className="bg-transparent focus:outline-none cursor-pointer appearance-none text-gray-400 hover:text-white transition-colors max-w-[90px] sm:max-w-none truncate"
                             >
+                              <option value="" className="bg-gray-900">Unassigned</option>
                               <option value={currentUserId} className="bg-gray-900">Me</option>
-                              {Object.entries(usersMap).map(([id, name]) => (
+                              {Object.entries(usersMap).filter(([id]) => id !== currentUserId).map(([id, name]) => (
                                 <option key={id} value={id} className="bg-gray-900">{name}</option>
                               ))}
                             </select>

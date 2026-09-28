@@ -214,9 +214,9 @@
         setTask(data);
         
         if (organization?.id) {
-          const { data: orgUsers } = await supabase.schema('app_private').from('organization_users').select('id, full_name').eq('organization_id', organization.id);
-          setMembers((orgUsers || []).map(u => ({ id: u.id, name: u.full_name || 'Unknown User' })));
-        }
+        const { data: orgUsers } = await supabase.schema('app_private').from('organization_users').select('user_id, full_name').eq('organization_id', organization.id);
+        setMembers((orgUsers || []).map(u => ({ id: u.user_id, name: u.full_name || 'Unknown User' })));
+      }
         setLoading(false);
       };
       fetchTask();
@@ -316,9 +316,10 @@
                   </div>
                   <div>
                     <label className="block text-[11px] font-mono font-medium text-gray-500 mb-2 uppercase tracking-wider">Assigned To</label>
-                    <select value={task.assigned_to || ''} onChange={(e) => handleUpdate('assigned_to', e.target.value)} className="w-full bg-black/50 border border-gray-800 rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none hover:border-gray-700 transition-colors cursor-pointer">
+                    <select value={task.assigned_to || ''} onChange={(e) => handleUpdate('assigned_to', e.target.value === '' ? null : e.target.value)} className="w-full bg-black/50 border border-gray-800 rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none hover:border-gray-700 transition-colors cursor-pointer">
+                      <option value="">Unassigned</option>
                       <option value={user?.id || ''}>Me</option>
-                      {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                      {members.filter(m => m.id !== user?.id).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
                     </select>
                   </div>
                   <div>
@@ -1064,14 +1065,14 @@
           // Fetch directly from organization_users so we get EVERYONE in the org
           const { data, error } = await supabase.schema('app_private')
             .from('organization_users')
-            .select('id, full_name')
+            .select('user_id, full_name')
             .eq('organization_id', organization?.id);
             
           if (error) throw error;
           
           // Map the actual org users to our members dropdown list
           setMembers((data || []).map(u => ({ 
-            id: u.id, 
+            id: u.user_id, 
             name: u.full_name || 'Unknown User' 
           })));
         } catch (err) {
@@ -1206,7 +1207,7 @@
       } catch (err) {}
     };
 
-    const handleReassign = async (taskId: string, newAssignee: string) => {
+    const handleReassign = async (taskId: string, newAssignee: string | null) => {
       try {
         const { error } = await supabase.schema('app_private').from('tasks').update({ assigned_to: newAssignee, updated_at: new Date().toISOString() }).eq('id', taskId);
         if (error) throw error;
@@ -1632,13 +1633,14 @@
                                 <div className="flex items-center gap-1 px-1.5 py-1 rounded bg-black/40 border border-gray-800 hover:border-gray-700 transition-colors">
                                   <UserIcon size={12} className="text-gray-600" />
                                   <select
-                                    value={task.assigned_to}
-                                    onChange={(e) => { e.stopPropagation(); handleReassign(task.id, e.target.value); }}
+                                    value={task.assigned_to || ''}
+                                    onChange={(e) => { e.stopPropagation(); handleReassign(task.id, e.target.value === '' ? null : e.target.value); }}
                                     onClick={(e) => e.stopPropagation()}
                                     className="bg-transparent focus:outline-none cursor-pointer appearance-none text-gray-400 hover:text-white transition-colors max-w-[70px] truncate"
                                   >
-                                    <option value={userId}>Me</option>
-                                    {members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                                    <option value="" className="bg-gray-900">Unassigned</option>
+                                    <option value={userId} className="bg-gray-900">Me</option>
+                                    {members.filter(m => m.id !== userId).map(m => <option key={m.id} value={m.id} className="bg-gray-900">{m.name}</option>)}
                                   </select>
                                 </div>
 
@@ -1861,7 +1863,7 @@
                 />
                 <select value={newTaskAssignee} onChange={(e) => setNewTaskAssignee(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white font-mono text-sm focus:outline-none left-panel-theme-focus">
                   <option value={userId}>Assign to: Me</option>
-                  {members.map(m => <option key={m.id} value={m.id}>Assign to: {m.name}</option>)}
+                  {members.filter(m => m.id !== userId).map(m => <option key={m.id} value={m.id}>Assign to: {m.name}</option>)}
                 </select>
                 <div className="flex gap-2">
                   <select value={newTaskStatus} onChange={(e) => setNewTaskStatus(e.target.value)} className="w-1/2 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white font-mono text-sm focus:outline-none left-panel-theme-focus">

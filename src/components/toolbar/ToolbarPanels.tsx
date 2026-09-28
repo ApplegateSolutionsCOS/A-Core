@@ -1519,6 +1519,7 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({ isOpen, onClose, currentVi
   const [assignee, setAssignee] = useState<string>('');
   const [attachTo, setAttachTo] = useState(currentView || '');
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   
   // States for fetching users & tags
   const [orgUsers, setOrgUsers] = useState<{id: string, name: string}[]>([]);
@@ -1577,6 +1578,7 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({ isOpen, onClose, currentVi
 
   const handleSubmit = async () => {
     if (!title.trim() || !currentUserId || !orgId) return;
+    setIsSubmitting(true);
 
     try {
       let dueDateTimestamp = null;
@@ -1615,14 +1617,17 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({ isOpen, onClose, currentVi
       console.error('Error creating task:', err);
     }
     
-    setTitle('');
-    setDescription('');
-    setDueDate('');
-    setDueTime('');
-    setRecurrenceType('none');
-    setRecurrenceInterval(1);
-    setSelectedTags([]);
-    onClose();
+    setTimeout(() => {
+        setTitle('');
+        setDescription('');
+        setDueDate('');
+        setDueTime('');
+        setRecurrenceType('none');
+        setRecurrenceInterval(1);
+        setSelectedTags([]);
+        setIsSubmitting(false);
+        onClose();
+    }, 1500);
   };
 
   if (!isOpen) return null;
@@ -1640,6 +1645,15 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({ isOpen, onClose, currentVi
         }
         #task-panel-modal .submit-btn:not(:disabled):hover {
           background-color: rgba(${themeRgb}, 0.3);
+        }
+        @keyframes submit-bounce {
+          0% { transform: scale(1); }
+          40% { transform: scale(1.02); }
+          70% { transform: scale(0.95); }
+          100% { transform: scale(1); }
+        }
+        .animate-submit-bounce {
+          animation: submit-bounce 0.4s ease-out forwards;
         }
       `}</style>
 
@@ -1786,11 +1800,35 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({ isOpen, onClose, currentVi
           {/* Submit */}
           <button
             onClick={handleSubmit}
-            disabled={!title.trim()}
-            className="w-full mt-4 py-3 border rounded-lg transition-all font-mono disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 submit-btn"
+            disabled={!title.trim() || isSubmitting}
+            className={`w-full mt-4 border transition-colors duration-300 font-mono disabled:cursor-not-allowed flex items-center justify-center gap-2 submit-btn relative overflow-hidden py-3 rounded-lg ${
+              isSubmitting ? "animate-submit-bounce" : (!title.trim() ? "opacity-50" : "")
+            }`}
+            style={
+              isSubmitting
+                ? {
+                    backgroundColor: themeColor,
+                    borderColor: themeColor,
+                    color: "#000",
+                  }
+                : {
+                    borderColor: `rgba(${themeRgb}, 0.3)`,
+                  }
+            }
           >
-            <CheckIcon size={18} />
-            Create Task
+            <div className="absolute top-0 left-0 w-3 h-3 border-t-[3px] border-l-[3px] rounded-tl-lg pointer-events-none transition-colors duration-300" style={{ borderColor: isSubmitting ? 'rgba(0,0,0,0.3)' : themeColor }} />
+            <div className="absolute top-0 right-0 w-3 h-3 border-t-[3px] border-r-[3px] rounded-tr-lg pointer-events-none transition-colors duration-300" style={{ borderColor: isSubmitting ? 'rgba(0,0,0,0.3)' : themeColor }} />
+            <div className="absolute bottom-0 left-0 w-3 h-3 border-b-[3px] border-l-[3px] rounded-bl-lg pointer-events-none transition-colors duration-300" style={{ borderColor: isSubmitting ? 'rgba(0,0,0,0.3)' : themeColor }} />
+            <div className="absolute bottom-0 right-0 w-3 h-3 border-b-[3px] border-r-[3px] rounded-br-lg pointer-events-none transition-colors duration-300" style={{ borderColor: isSubmitting ? 'rgba(0,0,0,0.3)' : themeColor }} />
+            
+            {isSubmitting ? (
+              <>
+                <CheckIcon size={18} />
+                Task Created
+              </>
+            ) : (
+              "Create"
+            )}
           </button>
         </div>
       </div>
