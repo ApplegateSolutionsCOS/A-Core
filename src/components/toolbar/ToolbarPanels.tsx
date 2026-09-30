@@ -1453,6 +1453,84 @@ const getTagColor = (tag: string) => {
   return { bg };
 };
 
+// --- User Multi-Select Component ---
+const UserMultiSelect: React.FC<{
+  users: {id: string, name: string}[];
+  selectedIds: string[];
+  onChange: (ids: string[]) => void;
+  placeholder?: string;
+}> = ({ users, selectedIds, onChange, placeholder = "Select members..." }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const filteredUsers = users.filter(u => u.name.toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <div className="relative w-full" ref={wrapperRef}>
+      <div 
+        className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-3 text-white font-mono text-sm focus:outline-none transition-all cursor-pointer flex flex-wrap gap-1.5 min-h-[46px] items-center hover:border-gray-700"
+        onClick={() => setIsOpen(!isOpen)}
+      >
+        {selectedIds.length === 0 && <span className="text-gray-500">{placeholder}</span>}
+        {selectedIds.map(id => {
+          const u = users.find(x => x.id === id);
+          return (
+            <span key={id} className="bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 px-2 py-0.5 rounded text-xs flex items-center gap-1" onClick={(e) => { e.stopPropagation(); onChange(selectedIds.filter(x => x !== id)); }}>
+              {u ? u.name : id} <span className="hover:text-cyan-200 cursor-pointer font-bold">&times;</span>
+            </span>
+          );
+        })}
+      </div>
+      {isOpen && (
+        <div className="absolute z-[100] w-full mt-1 bg-gray-950 border border-gray-700 rounded-lg shadow-xl max-h-60 flex flex-col">
+          <div className="p-2 border-b border-gray-800">
+            <input 
+              autoFocus
+              type="text" 
+              value={search} 
+              onChange={e => setSearch(e.target.value)} 
+              placeholder="Search users..." 
+              className="w-full bg-black border border-gray-800 rounded px-2 py-1.5 text-white text-xs font-mono outline-none"
+              onClick={e => e.stopPropagation()}
+            />
+          </div>
+          <div className="overflow-y-auto darkwave-scrollbar p-1">
+            {filteredUsers.map(u => {
+              const isSelected = selectedIds.includes(u.id);
+              return (
+                <div 
+                  key={u.id} 
+                  className={`px-3 py-2 text-xs font-mono cursor-pointer rounded hover:bg-gray-800 flex items-center justify-between ${isSelected ? 'text-cyan-400' : 'text-gray-300'}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (isSelected) onChange(selectedIds.filter(id => id !== u.id));
+                    else onChange([...selectedIds, u.id]);
+                  }}
+                >
+                  {u.name}
+                  {isSelected && <LucideIcons.Check size={14} />}
+                </div>
+              );
+            })}
+            {filteredUsers.length === 0 && <div className="p-2 text-xs text-gray-500 text-center font-mono">No users found</div>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 // Task Panel
 interface TaskPanelProps {
   isOpen: boolean;
@@ -1517,6 +1595,7 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({ isOpen, onClose, currentVi
   const [recurrenceType, setRecurrenceType] = useState('none');
   const [recurrenceInterval, setRecurrenceInterval] = useState(1);
   const [assignee, setAssignee] = useState<string>('');
+  const [taskMembers, setTaskMembers] = useState<string[]>([]);
   const [attachTo, setAttachTo] = useState(currentView || '');
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -1545,17 +1624,16 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({ isOpen, onClose, currentVi
         .eq('organization_id', organization.id);
 
       if (users) {
-        setOrgUsers(users.map(u => ({ id: u.id, name: u.full_name || u.email || 'Unknown' })));
+        setOrgUsers(users.map((u: any) => ({ id: u.id, name: u.full_name || u.email || 'Unknown' })));
       }
       
       setAssignee(currentUserId); // Default assignee is self
 
       // Fetch tags securely scoped to org
       const { data: dbSettings } = await supabase.schema('app_private')
-        .from('user_settings')
+        .from('organizations')
         .select('tags')
-        .eq('user_id', currentUserId)
-        .eq('organization_id', organization.id) // ⚡ Scope to org
+        .eq('id', organization.id)
         .maybeSingle();
 
       if (dbSettings?.tags) {
@@ -1581,6 +1659,10 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({ isOpen, onClose, currentVi
     setIsSubmitting(true);
 
     try {
+      console.log('\n[DEBUG - CREATE TASK] --- STARTING ---');
+      console.log('[DEBUG - CREATE TASK] Assignee:', assignee);
+      console.log('[DEBUG - CREATE TASK] Members:', taskMembers);
+
       let dueDateTimestamp = null;
       if (dueDate) {
         const timeStr = dueTime || '23:59';
@@ -1588,10 +1670,10 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({ isOpen, onClose, currentVi
       }
 
       // ⚡ Write the task to the actual tasks table
-      await supabase.schema('app_private').from('tasks').insert({
+      const { data: newTask, error } = await supabase.schema('app_private').from('tasks').insert({
         organization_id: orgId,
         created_by: currentUserId,
-        assigned_to: assignee,
+        assigned_to: assignee || null, // ⚡ Fallback to null to prevent UUID casting errors that block member creation
         title: title.trim(),
         description: description.trim() || null,
         priority: priority,
@@ -1600,16 +1682,46 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({ isOpen, onClose, currentVi
         status: 'pending',
         app_name: attachTo || null,
         tags: selectedTags.length > 0 ? selectedTags : null
-      });
+      }).select('id').single();
 
-      // Also log the activity
-      await db.from('activities').insert({
-        user_name: 'Current User',
-        action: 'created task',
-        target: title,
-        target_type: 'task',
-        activity_type: 'task',
-      });
+      if (error) {
+        console.error('[DEBUG - CREATE TASK] Error creating primary task:', error);
+        setIsSubmitting(false);
+        return;
+      }
+      
+      console.log('[DEBUG - CREATE TASK] Primary Task created successfully. ID:', newTask?.id);
+
+      // Insert into junction table if members exist
+      if (newTask && taskMembers.length > 0) {
+        console.log('[DEBUG - CREATE TASK] Attempting to save task_members...', taskMembers);
+        // ⚡ FIX: Removed .select() to prevent PostgREST from crashing on junction tables without primary keys
+        const { error: membersError } = await supabase.schema('app_private').from('task_members').insert(
+          taskMembers.map(id => ({ task_id: newTask.id, user_id: id }))
+        );
+        
+        if (membersError) {
+          console.error('[DEBUG - CREATE TASK] Error saving task_members:', membersError);
+        } else {
+          console.log('[DEBUG - CREATE TASK] Successfully saved task_members.');
+        }
+      } else {
+        console.log('[DEBUG - CREATE TASK] No members selected, skipping task_members insert.');
+      }
+
+      // Also log the activity (Wrapped in try/catch so CORS proxy failures don't crash the UI refresh pipeline!)
+      try {
+        await supabase.from('activities').insert({
+          user_name: 'Current User',
+          action: 'created task',
+          target: title,
+          target_type: 'task',
+          activity_type: 'task',
+          workspace_slug: currentWorkspaceSlug || null
+        });
+      } catch (activityErr) {
+        console.warn('Non-fatal error logging activity:', activityErr);
+      }
 
       // ⚡ Dispatch manual refresh event to instantly sync the main TasksView
       window.dispatchEvent(new CustomEvent('refreshTasks'));
@@ -1625,6 +1737,7 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({ isOpen, onClose, currentVi
         setRecurrenceType('none');
         setRecurrenceInterval(1);
         setSelectedTags([]);
+        setTaskMembers([]);
         setIsSubmitting(false);
         onClose();
     }, 1500);
@@ -1703,19 +1816,27 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({ isOpen, onClose, currentVi
             className="w-full h-20 bg-gray-950 border border-gray-800 rounded-lg px-4 py-3 text-white font-mono text-sm resize-none focus:outline-none focus:theme-border transition-all mb-4"
           />
 
-          {/* Stretched Assign To Dropdown */}
+          {/* Stretched Manager Dropdown */}
           <div className="mb-4">
-            <p className="text-sm text-gray-400 font-mono mb-2">Assign to:</p>
+            <p className="text-sm text-gray-400 font-mono mb-2">Manager:</p>
             <select
               value={assignee}
               onChange={(e) => setAssignee(e.target.value)}
-              className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-3 text-white font-mono text-sm focus:outline-none focus:theme-border transition-all"
+              className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-3 text-white font-mono text-sm focus:outline-none focus:theme-border transition-all mb-3"
             >
               <option value={currentUserId}>Me</option>
               {orgUsers.filter(u => u.id !== currentUserId).map((u) => (
                 <option key={u.id} value={u.id}>{u.name}</option>
               ))}
             </select>
+
+            <p className="text-sm text-gray-400 font-mono mb-2">Members:</p>
+            <UserMultiSelect 
+              users={orgUsers} 
+              selectedIds={taskMembers} 
+              onChange={setTaskMembers} 
+              placeholder="Add Members..."
+            />
           </div>
 
           {/* Stretched Priority Dropdown */}

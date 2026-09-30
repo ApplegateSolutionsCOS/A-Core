@@ -652,7 +652,7 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
   const canEditFields = useMemo(() => {
     if (isPlatAdmin) return true;
     if (isOrganizationAdmin()) return true; // ⚡ ALLOW ORG ADMINS TO EDIT (We will fork on save)
-    return false;
+    return true; // ⚡ ALLOW REGULAR USERS TO EDIT/SAVE
   }, [isPlatAdmin, isOrganizationAdmin]);
 
   useEffect(() => {

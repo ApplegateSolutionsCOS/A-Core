@@ -7,6 +7,7 @@ import {
 } from '@/components/icons/Icons';
 
 // Inline SVG icons (matching the Panel)
+const BellIcon: React.FC<{ size?: number; className?: string }> = ({ size = 24, className = '' }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></svg>);
 const SendIcon: React.FC<{ size?: number; className?: string }> = ({ size = 24, className = '' }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg>);
 const VideoIcon: React.FC<{ size?: number; className?: string }> = ({ size = 24, className = '' }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" ry="2" /></svg>);
 const PhoneIcon: React.FC<{ size?: number; className?: string }> = ({ size = 24, className = '' }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z" /></svg>);
@@ -52,7 +53,7 @@ const COLOR_PALETTE: Record<string, { color: string; rgb: string }> = {
 };
 
 const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWorkspaceSlug }) => {
-  const { user } = useAuth();
+  const { user, organization } = useAuth();
   const currentUserId = user?.id || (user as any)?.uid;
 
   const { getColor } = useWorkspaceColor();
@@ -120,11 +121,151 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
   const [onlineUserIds, setOnlineUserIds] = useState<string[]>([]);
   const [dbStatus, setDbStatus] = useState<string>('Loading contacts...');
 
+  const [pushEnabled, setPushEnabled] = useState(false);
+  const [isPushLoading, setIsPushLoading] = useState(true);
+
+  useEffect(() => {
+    const checkSubscription = async () => {
+      if ('serviceWorker' in navigator && 'PushManager' in window) {
+        try {
+          const registration = await navigator.serviceWorker.register('/sw.js');
+          const subscription = await registration.pushManager.getSubscription();
+          setPushEnabled(!!subscription);
+        } catch (err) {
+          console.error('Service Worker error:', err);
+        }
+      }
+      setIsPushLoading(false);
+    };
+    checkSubscription();
+  }, []);
+
+  const handleTogglePush = async () => {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      alert('Push notifications are not supported by this browser.'); return;
+    }
+    
+    setIsPushLoading(true);
+    try {
+      const registration = await navigator.serviceWorker.register('/sw.js');
+      await navigator.serviceWorker.ready;
+      const currentUserId = user?.id || (user as any)?.uid;
+
+      if (pushEnabled) {
+        // TURN OFF: Unsubscribe and delete from DB
+        const subscription = await registration.pushManager.getSubscription();
+        if (subscription) await subscription.unsubscribe();
+        if (currentUserId) {
+          await supabase.schema('app_private').from('user_push_subscriptions').delete().eq('user_id', currentUserId);
+        }
+        setPushEnabled(false);
+      } else {
+        // TURN ON: Get permission, subscribe, and insert into DB
+        const permission = await Notification.requestPermission();
+        if (permission !== 'granted') {
+          alert('Notification permission denied.');
+          setIsPushLoading(false); return;
+        }
+
+        const vapidPublicKey = import.meta.env.VITE_VAPID_PUBLIC_KEY;
+        const padding = '='.repeat((4 - vapidPublicKey.length % 4) % 4);
+        const base64 = (vapidPublicKey + padding).replace(/\-/g, '+').replace(/_/g, '/');
+        const rawData = window.atob(base64);
+        const outputArray = new Uint8Array(rawData.length);
+        for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+
+        const subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true, applicationServerKey: outputArray
+        });
+
+        if (currentUserId) {
+          // Clean up any stale records first, then insert new one
+          await supabase.schema('app_private').from('user_push_subscriptions').delete().eq('user_id', currentUserId);
+          await supabase.schema('app_private').from('user_push_subscriptions').insert({
+            user_id: currentUserId, subscription: JSON.parse(JSON.stringify(subscription))
+          });
+        }
+        setPushEnabled(true);
+      }
+    } catch (err) {
+      console.error('Push toggle error:', err);
+    }
+    setIsPushLoading(false);
+  };
+
   // UI States
-  const [searchQuery, setSearchQuery] = useState('');
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [chatTitle, setChatTitle] = useState('');
+  const [selectedGroupMembers, setSelectedGroupMembers] = useState<Contact[]>([]);
+  const [isCreatingGroup, setIsCreatingGroup] = useState(false);
+  const [isFindingContact, setIsFindingContact] = useState(false);
+  const [allUsers, setAllUsers] = useState<Contact[]>([]);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const toggleGroupMember = (contact: Contact) => {
+    setSelectedGroupMembers(prev => 
+      prev.find(m => m.id === contact.id) ? prev.filter(m => m.id !== contact.id) : [...prev, contact]
+    );
+  };
+
+  const handleStartDirectMessage = async (targetUser: Contact) => {
+    const currentUserId = user?.id || (user as any)?.uid;
+    if (!currentUserId || !currentUserOrg) return;
+    try {
+      const existingThread = contacts.find(c => !c.name.includes(',') && c.name === targetUser.name);
+      if (existingThread) {
+        setSelectedContact(existingThread); setChatTitle(existingThread.name); setIsFindingContact(false); return;
+      }
+      const { data: thread, error: threadErr } = await supabase.schema('app_private')
+        .from('chat_threads').insert({ organization_id: currentUserOrg, title: 'Direct Message', is_group: false }).select().single();
+      if (threadErr) throw threadErr;
+
+      await supabase.schema('app_private').from('chat_participants').insert([
+        { thread_id: thread.id, user_id: currentUserId }, { thread_id: thread.id, user_id: targetUser.id }
+      ]);
+      
+      setIsFindingContact(false);
+      const newContact: Contact = { id: thread.id, name: targetUser.name, initials: targetUser.initials, status: targetUser.status, lastMessage: 'Say hi!', time: 'Now', lastMessageTime: new Date(), unread: 0 };
+      setContacts(prev => [newContact, ...prev]);
+      setSelectedContact(newContact); setChatTitle(targetUser.name);
+    } catch (err) { console.error('Error starting DM', err); }
+  };
+
+  const handleCreateGroup = async () => {
+    if (!newGroupName.trim() || selectedGroupMembers.length === 0 || !currentUserId || !currentUserOrg) return;
+    
+    try {
+      const { data: thread, error: threadErr } = await supabase.schema('app_private')
+        .from('chat_threads')
+        .insert({ organization_id: currentUserOrg, title: newGroupName, is_group: true })
+        .select().single();
+        
+      if (threadErr) throw threadErr;
+      
+      const participants = [
+        { thread_id: thread.id, user_id: currentUserId },
+        ...selectedGroupMembers.map(m => ({ thread_id: thread.id, user_id: m.id }))
+      ];
+      
+      await supabase.schema('app_private').from('chat_participants').insert(participants);
+      
+      setIsCreatingGroup(false);
+      setNewGroupName('');
+      setSelectedGroupMembers([]);
+      
+      const groupContact: Contact = {
+        id: thread.id,
+        name: newGroupName,
+        initials: newGroupName.substring(0, 2).toUpperCase(),
+        status: 'online', lastMessage: 'Group created', time: 'Now', lastMessageTime: new Date(), unread: 0
+      };
+      setSelectedContact(groupContact);
+      setChatTitle(newGroupName);
+    } catch (err) { console.error('Error creating group', err); }
+  };
   const [newMessage, setNewMessage] = useState('');
+  const [messages, setMessages] = useState<Message[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   
@@ -136,87 +277,74 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
 
   // 1. Fetch Contacts & Previews
   useEffect(() => {
-    if (!currentUserId) return;
+    if (!currentUserId) { setDbStatus('Waiting for authenticated user...'); return; }
 
     const fetchContacts = async () => {
+      const orgId = (organization as any)?.id || currentUserOrg;
+      if (!orgId && !currentUserOrg) return;
+
       try {
-        const { data: me } = await supabase.schema('app_private')
-          .from('organization_users')
-          .select('organization_id')
-          .eq('id', currentUserId)
-          .limit(1)
-          .maybeSingle();
+        const activeOrgId = orgId || currentUserOrg;
+        if (!currentUserOrg) setCurrentUserOrg(activeOrgId);
+        setDbStatus('');
 
-        if (!me?.organization_id) {
-          setDbStatus('No organization found.');
-          return;
-        }
-        
-        setCurrentUserOrg(me.organization_id);
-
+        // 1. Fetch all org users for the Directory
         const { data: orgUsers } = await supabase.schema('app_private')
           .from('organization_users')
           .select('*')
-          .eq('organization_id', me.organization_id)
-          .neq('id', currentUserId); 
+          .eq('organization_id', activeOrgId)
+          .neq('id', currentUserId);
 
-        if (orgUsers && orgUsers.length > 0) {
-          // Fetch previews
-          const { data: recentMessages } = await supabase.schema('app_private')
-            .from('messages')
-            .select('*')
-            .or(`sender_id.eq.${currentUserId},recipient_id.eq.${currentUserId}`)
-            .order('created_at', { ascending: false });
-
-          const latestMsgMap: Record<string, any> = {};
-          const unreadCountMap: Record<string, number> = {};
-
-          recentMessages?.forEach(msg => {
-            const otherId = msg.sender_id === currentUserId ? msg.recipient_id : msg.sender_id;
-            if (!latestMsgMap[otherId]) latestMsgMap[otherId] = msg;
-            if (msg.recipient_id === currentUserId && msg.is_read === false) {
-              unreadCountMap[msg.sender_id] = (unreadCountMap[msg.sender_id] || 0) + 1;
-            }
-          });
-
-          const formattedContacts: Contact[] = orgUsers.map(u => {
+        if (orgUsers) {
+          setAllUsers(orgUsers.map(u => {
             const rawName = u.full_name || u.email || 'Unknown';
-            const lastMsg = latestMsgMap[u.id];
-            
-            // Default to an empty string instead of 'Tap to message'
-            let lastMessageStr = '';
-            let timeStr = '';
-            let lastMessageTime: Date | null = null;
+            return {
+              id: u.id, 
+              name: rawName,
+              initials: (rawName || 'U').substring(0,2).toUpperCase(),
+              status: 'offline', lastMessage: '', time: '', lastMessageTime: null, unread: 0
+            };
+          }));
+        }
 
-            if (lastMsg) {
-              const prefix = lastMsg.sender_id === currentUserId ? 'You: ' : '';
-              lastMessageStr = `${prefix}${lastMsg.content}`;
-              lastMessageTime = new Date(lastMsg.created_at);
-              const today = new Date();
-              const isToday = lastMessageTime.getDate() === today.getDate() && 
-                              lastMessageTime.getMonth() === today.getMonth() && 
-                              lastMessageTime.getFullYear() === today.getFullYear();
-              timeStr = isToday 
-                ? lastMessageTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                : lastMessageTime.toLocaleDateString([], { month: 'short', day: 'numeric' });
+        // 2. Fetch Active Threads
+        const { data: threads } = await supabase.schema('app_private').from('chat_threads').select('*').order('created_at', { ascending: false });
+        const { data: participants } = await supabase.schema('app_private').from('chat_participants').select('*');
+        const { data: recentMessages } = await supabase.schema('app_private').from('messages').select('*').order('created_at', { ascending: false });
+
+        if (threads && threads.length > 0) {
+          const formattedThreads: Contact[] = threads.map(t => {
+            const realLastMsg = recentMessages?.find(m => m.thread_id === t.id);
+            const unreadCount = recentMessages?.filter(m => m.thread_id === t.id && m.is_read === false && m.sender_id !== currentUserId).length || 0;
+
+            let threadName = t.title;
+            if (!t.is_group) {
+              const otherParticipant = participants?.find(p => p.thread_id === t.id && p.user_id !== currentUserId);
+              const otherUser = orgUsers?.find(u => u.id === otherParticipant?.user_id);
+              threadName = otherUser?.full_name || otherUser?.email || 'Unknown User';
+            }
+
+            let lastMessageStr = ''; let timeStr = ''; let lastMessageTime: Date | null = null;
+            if (realLastMsg) {
+              const prefix = realLastMsg.sender_id === currentUserId ? 'You: ' : '';
+              lastMessageStr = `${prefix}${realLastMsg.content}`;
+              lastMessageTime = new Date(realLastMsg.created_at);
+              const isToday = new Date().toDateString() === lastMessageTime.toDateString();
+              timeStr = isToday ? lastMessageTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : lastMessageTime.toLocaleDateString([], { month: 'short', day: 'numeric' });
             }
 
             return {
-              id: u.id,
-              name: rawName,
-              initials: rawName.split(' ').map((n: string) => n[0]).join('').substring(0, 2).toUpperCase(),
+              id: t.id, 
+              name: threadName || 'Unnamed Thread',
+              initials: (threadName || 'U').split(' ').map((n: string) => n[0]).join('').substring(0, 2).toUpperCase(),
               status: 'offline', 
-              lastMessage: lastMessageStr,
-              lastMessageTime,
-              time: timeStr,
-              unread: unreadCountMap[u.id] || 0
+              lastMessage: lastMessageStr, 
+              lastMessageTime, 
+              time: timeStr, 
+              unread: unreadCount
             };
           });
-          
-          setContacts(formattedContacts);
-          setDbStatus('');
-        } else {
-          setDbStatus(`No other users found in organization.`);
+          setContacts(formattedThreads.filter(t => t.lastMessage || t.name !== 'Unknown User'));
         }
       } catch (err) {
         console.error(err);
@@ -244,69 +372,40 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
     
     const fetchChatHistory = async () => {
       const { data: chat } = await supabase.schema('app_private')
-        .from('messages')
-        .select('*')
-        .or(`and(sender_id.eq.${currentUserId},recipient_id.eq.${selectedContact.id}),and(sender_id.eq.${selectedContact.id},recipient_id.eq.${currentUserId})`)
-        .order('created_at', { ascending: true });
+        .from('messages').select('*').eq('thread_id', selectedContact.id).order('created_at', { ascending: true });
 
       if (chat) {
         setMessages(chat.map(m => ({
-          id: m.id,
-          senderId: m.sender_id,
-          text: m.content,
+          id: m.id, senderId: m.sender_id, text: m.content,
           time: new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          isMe: m.sender_id === currentUserId,
-          type: m.message_type || 'text',
-          attachment: m.attachment || undefined,
-          videoUrl: m.video_url || undefined
+          isMe: m.sender_id === currentUserId, type: m.message_type || 'text',
+          attachment: m.attachment || undefined, videoUrl: m.video_url || undefined
         })));
-      } else {
-        setMessages([]);
-      }
+      } else { setMessages([]); }
 
-      // Mark as read!
-      await supabase.schema('app_private')
-        .from('messages')
-        .update({ is_read: true })
-        .eq('recipient_id', currentUserId)
-        .eq('sender_id', selectedContact.id)
-        .eq('is_read', false);
-
+      await supabase.schema('app_private').from('messages').update({ is_read: true }).eq('thread_id', selectedContact.id).eq('is_read', false);
       setContacts(prev => prev.map(c => c.id === selectedContact.id ? { ...c, unread: 0 } : c));
     };
 
     fetchChatHistory();
 
-    const messageSubscription = supabase
-      .channel(`chat_view_${selectedContact.id}`)
+    const messageSubscription = supabase.channel(`chat_${selectedContact.id}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'app_private', table: 'messages' }, (payload) => {
           const newDbMsg = payload.new as any;
-          const isRelevant = 
-            (newDbMsg.sender_id === currentUserId && newDbMsg.recipient_id === selectedContact.id) ||
-            (newDbMsg.sender_id === selectedContact.id && newDbMsg.recipient_id === currentUserId);
-          
-          if (isRelevant) {
+          if (newDbMsg.thread_id === selectedContact.id) {
             setMessages((prev) => {
               if (newDbMsg.sender_id === currentUserId) return prev;
               if (prev.some(m => m.id === newDbMsg.id)) return prev;
-              const incomingMsg: Message = {
-                id: newDbMsg.id,
-                senderId: newDbMsg.sender_id,
-                text: newDbMsg.content,
+              return [...prev, {
+                id: newDbMsg.id, senderId: newDbMsg.sender_id, text: newDbMsg.content,
                 time: new Date(newDbMsg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                isMe: false, 
-                type: newDbMsg.message_type || 'text',
-                attachment: newDbMsg.attachment || undefined,
-                videoUrl: newDbMsg.video_url || undefined
-              };
-              return [...prev, incomingMsg];
+                isMe: false, type: newDbMsg.message_type || 'text',
+                attachment: newDbMsg.attachment || undefined, videoUrl: newDbMsg.video_url || undefined
+              }];
             });
-            
-            // Mark it as read instantly since we have the window open
             supabase.schema('app_private').from('messages').update({ is_read: true }).eq('id', newDbMsg.id).then();
           }
-        }
-      ).subscribe();
+      }).subscribe();
 
     return () => { supabase.removeChannel(messageSubscription); };
   }, [selectedContact, currentUserId]);
@@ -340,9 +439,10 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
       organization_id: currentUserOrg,
       sender_id: currentUserId,
       sender_type: 'organization',
-      recipient_id: selectedContact.id,
+      thread_id: selectedContact.id,
       recipient_type: 'organization',
-      subject: 'Direct Message',
+      recipient_id: selectedContact.id,
+      subject: chatTitle || 'Direct Message',
       content: contentToSave,
       message_type: 'text',
       is_read: false
@@ -351,7 +451,11 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
 
   // 5. Sorting Engine
   const statusWeight = { online: 3, away: 2, offline: 1 };
-  const filteredContacts = contacts
+  
+  // Toggle between active threads (contacts) or the full directory (allUsers)
+  const listToRender = (isFindingContact || isCreatingGroup) ? allUsers : contacts;
+  
+  const filteredContacts = listToRender
     .map(c => ({ ...c, status: onlineUserIds.includes(c.id) ? 'online' : 'offline' as Contact['status'] }))
     .filter(c => c.name.toLowerCase().includes(searchQuery.toLowerCase()))
     .sort((a, b) => {
@@ -424,12 +528,24 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
               {contacts.length} Contacts {onlineCount > 0 && <span className="text-green-400 font-medium">({onlineCount} online)</span>}
             </p>
           </div>
-          <button 
-            onClick={onClose} 
-            className="p-2 text-gray-400 hover:text-white bg-black/50 border border-gray-800 rounded-lg hover:bg-gray-700 transition-colors"
-          >
-            <CloseIcon size={24} />
-          </button>
+          <div className="flex items-center gap-3">
+            <button 
+              onClick={handleTogglePush} 
+              disabled={isPushLoading}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-all font-mono whitespace-nowrap disabled:opacity-50 ${
+                pushEnabled ? 'text-green-400 bg-green-500/10 border-green-500/30 hover:bg-green-500/20' : 'text-gray-400 bg-gray-500/10 border-gray-500/30 hover:bg-gray-500/20'
+              }`} 
+              title={pushEnabled ? "Disable Notifications" : "Enable Notifications"}
+            >
+              <BellIcon size={14} /> {pushEnabled ? 'Push: ON' : 'Push: OFF'}
+            </button>
+            <button 
+              onClick={onClose} 
+              className="p-2 text-gray-400 hover:text-white bg-black/50 border border-gray-800 rounded-lg hover:bg-gray-700 transition-colors"
+            >
+              <CloseIcon size={24} />
+            </button>
+          </div>
         </div>
 
         {/* Content Area */}
@@ -440,26 +556,75 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
             <div className="absolute top-0 left-0 w-3 h-3 border-t border-l border-blue-500/40 rounded-tl" />
             <div className="absolute top-0 right-0 w-3 h-3 border-t border-r border-blue-500/40 rounded-tr" />
 
-            <div className="p-3 border-b border-gray-800/50 bg-black flex-shrink-0">
-            <div className="relative">
-              <SearchIcon size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-600" />
-              <input 
-                type="text" 
-                value={searchQuery} 
-                onChange={e => setSearchQuery(e.target.value)} 
-                placeholder="Search contacts..."
-                className="w-full bg-gray-900/50 border border-gray-800 rounded-lg pl-9 pr-3 py-2.5 text-white font-mono text-sm focus:outline-none transition-all focus:border-blue-500/50 focus:shadow-[0_0_10px_rgba(59,130,246,0.1)]" 
-              />
+            <div className="p-3 border-b border-gray-800/50 bg-black flex-shrink-0 flex flex-col gap-3">
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <SearchIcon size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-600" />
+                  <input 
+                    type="text" 
+                    value={searchQuery} 
+                    onChange={e => setSearchQuery(e.target.value)} 
+                    placeholder="Search contacts..."
+                    className="w-full bg-gray-900/50 border border-gray-800 rounded-lg pl-9 pr-3 py-2 text-white font-mono text-sm focus:outline-none transition-all focus:border-blue-500/50 focus:shadow-[0_0_10px_rgba(59,130,246,0.1)]" 
+                  />
+                </div>
+                {!isCreatingGroup && !isFindingContact && (
+                  <>
+                    <button onClick={() => { setIsFindingContact(true); /* no ref in view yet, just toggle */ }} className="p-2 rounded-lg bg-gray-800 border border-gray-700 text-gray-400 hover:text-white transition-all" title="Find Contact">
+                      <SearchIcon size={18} />
+                    </button>
+                    <button onClick={() => setIsCreatingGroup(true)} className="p-2 rounded-lg bg-blue-500/10 border border-blue-500/30 text-blue-400 hover:bg-blue-500/20 transition-all" title="New Group">
+                      <PlusIcon size={18} />
+                    </button>
+                  </>
+                )}
+                {isFindingContact && (
+                  <button onClick={() => setIsFindingContact(false)} className="px-3 py-1.5 rounded-lg bg-gray-800 border border-gray-700 text-gray-400 hover:text-white transition-all font-mono text-xs" title="Cancel">
+                    Cancel
+                  </button>
+                )}
+              </div>
+
+              {isCreatingGroup && (
+                <div className="flex flex-col gap-2 pt-2 border-t border-gray-800/50">
+                  <input 
+                    type="text" 
+                    value={newGroupName} 
+                    onChange={e => setNewGroupName(e.target.value)} 
+                    placeholder="Enter Group Name..."
+                    className="w-full bg-gray-900/50 border border-gray-800 rounded-lg px-3 py-2 text-white font-mono text-sm focus:outline-none transition-all focus:border-blue-500/50 focus:shadow-[0_0_10px_rgba(59,130,246,0.1)]" 
+                  />
+                  <div className="flex gap-2">
+                    <button onClick={() => { setIsCreatingGroup(false); setSelectedGroupMembers([]); }} className="flex-1 py-1.5 rounded-lg border border-gray-800 text-gray-400 hover:text-white transition-all font-mono text-xs">Cancel</button>
+                    <button onClick={handleCreateGroup} disabled={!newGroupName || selectedGroupMembers.length === 0} className="flex-1 py-1.5 rounded-lg bg-blue-500/20 text-blue-400 border border-blue-500/50 hover:bg-blue-500/30 transition-all font-mono text-xs disabled:opacity-50">Create Group</button>
+                  </div>
+                </div>
+              )}
             </div>
-          </div>
 
           <div className="flex-1 overflow-y-auto darkwave-scrollbar">
             {dbStatus && contacts.length === 0 ? (
               <div className="p-6 text-center text-xs font-mono text-gray-500">{dbStatus}</div>
             ) : (
-              filteredContacts.map(contact => (
-                <button key={contact.id} onClick={() => setSelectedContact(contact)}
+              filteredContacts.map(contact => {
+                const isSelected = selectedGroupMembers.some(m => m.id === contact.id);
+                return (
+                <button key={contact.id} onClick={() => { 
+                  if (isCreatingGroup) {
+                    toggleGroupMember(contact);
+                  } else if (isFindingContact) {
+                    handleStartDirectMessage(contact);
+                  } else {
+                    setSelectedContact(contact); 
+                    setChatTitle(contact.name); 
+                  }
+                }}
                   className={`w-full flex items-center gap-3 p-4 transition-all border-b border-gray-800/30 text-left hover:bg-blue-500/10 ${selectedContact?.id === contact.id ? 'bg-blue-500/5 border-l-2 border-l-blue-500' : ''}`}>
+                  {isCreatingGroup && (
+                    <div className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-colors ${isSelected ? 'bg-blue-500 border-blue-500 text-white' : 'border-gray-600'}`}>
+                      {isSelected && <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>}
+                    </div>
+                  )}
                   <div className="relative flex-shrink-0">
                     <div className="w-12 h-12 rounded-full flex items-center justify-center text-sm font-mono font-bold"
                          style={{ background: `linear-gradient(to bottom right, rgba(${panelAccentRGB}, 0.2), rgba(${panelAccentRGB}, 0.05))`, borderColor: `rgba(${panelAccentRGB}, 0.3)`, color: panelAccentColor }}>
@@ -481,7 +646,8 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
                     </span>
                   )}
                 </button>
-              ))
+              );
+            })
             )}
           </div>
         </div>
@@ -503,7 +669,13 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
                   <div className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-black ${statusColor(selectedContact.status)}`} />
                 </div>
                 <div className="flex-1">
-                  <p className="text-white text-base font-mono font-medium">{selectedContact.name}</p>
+                  <input 
+                    type="text"
+                    value={chatTitle}
+                    onChange={(e) => setChatTitle(e.target.value)}
+                    placeholder="Chat Title..."
+                    className="w-full bg-transparent text-white text-base font-mono font-medium focus:outline-none focus:border-b focus:border-blue-500/50 transition-colors"
+                  />
                   <p className="text-xs text-gray-500 font-mono capitalize">{selectedContact.status}</p>
                 </div>
                 <div className="flex items-center gap-1">
@@ -517,6 +689,11 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
                 {messages.map(msg => (
                   <div key={msg.id} className={`flex ${msg.isMe ? 'justify-end' : 'justify-start'}`}>
                     <div className={`max-w-[75%] rounded-2xl px-4 py-3 ${msg.isMe ? 'bg-blue-500/20 border border-blue-500/30 text-white' : 'bg-gray-900/80 border border-gray-800 text-gray-200'}`}>
+                      {!msg.isMe && (
+                        <div className="mb-1 text-xs font-bold text-blue-400 font-mono">
+                          {allUsers.find(u => u.id === msg.senderId)?.name || 'Unknown User'}
+                        </div>
+                      )}
                       {msg.type === 'video' && msg.videoUrl && <div className="mb-2"><video src={msg.videoUrl} controls className="w-full max-w-[300px] rounded-lg border border-blue-500/20" /></div>}
                       {msg.type === 'file' && msg.attachment && (
                         <div className="mb-2">
@@ -597,7 +774,7 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
 
                             if (user?.id && currentUserOrg && selectedContact) {
                               supabase.schema('app_private').from('messages').insert({
-                                organization_id: currentUserOrg, sender_id: user.id, sender_type: 'organization', recipient_id: selectedContact.id, recipient_type: 'organization',
+                                organization_id: currentUserOrg, sender_id: user.id, sender_type: 'organization', thread_id: selectedContact.id, recipient_type: 'organization', recipient_id: selectedContact.id,
                                 subject: 'File Attachment', content: `Sent file: ${uploadingFile.name}`, message_type: 'file', attachment: attachmentData, is_read: false
                               }).then();
                             }

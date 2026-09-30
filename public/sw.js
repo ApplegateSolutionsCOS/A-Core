@@ -279,3 +279,25 @@ self.addEventListener('message', (event) => {
     });
   }
 });
+
+// public/sw.js
+self.addEventListener('push', function(event) {
+  if (!event.data) return;
+  
+  const data = event.data.json();
+  const title = data.title || 'New Message';
+  const options = {
+    body: data.body || 'You have a new message.',
+    icon: '/logo192.png', // Update with your app's icon path
+    badge: '/badge.png',  // Small monochrome icon for Android status bar
+    data: { url: data.url || '/' }
+  };
+
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', function(event) {
+  event.notification.close();
+  // Opens the app when the notification is clicked
+  event.waitUntil(clients.openWindow(event.notification.data.url));
+});

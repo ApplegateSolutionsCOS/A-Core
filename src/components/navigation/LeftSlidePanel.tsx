@@ -81,7 +81,7 @@
   };
 
   type PanelType = 'tasks' | 'calendar' | null;
-  type TaskFilterType = 'mine' | 'delegated';
+  type TaskFilterType = 'mine' | 'delegated' | 'team';
 
   interface LeftSlidePanelProps {
     activePanel: PanelType;
@@ -170,6 +170,84 @@
     );
   };
 
+  // --- User Multi-Select Component ---
+  const UserMultiSelect: React.FC<{
+    users: {id: string, name: string}[];
+    selectedIds: string[];
+    onChange: (ids: string[]) => void;
+    placeholder?: string;
+  }> = ({ users, selectedIds, onChange, placeholder = "Select members..." }) => {
+    const [isOpen, setIsOpen] = useState(false);
+    const [search, setSearch] = useState('');
+    const wrapperRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+      const handleClickOutside = (event: MouseEvent) => {
+        if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
+          setIsOpen(false);
+        }
+      };
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, []);
+
+    const filteredUsers = users.filter(u => u.name.toLowerCase().includes(search.toLowerCase()));
+
+    return (
+    <div className="relative w-full z-50" ref={wrapperRef}>
+      <div 
+        className="w-full bg-black/50 border border-gray-800 rounded-lg px-3 py-2 text-white font-mono text-sm focus:outline-none hover:border-gray-700 transition-colors cursor-pointer flex flex-wrap gap-1.5 min-h-[42px] items-center"
+        onClick={() => setIsOpen(!isOpen)}
+      >
+          {selectedIds.length === 0 && <span className="text-gray-500">{placeholder}</span>}
+          {selectedIds.map(id => {
+            const u = users.find(x => x.id === id);
+            return (
+              <span key={id} className="bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 px-2 py-0.5 rounded text-xs flex items-center gap-1" onClick={(e) => { e.stopPropagation(); onChange(selectedIds.filter(x => x !== id)); }}>
+                {u ? u.name : id} <span className="hover:text-cyan-200 cursor-pointer font-bold">&times;</span>
+              </span>
+            );
+          })}
+        </div>
+        {isOpen && (
+          <div className="absolute z-[100] w-full mt-1 bg-gray-950 border border-gray-700 rounded-lg shadow-xl max-h-60 flex flex-col">
+            <div className="p-2 border-b border-gray-800">
+              <input 
+                autoFocus
+                type="text" 
+                value={search} 
+                onChange={e => setSearch(e.target.value)} 
+                placeholder="Search users..." 
+                className="w-full bg-black border border-gray-800 rounded px-2 py-1.5 text-white text-xs font-mono focus:border-cyan-500 outline-none"
+                onClick={e => e.stopPropagation()}
+              />
+            </div>
+            <div className="overflow-y-auto darkwave-scrollbar p-1">
+              {filteredUsers.map(u => {
+                const isSelected = selectedIds.includes(u.id);
+                return (
+                  <div 
+                    key={u.id} 
+                    className={`px-3 py-2 text-xs font-mono cursor-pointer rounded hover:bg-gray-800 flex items-center justify-between ${isSelected ? 'text-cyan-400' : 'text-gray-300'}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (isSelected) onChange(selectedIds.filter(id => id !== u.id));
+                      else onChange([...selectedIds, u.id]);
+                    }}
+                  >
+                    {u.name}
+                    {isSelected && <LucideIcons.Check size={14} />}
+                  </div>
+                );
+              })}
+              {filteredUsers.length === 0 && <div className="p-2 text-xs text-gray-500 text-center font-mono">No users found</div>}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   // --- Task Viewer Modal ---
   interface TaskViewerModalProps {
     taskId: string;
@@ -210,23 +288,42 @@
           }
         }
         setLoading(true);
-        const { data } = await supabase.schema('app_private').from('tasks').select('*').eq('id', taskId).single();
-        setTask(data);
+        const { data: taskData } = await supabase.schema('app_private').from('tasks').select('*').eq('id', taskId).single();
+        
+        // ⚡ Fetch members from the new task_members junction table
+        const { data: membersData } = await supabase.schema('app_private').from('task_members').select('user_id').eq('task_id', taskId);
+        
+        if (taskData) {
+          setTask({ ...taskData, members: membersData?.map((m: any) => m.user_id) || [] });
+        }
         
         if (organization?.id) {
-        const { data: orgUsers } = await supabase.schema('app_private').from('organization_users').select('user_id, full_name').eq('organization_id', organization.id);
-        setMembers((orgUsers || []).map(u => ({ id: u.user_id, name: u.full_name || 'Unknown User' })));
-      }
+          const { data: orgUsers } = await supabase.schema('app_private').from('organization_users').select('id, full_name, email').eq('organization_id', organization.id);
+          setMembers((orgUsers || []).map((u: any) => ({ id: u.id, name: u.full_name || u.email || 'Unknown User' })));
+        }
         setLoading(false);
       };
       fetchTask();
     }, [taskId, organization?.id]);
 
     const handleUpdate = async (field: string, value: any) => {
-      setTask((prev: any) => ({ ...prev, [field]: value }));
-      await supabase.schema('app_private').from('tasks').update({ [field]: value, updated_at: new Date().toISOString() }).eq('id', taskId);
-      window.dispatchEvent(new CustomEvent('refreshTasks'));
-    };
+    setTask((prev: any) => ({ ...prev, [field]: value }));
+    await supabase.schema('app_private').from('tasks').update({ [field]: value, updated_at: new Date().toISOString() }).eq('id', taskId);
+    window.dispatchEvent(new CustomEvent('refreshTasks'));
+  };
+
+  const handleUpdateMembers = async (newMembers: string[]) => {
+    setTask((prev: any) => ({ ...prev, members: newMembers }));
+    if (onLocalUpdate) onLocalUpdate('members', newMembers);
+    
+    await supabase.schema('app_private').from('task_members').delete().eq('task_id', taskId);
+    if (newMembers.length > 0) {
+      await supabase.schema('app_private').from('task_members').insert(
+        newMembers.map(id => ({ task_id: taskId, user_id: id }))
+      );
+    }
+    window.dispatchEvent(new CustomEvent('refreshTasks'));
+  };
 
     if (loading) {
       return (
@@ -315,13 +412,21 @@
                     </select>
                   </div>
                   <div>
-                    <label className="block text-[11px] font-mono font-medium text-gray-500 mb-2 uppercase tracking-wider">Assigned To</label>
+                    <label className="block text-[11px] font-mono font-medium text-gray-500 mb-2 uppercase tracking-wider">Manager</label>
                     <select value={task.assigned_to || ''} onChange={(e) => handleUpdate('assigned_to', e.target.value === '' ? null : e.target.value)} className="w-full bg-black/50 border border-gray-800 rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none hover:border-gray-700 transition-colors cursor-pointer">
                       <option value="">Unassigned</option>
                       <option value={user?.id || ''}>Me</option>
                       {members.filter(m => m.id !== user?.id).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
                     </select>
                   </div>
+                  <div className="relative z-50">
+                  <label className="block text-[11px] font-mono font-medium text-gray-500 mb-2 uppercase tracking-wider">Members</label>
+                  <UserMultiSelect 
+                    users={members} 
+                    selectedIds={task.members || []} 
+                    onChange={handleUpdateMembers} 
+                  />
+                </div>
                   <div>
                     <label className="block text-[11px] font-mono font-medium text-gray-500 mb-2 uppercase tracking-wider">Due Date</label>
                     <input type="date" value={dateString} onChange={(e) => {
@@ -788,6 +893,7 @@
   interface Task {
     id: string; organization_id: string; workspace_id?: string | null; mini_app_id?: string | null;
     assigned_to: string; created_by: string; title: string; description?: string;
+    members?: string[];
     status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
     priority: 'low' | 'medium' | 'high' | 'urgent'; due_date?: string; completed_at?: string | null;
     recurrence?: string; tags?: string[];
@@ -795,8 +901,8 @@
   }
 
   let currentOrgCacheId: string | null = null;
-  let isTasksCached = { mine: false, delegated: false };
-  let globalTasksCache: { mine: Task[]; delegated: Task[] } = { mine: [], delegated: [] };
+  let isTasksCached = { mine: false, delegated: false, team: false };
+  let globalTasksCache: { mine: Task[]; delegated: Task[]; team: Task[] } = { mine: [], delegated: [], team: [] };
 
   interface TasksQuickViewProps {
     contextWorkspaceId?: string; contextAppId?: string; contextAppName?: string; contextRecordId?: string; contextRecordTitle?: string;
@@ -1008,8 +1114,8 @@
     // ⚡ WIPE CACHE IF ORGANIZATION CHANGES TO PREVENT DATA BLEED
     if (currentOrgCacheId !== organization?.id) {
       currentOrgCacheId = organization?.id || null;
-      isTasksCached = { mine: false, delegated: false };
-      globalTasksCache = { mine: [], delegated: [] };
+      isTasksCached = { mine: false, delegated: false, team: false };
+      globalTasksCache = { mine: [], delegated: [], team: [] };
     }
 
     const [taskFilter, setTaskFilter] = useState<TaskFilterType>('mine');
@@ -1038,17 +1144,54 @@
     const [loadingMore, setLoadingMore] = useState(false);
     const [mineCount, setMineCount] = useState(0);
     const [delegatedCount, setDelegatedCount] = useState(0);
+    const [teamCount, setTeamCount] = useState(0);
+    const [orgUserId, setOrgUserId] = useState<string>(userId);
 
     const refreshTaskCounts = useCallback(async () => {
       if (!userId || !organization?.id) return;
-      const { count: mCount } = await supabase.schema('app_private').from('tasks').select('*', { count: 'exact', head: true })
-        .eq('organization_id', organization.id) // ⚡ Scope count to active org
-        .or(`assigned_to.eq.${userId},and(created_by.eq.${userId},assigned_to.is.null)`);
+      
+      console.log('\n[DEBUG - SLIDE PANEL COUNTS] --- REFRESHING COUNTS ---');
+      const { count: mAssignedCount } = await supabase.schema('app_private').from('tasks').select('*', { count: 'exact', head: true })
+        .eq('organization_id', organization.id) 
+        .or(`assigned_to.eq.${userId},assigned_to.eq.${orgUserId}`);
+
+      const { count: mCreatedUnassignedCount } = await supabase.schema('app_private').from('tasks').select('*', { count: 'exact', head: true })
+        .eq('organization_id', organization.id) 
+        .eq('created_by', userId)
+        .is('assigned_to', null);
+
       const { count: dCount } = await supabase.schema('app_private').from('tasks').select('*', { count: 'exact', head: true })
-        .eq('organization_id', organization.id) // ⚡ Scope count to active org
-        .eq('created_by', userId).neq('assigned_to', userId);
-      setMineCount(mCount || 0); setDelegatedCount(dCount || 0);
-    }, [userId, organization?.id]);
+        .eq('organization_id', organization.id)
+        .eq('created_by', userId)
+        .not('assigned_to', 'is', null)
+        .neq('assigned_to', userId)
+        .neq('assigned_to', orgUserId);
+
+      // Get IDs the user is a member of
+      const { data: memberLinks, error: mlError } = await supabase.schema('app_private')
+        .from('task_members').select('task_id').in('user_id', [userId, orgUserId].filter(Boolean));
+        
+      if (mlError) console.error('[DEBUG - SLIDE PANEL COUNTS] memberLinks Error:', mlError);
+      
+      const memberTaskIds = memberLinks?.map(l => l.task_id) || [];
+      console.log(`[DEBUG - SLIDE PANEL COUNTS] User is member of ${memberTaskIds.length} tasks (Task IDs: ${memberTaskIds.join(', ')})`);
+
+      let tCount = 0;
+      if (memberTaskIds.length > 0) {
+        const { data: teamData } = await supabase.schema('app_private').from('tasks').select('id')
+          .eq('organization_id', organization.id)
+          .in('id', memberTaskIds);
+        
+        // ⚡ FIX: Count all member tasks accurately
+        tCount = (teamData || []).length;
+      }
+      
+      console.log(`[DEBUG - SLIDE PANEL COUNTS] Final Team Count (Excluding Self-Assigned): ${tCount}`);
+        
+      setMineCount((mAssignedCount || 0) + (mCreatedUnassignedCount || 0)); 
+      setDelegatedCount(dCount || 0); 
+      setTeamCount(tCount || 0);
+    }, [userId, orgUserId, organization?.id]);
 
     useEffect(() => { refreshTaskCounts(); }, [refreshTaskCounts]);
     
@@ -1057,6 +1200,7 @@
 
     const [members, setMembers] = useState<{id: string, name: string}[]>([]);
     const [newTaskAssignee, setNewTaskAssignee] = useState<string>('');
+    const [newTaskMembers, setNewTaskMembers] = useState<string[]>([]);
     const [newTaskDescription, setNewTaskDescription] = useState('');
 
     useEffect(() => {
@@ -1065,48 +1209,94 @@
           // Fetch directly from organization_users so we get EVERYONE in the org
           const { data, error } = await supabase.schema('app_private')
             .from('organization_users')
-            .select('user_id, full_name')
+            .select('id, full_name, email')
             .eq('organization_id', organization?.id);
             
           if (error) throw error;
           
+          const currentUserEmail = (user as any)?.email;
+          const me = data?.find(u => u.email === currentUserEmail);
+          if (me) setOrgUserId(me.id);
+
           // Map the actual org users to our members dropdown list
-          setMembers((data || []).map(u => ({ 
-            id: u.user_id, 
-            name: u.full_name || 'Unknown User' 
+          setMembers((data || []).map((u: any) => ({ 
+            id: u.id, 
+            name: u.full_name || u.email || 'Unknown User' 
           })));
         } catch (err) {
           console.error('Failed to load org members:', err);
         }
       };
       if (organization?.id) loadMembers();
-    }, [organization?.id]);
+    }, [organization?.id, user]);
 
     const fetchTasks = useCallback(async (offset: number = 0, isBackground: boolean = false) => {
       if (!userId || !organization?.id) { setLoading(false); return; }
       try {
         if (!isBackground) setLoading(true);
         setErrorMsg(null);
+        
+        console.log(`\n[DEBUG - SLIDE PANEL FETCH] --- FETCHING TASKS (Filter: ${taskFilter}) ---`);
+        
+        const { data: memberLinks, error: mlError } = await supabase.schema('app_private')
+          .from('task_members').select('task_id').in('user_id', [userId, orgUserId].filter(Boolean));
+          
+        if (mlError) console.error('[DEBUG - SLIDE PANEL FETCH] memberLinks Error:', mlError);
+        const memberTaskIds = memberLinks?.map(link => link.task_id) || [];
+        
+        console.log(`[DEBUG - SLIDE PANEL FETCH] Member Task IDs array length: ${memberTaskIds.length}`);
+
         let query = supabase.schema('app_private')
           .from('tasks')
           .select('*')
-          .eq('organization_id', organization.id); // ⚡ Scope list to active org
+          .eq('organization_id', organization.id); 
           
-        if (taskFilter === 'mine') query = query.or(`assigned_to.eq.${userId},and(created_by.eq.${userId},assigned_to.is.null)`);
-        else query = query.eq('created_by', userId).neq('assigned_to', userId);
+        if (taskFilter === 'mine') {
+          query = query.or(`assigned_to.eq.${userId},assigned_to.eq.${orgUserId},created_by.eq.${userId}`);
+        } else if (taskFilter === 'delegated') {
+          query = query.eq('created_by', userId).not('assigned_to', 'is', null).neq('assigned_to', userId).neq('assigned_to', orgUserId);
+        } else if (taskFilter === 'team') {
+          if (memberTaskIds.length > 0) {
+            query = query.in('id', memberTaskIds);
+          } else {
+            console.log('[DEBUG - SLIDE PANEL FETCH] No member IDs found, short-circuiting query.');
+            query = query.eq('id', '00000000-0000-0000-0000-000000000000');
+          }
+        }
 
-        // Pre-sort in DB to ensure pagination grabs the most pressing items first
         const { data, error } = await query
           .order('due_date', { ascending: true, nullsFirst: false })
           .order('created_at', { ascending: false })
           .range(offset, offset + PAGE_SIZE - 1);
+          
         if (error) throw error;
-        const results = data || [];
-        if (offset === 0) { setTasks(results); globalTasksCache[taskFilter] = results; isTasksCached[taskFilter] = true; } 
+        
+        const fetchedTasks = data || [];
+        console.log(`[DEBUG - SLIDE PANEL FETCH] Database returned ${fetchedTasks.length} tasks.`);
+        
+        const taskIds = fetchedTasks.map(t => t.id);
+        let allMembers: any[] = [];
+        if (taskIds.length > 0) {
+           const { data: tmData, error: tmError } = await supabase.schema('app_private').from('task_members').select('task_id, user_id').in('task_id', taskIds);
+           if (tmError) console.error('[DEBUG - SLIDE PANEL FETCH] allMembers Error:', tmError);
+           allMembers = tmData || [];
+        }
+
+        const rawResults = fetchedTasks.map(t => ({
+          ...t, members: allMembers.filter(m => m.task_id === t.id).map(m => m.user_id)
+        }));
+        
+        // Use all fetched tasks without strictly excluding assignments
+        const results = rawResults;
+
+        if (offset === 0) { setTasks(results); globalTasksCache[taskFilter] = results; isTasksCached[taskFilter] = true; }
         else { setTasks(prev => [...prev, ...results]); globalTasksCache[taskFilter] = [...globalTasksCache[taskFilter], ...results]; }
         setHasMore(results.length >= PAGE_SIZE); offsetRef.current = offset + results.length;
-      } catch (err: any) { setErrorMsg('Internal Connection Error'); } finally { setLoading(false); setLoadingMore(false); }
-    }, [userId, taskFilter]);
+      } catch (err: any) { 
+        console.error('[DEBUG - SLIDE PANEL FETCH] Critical Error:', err);
+        setErrorMsg('Internal Connection Error'); 
+      } finally { setLoading(false); setLoadingMore(false); }
+    }, [userId, orgUserId, taskFilter]);
 
     useEffect(() => { fetchTasks(0, false); }, [fetchTasks]);
 
@@ -1142,10 +1332,21 @@
         };
         const { data, error } = await supabase.schema('app_private').from('tasks').insert(taskPayload).select().single();
         if (error) throw error;
-        setTasks(prev => [data, ...prev]); 
+
+        // Insert into junction table
+        if (newTaskMembers.length > 0) {
+          await supabase.schema('app_private').from('task_members').insert(
+            newTaskMembers.map(id => ({ task_id: data.id, user_id: id }))
+          );
+        }
+
+        // Map for local state
+        const taskWithMembers = { ...data, members: newTaskMembers };
+        setTasks(prev => [taskWithMembers, ...prev]); 
         setNewTaskTitle(''); 
         setNewTaskDescription('');
         setNewTaskAssignee(''); 
+        setNewTaskMembers([]);
         setNewTaskStatus('pending');
         setNewTaskDueDate('');
         setNewTaskDueTime('');
@@ -1260,23 +1461,33 @@
           <div className="flex border border-gray-800 rounded-lg overflow-hidden">
             <button
               onClick={() => setTaskFilter('mine')}
-              className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-sm font-mono transition-all ${
+              className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-[11px] sm:text-xs font-mono transition-all ${
                 taskFilter === 'mine' ? 'left-panel-theme-bg left-panel-theme-text border-r left-panel-theme-border-subtle' : 'bg-gray-900/50 text-gray-500 hover:text-gray-300 border-r border-gray-800'
               }`}
             >
-              <UserIcon size={16} />
+              <UserIcon size={14} />
               <span>Mine</span>
-              <span className="px-1.5 py-0.5 rounded text-xs" style={{ backgroundColor: taskFilter === 'mine' ? `rgba(${accentRgb}, 0.3)` : '#1f2937' }}>{mineCount}</span>
+              <span className="px-1.5 py-0.5 rounded text-[10px]" style={{ backgroundColor: taskFilter === 'mine' ? `rgba(${accentRgb}, 0.3)` : '#1f2937' }}>{mineCount}</span>
             </button>
             <button
               onClick={() => setTaskFilter('delegated')}
-              className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-sm font-mono transition-all ${
-                taskFilter === 'delegated' ? 'left-panel-theme-bg left-panel-theme-text' : 'bg-gray-900/50 text-gray-500 hover:text-gray-300'
+              className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-[11px] sm:text-xs font-mono transition-all ${
+                taskFilter === 'delegated' ? 'left-panel-theme-bg left-panel-theme-text border-r left-panel-theme-border-subtle' : 'bg-gray-900/50 text-gray-500 hover:text-gray-300 border-r border-gray-800'
               }`}
             >
-              <UsersIcon size={16} />
+              <UsersIcon size={14} />
               <span>Delegated</span>
-              <span className="px-1.5 py-0.5 rounded text-xs" style={{ backgroundColor: taskFilter === 'delegated' ? `rgba(${accentRgb}, 0.3)` : '#1f2937' }}>{delegatedCount}</span>
+              <span className="px-1.5 py-0.5 rounded text-[10px]" style={{ backgroundColor: taskFilter === 'delegated' ? `rgba(${accentRgb}, 0.3)` : '#1f2937' }}>{delegatedCount}</span>
+            </button>
+            <button
+              onClick={() => setTaskFilter('team')}
+              className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-[11px] sm:text-xs font-mono transition-all ${
+                taskFilter === 'team' ? 'left-panel-theme-bg left-panel-theme-text' : 'bg-gray-900/50 text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              <LucideIcons.Users2 size={14} />
+              <span>Team</span>
+              <span className="px-1.5 py-0.5 rounded text-[10px]" style={{ backgroundColor: taskFilter === 'team' ? `rgba(${accentRgb}, 0.3)` : '#1f2937' }}>{teamCount}</span>
             </button>
           </div>
 
@@ -1339,9 +1550,11 @@
 
               return infiniteItems.map(item => {
                 const count = tasks.filter(t => {
-                  // Base View Mode logic - kept identical to LeftSlidePanel requirements
-                  if (taskFilter === 'mine' && !(t.assigned_to === userId || (t.created_by === userId && !t.assigned_to))) return false;
-                  if (taskFilter === 'delegated' && !(t.created_by === userId && t.assigned_to !== userId)) return false;
+                  // Base View Mode logic
+                if (taskFilter === 'mine' && !(t.assigned_to === userId || t.assigned_to === orgUserId || (t.created_by === userId && !t.assigned_to))) return false;
+                  if (taskFilter === 'delegated' && !(t.created_by === userId && t.assigned_to && t.assigned_to !== userId && t.assigned_to !== orgUserId)) return false;
+                  // Removed assignee exclusion rule
+                  if (taskFilter === 'team' && !((t.members || []).includes(userId) || (t.members || []).includes(orgUserId))) return false;
 
                   // Cross-Category Filtering
                   if (item.type !== 'status' && statusFilters.length > 0 && !statusFilters.includes(t.status)) return false;
@@ -1409,7 +1622,7 @@
           <div className="space-y-2 relative">
             {tasks.length === 0 ? (
               <div className="text-center py-8 text-gray-500 font-mono text-sm">
-                {taskFilter === 'mine' ? 'No tasks yet. Add your first task above!' : 'No tasks delegated to you.'}
+                {taskFilter === 'mine' ? 'No tasks yet. Add your first task above!' : taskFilter === 'delegated' ? 'No tasks delegated to you.' : 'You are not collaborating on any team tasks.'}
               </div>
             ) : (
               <>
@@ -1420,8 +1633,9 @@
                   // ⚡ MULTI-FILTER ENGINE
                   const filtered = tasks.filter(t => {
                     // 1. View Mode Logic
-                    if (taskFilter === 'mine' && !(t.assigned_to === userId || (t.created_by === userId && !t.assigned_to))) return false;
-                    if (taskFilter === 'delegated' && !(t.created_by === userId && t.assigned_to !== userId)) return false;
+                  if (taskFilter === 'mine' && !(t.assigned_to === userId || t.assigned_to === orgUserId || (t.created_by === userId && !t.assigned_to))) return false;
+                  if (taskFilter === 'delegated' && !(t.created_by === userId && t.assigned_to && t.assigned_to !== userId && t.assigned_to !== orgUserId)) return false;
+                  if (taskFilter === 'team' && !((t.members || []).includes(userId) || (t.members || []).includes(orgUserId))) return false;
 
                     // 2. Cross-Category Filters
                     if (statusFilters.length > 0 && !statusFilters.includes(t.status)) return false;
@@ -1861,10 +2075,18 @@
                   value={newTaskDescription} onChange={(e) => setNewTaskDescription(e.target.value)} placeholder="Description (optional)..."
                   className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white font-mono text-sm focus:outline-none left-panel-theme-focus resize-none h-20"
                 />
-                <select value={newTaskAssignee} onChange={(e) => setNewTaskAssignee(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white font-mono text-sm focus:outline-none left-panel-theme-focus">
-                  <option value={userId}>Assign to: Me</option>
-                  {members.filter(m => m.id !== userId).map(m => <option key={m.id} value={m.id}>Assign to: {m.name}</option>)}
-                </select>
+                <div className="flex flex-col gap-2">
+                  <select value={newTaskAssignee} onChange={(e) => setNewTaskAssignee(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white font-mono text-sm focus:outline-none left-panel-theme-focus">
+                    <option value={userId}>Manager: Me</option>
+                    {members.filter(m => m.id !== userId).map(m => <option key={m.id} value={m.id}>Manager: {m.name}</option>)}
+                  </select>
+                  <UserMultiSelect 
+                    users={members} 
+                    selectedIds={newTaskMembers} 
+                    onChange={setNewTaskMembers} 
+                    placeholder="Add Members..."
+                  />
+                </div>
                 <div className="flex gap-2">
                   <select value={newTaskStatus} onChange={(e) => setNewTaskStatus(e.target.value)} className="w-1/2 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white font-mono text-sm focus:outline-none left-panel-theme-focus">
                     {availableStatuses.map(status => (
@@ -2007,8 +2229,19 @@
     const [loadingMore, setLoadingMore] = useState(false);
     
     const userId = user ? (user as any).id || (user as any).email || 'anonymous' : 'anonymous';
+    const [orgUserId, setOrgUserId] = useState<string>(userId);
     const today = new Date();
     
+    useEffect(() => {
+      const getOrgUser = async () => {
+        if (!organization?.id || !user) return;
+        const { data } = await supabase.schema('app_private').from('organization_users').select('id, email').eq('organization_id', organization.id);
+        const myUser = data?.find(u => u.email === (user as any).email);
+        if (myUser) setOrgUserId(myUser.id);
+      }
+      getOrgUser();
+    }, [organization?.id, user]);
+
     const offsetRef = useRef(0);
     const PAGE_SIZE = 20;
     
@@ -2029,18 +2262,52 @@
           .range(offset, offset + PAGE_SIZE - 1);
         if (error && offset === 0) { setEvents([]); globalCalendarCache = []; isCalendarCached = true; return; }
 
-        // 2. Fetch Tasks mapped to calendar (only on initial load to prevent duplication during pagination)
+        // 2. Fetch Tasks mapped to calendar
         let taskEvents: any[] = [];
         if (offset === 0) {
-          const { data: taskData } = await supabase.schema('app_private')
-            .from('tasks')
-            .select('*')
-            .eq('organization_id', organization?.id) // ⚡ Scope to active org
-            .eq('show_on_calendar', true)
-            .not('due_date', 'is', null)
-            .or(`assigned_to.eq.${userId},created_by.eq.${userId}`);
+          const { data: memberLinks } = await supabase.schema('app_private')
+            .from('task_members').select('task_id').in('user_id', [userId, orgUserId].filter(Boolean));
+          const memberTaskIds = memberLinks?.map(link => link.task_id) || [];
 
-          taskEvents = (taskData || []).map(t => ({
+          const mainTaskReq = supabase.schema('app_private').from('tasks').select('*')
+              .eq('organization_id', organization?.id)
+              .eq('show_on_calendar', true)
+              .not('due_date', 'is', null)
+              .or(`assigned_to.eq.${userId},assigned_to.eq.${orgUserId},created_by.eq.${userId}`);
+
+          const teamTaskReq = memberTaskIds.length > 0 
+              ? supabase.schema('app_private').from('tasks').select('*')
+                  .eq('organization_id', organization?.id)
+                  .eq('show_on_calendar', true)
+                  .not('due_date', 'is', null)
+                  .in('id', memberTaskIds)
+              : Promise.resolve({ data: [] });
+              
+          const [ { data: mainTaskData }, { data: teamTaskData } ] = await Promise.all([mainTaskReq, teamTaskReq]);
+
+          const combined = [...(mainTaskData || []), ...(teamTaskData || [])];
+          const uniqueTaskData = Array.from(new Map(combined.map(t => [t.id, t])).values());
+
+          const taskIds = uniqueTaskData.map(t => t.id);
+        let allMembers: any[] = [];
+        if (taskIds.length > 0) {
+           // ⚡ SAFE CHUNKING: Prevents 400 Bad Request URL-too-long errors
+           const chunkSize = 100;
+           for (let i = 0; i < taskIds.length; i += chunkSize) {
+             const chunk = taskIds.slice(i, i + chunkSize);
+             const { data: tmData } = await supabase.schema('app_private')
+               .from('task_members')
+               .select('task_id, user_id')
+               .in('task_id', chunk);
+             if (tmData) allMembers = [...allMembers, ...tmData];
+           }
+        }
+
+        const rawResults = uniqueTaskData.map(t => ({
+          ...t, members: allMembers.filter(m => m.task_id === t.id).map(m => m.user_id)
+        }));
+
+          taskEvents = rawResults.map(t => ({
             id: t.id,
             user_id: userId,
             title: t.title,

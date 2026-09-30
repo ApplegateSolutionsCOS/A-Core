@@ -25,7 +25,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import React, { createContext, useContext, useState, useCallback } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ThemeProvider } from "@/components/theme-provider";
-import { AuthProvider } from "@/contexts/AuthContext";
+import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { ConnectionProvider } from "@/contexts/ConnectionContext";
 import { ConnectionBanner } from "@/components/connectivity/ConnectionBanner";
 import { UpdateNotification } from "@/components/connectivity/UpdateNotification";
@@ -35,6 +35,90 @@ import ResetPassword from "./pages/ResetPassword";
 import VerifyEmail from "./pages/VerifyEmail";
 import DatabaseTest from "./pages/DatabaseTest";
 import PhoneMirrorPage from "./pages/PhoneMirrorPage";
+import { supabase } from "@/lib/supabase";
+
+// ⚡ GLOBAL NOTIFICATION COMPONENT
+// This safely runs the hook inside the React lifecycle, with access to AuthContext
+const GlobalNotificationListener = () => {
+  const { user } = useAuth();
+  const currentUserId = user?.id || (user as any)?.uid;
+
+  React.useEffect(() => {
+    console.log('[Push Diagnostics] Component mounted. User ID:', currentUserId || 'Not logged in yet');
+    
+    if (!currentUserId) return;
+
+    console.log('[Push Diagnostics] Setting up global listener for user:', currentUserId);
+
+    const globalSubscription = supabase.channel(`global_notifications_app_${currentUserId}_${Date.now()}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'app_private', table: 'messages' }, async (payload) => {
+        console.log('[Push Diagnostics] 1. REALTIME EVENT RECEIVED:', payload);
+        const newDbMsg = payload.new as any;
+        
+        if (newDbMsg.sender_id === currentUserId) {
+           console.log('[Push Diagnostics] 2. Ignoring message (I am the sender)');
+           return;
+        }
+
+        console.log('[Push Diagnostics] 2. Checking if user is participant in thread:', newDbMsg.thread_id);
+        const { data: participant, error: partErr } = await supabase.schema('app_private')
+          .from('chat_participants')
+          .select('user_id')
+          .eq('thread_id', newDbMsg.thread_id)
+          .eq('user_id', currentUserId)
+          .maybeSingle();
+
+        if (partErr) console.error('[Push Diagnostics] Participant check error:', partErr);
+
+        if (participant) {
+          console.log('[Push Diagnostics] 3. User IS a participant. Browser Permission Status:', Notification.permission);
+          
+          if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+            const { data: sender } = await supabase.schema('app_private')
+              .from('organization_users')
+              .select('full_name, email')
+              .eq('id', newDbMsg.sender_id)
+              .maybeSingle();
+              
+            const senderName = sender?.full_name || sender?.email || 'New Message';
+            const previewText = newDbMsg.message_type === 'text' ? newDbMsg.content : `Sent a ${newDbMsg.message_type}`;
+            
+            console.log('[Push Diagnostics] 4. FIRING DESKTOP NOTIFICATION NOW:', senderName, previewText);
+            
+            try {
+              // Modern approach: Route through the Service Worker
+              if ('serviceWorker' in navigator) {
+                const registration = await navigator.serviceWorker.getRegistration();
+                if (registration) {
+                  await registration.showNotification(`${senderName}`, {
+                    body: previewText,
+                    tag: 'chat-message' // Prevents spamming by replacing older unread notifications
+                  });
+                  return; 
+                }
+              }
+              
+              // Fallback
+              const notification = new Notification(`${senderName}`, { body: previewText });
+              notification.onclick = () => { window.focus(); notification.close(); };
+            } catch (err) {
+              console.error('[Push Diagnostics] ERROR: Browser threw error firing notification:', err);
+            }
+          } else {
+            console.log('[Push Diagnostics] ABORT: Notification permission is not granted.');
+          }
+        } else {
+           console.log('[Push Diagnostics] ABORT: User is NOT a participant in this thread.');
+        }
+      }).subscribe((status) => {
+         console.log('[Push Diagnostics] Channel subscription status:', status);
+      });
+
+    return () => { supabase.removeChannel(globalSubscription); };
+  }, [currentUserId]);
+
+  return null;
+};
 
 const queryClient = new QueryClient();
 
@@ -116,6 +200,7 @@ const App = () => (
   <ThemeProvider defaultTheme="dark">
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
+        <GlobalNotificationListener />
         <ConnectionProvider>
           <NotificationProvider>
             <TooltipProvider>

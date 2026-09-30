@@ -269,6 +269,84 @@ const TaskCommentsPane: React.FC<{
 };
 
 
+// --- User Multi-Select Component ---
+const UserMultiSelect: React.FC<{
+  users: {id: string, name: string}[];
+  selectedIds: string[];
+  onChange: (ids: string[]) => void;
+  placeholder?: string;
+}> = ({ users, selectedIds, onChange, placeholder = "Select members..." }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const filteredUsers = users.filter(u => u.name.toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <div className="relative w-full z-50" ref={wrapperRef}>
+      <div 
+        className="w-full bg-black/50 border border-gray-800 rounded-lg px-3 py-2 text-white font-mono text-sm focus:outline-none hover:border-gray-700 transition-colors cursor-pointer flex flex-wrap gap-1.5 min-h-[42px] items-center"
+        onClick={() => setIsOpen(!isOpen)}
+      >
+        {selectedIds.length === 0 && <span className="text-gray-500">{placeholder}</span>}
+        {selectedIds.map(id => {
+          const u = users.find(x => x.id === id);
+          return (
+            <span key={id} className="bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 px-2 py-0.5 rounded text-xs flex items-center gap-1" onClick={(e) => { e.stopPropagation(); onChange(selectedIds.filter(x => x !== id)); }}>
+              {u ? u.name : id} <span className="hover:text-cyan-200 cursor-pointer font-bold">&times;</span>
+            </span>
+          );
+        })}
+      </div>
+      {isOpen && (
+        <div className="absolute z-[100] w-full mt-1 bg-gray-950 border border-gray-700 rounded-lg shadow-xl max-h-60 flex flex-col">
+          <div className="p-2 border-b border-gray-800">
+            <input 
+              autoFocus
+              type="text" 
+              value={search} 
+              onChange={e => setSearch(e.target.value)} 
+              placeholder="Search users..." 
+              className="w-full bg-black border border-gray-800 rounded px-2 py-1.5 text-white text-xs font-mono focus:border-cyan-500 outline-none"
+              onClick={e => e.stopPropagation()}
+            />
+          </div>
+          <div className="overflow-y-auto darkwave-scrollbar p-1">
+            {filteredUsers.map(u => {
+              const isSelected = selectedIds.includes(u.id);
+              return (
+                <div 
+                  key={u.id} 
+                  className={`px-3 py-2 text-xs font-mono cursor-pointer rounded hover:bg-gray-800 flex items-center justify-between ${isSelected ? 'text-cyan-400' : 'text-gray-300'}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (isSelected) onChange(selectedIds.filter(id => id !== u.id));
+                    else onChange([...selectedIds, u.id]);
+                  }}
+                >
+                  {u.name}
+                  {isSelected && <LucideIcons.Check size={14} />}
+                </div>
+              );
+            })}
+            {filteredUsers.length === 0 && <div className="p-2 text-xs text-gray-500 text-center font-mono">No users found</div>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 // --- Task Viewer Modal ---
 interface TaskViewerModalProps {
   taskId: string;
@@ -293,12 +371,18 @@ const TaskViewerModal: React.FC<TaskViewerModalProps> = ({ taskId, onClose, onVi
   useEffect(() => {
     const fetchTask = async () => {
       setLoading(true);
-      const { data } = await supabase.schema('app_private').from('tasks').select('*').eq('id', taskId).single();
-      setTask(data);
+      const { data: taskData } = await supabase.schema('app_private').from('tasks').select('*').eq('id', taskId).single();
+      
+      // ⚡ Fetch members from the new task_members junction table
+      const { data: membersData } = await supabase.schema('app_private').from('task_members').select('user_id').eq('task_id', taskId);
+      
+      if (taskData) {
+        setTask({ ...taskData, members: membersData?.map((m: any) => m.user_id) || [] });
+      }
       
       if (organization?.id) {
-        const { data: orgUsers } = await supabase.schema('app_private').from('organization_users').select('user_id, full_name').eq('organization_id', organization.id);
-        setMembers((orgUsers || []).map(u => ({ id: u.user_id, name: u.full_name || 'Unknown User' })));
+        const { data: orgUsers } = await supabase.schema('app_private').from('organization_users').select('id, full_name, email').eq('organization_id', organization.id);
+        setMembers((orgUsers || []).map((u: any) => ({ id: u.id, name: u.full_name || u.email || 'Unknown User' })));
       }
       setLoading(false);
     };
@@ -316,6 +400,19 @@ const TaskViewerModal: React.FC<TaskViewerModalProps> = ({ taskId, onClose, onVi
       
     if (error) console.error(`Error updating task ${field}:`, error);
     
+    window.dispatchEvent(new CustomEvent('refreshTasks'));
+  };
+
+  const handleUpdateMembers = async (newMembers: string[]) => {
+    setTask((prev: any) => ({ ...prev, members: newMembers }));
+    if (onLocalUpdate) onLocalUpdate('members', newMembers);
+    
+    await supabase.schema('app_private').from('task_members').delete().eq('task_id', taskId);
+    if (newMembers.length > 0) {
+      await supabase.schema('app_private').from('task_members').insert(
+        newMembers.map(id => ({ task_id: taskId, user_id: id }))
+      );
+    }
     window.dispatchEvent(new CustomEvent('refreshTasks'));
   };
 
@@ -484,12 +581,20 @@ const TaskViewerModal: React.FC<TaskViewerModalProps> = ({ taskId, onClose, onVi
                   </select>
                 </div>
                 <div>
-                  <label className="block text-[11px] font-mono font-medium text-gray-500 mb-2 uppercase tracking-wider">Assigned To</label>
+                  <label className="block text-[11px] font-mono font-medium text-gray-500 mb-2 uppercase tracking-wider">Manager</label>
                   <select value={task.assigned_to || ''} onChange={(e) => handleUpdate('assigned_to', e.target.value === '' ? null : e.target.value)} className="w-full bg-black/50 border border-gray-800 rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none hover:border-gray-700 transition-colors cursor-pointer">
                     <option value="">Unassigned</option>
                     <option value={user?.id || ''}>Me</option>
                     {members.filter(m => m.id !== user?.id).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
                   </select>
+                </div>
+                <div className="relative z-50">
+                  <label className="block text-[11px] font-mono font-medium text-gray-500 mb-2 uppercase tracking-wider">Members</label>
+                  <UserMultiSelect 
+                    users={members} 
+                    selectedIds={task.members || []} 
+                    onChange={handleUpdateMembers} 
+                  />
                 </div>
                 <div>
                   <label className="block text-[11px] font-mono font-medium text-gray-500 mb-2 uppercase tracking-wider">Due Date</label>
@@ -708,7 +813,7 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
     : (userPrefKey && COLOR_PALETTE[userPrefKey] ? COLOR_PALETTE[userPrefKey].rgb : '34,197,94');
 
   // Updated State for toggling views
-  const [viewMode, setViewMode] = useState<'mine' | 'delegated' | 'open' | 'completed'>('mine');
+  const [viewMode, setViewMode] = useState<'mine' | 'delegated' | 'team' | 'open' | 'completed'>('mine');
   const [expandedTasks, setExpandedTasks] = useState<Record<string, boolean>>({});
   const [activeFilterCategory, setActiveFilterCategory] = useState<'statuses' | 'tags' | 'priorities'>('statuses');
   const [statusFilters, setStatusFilters] = useState<string[]>([]);
@@ -837,6 +942,7 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
   // Database & UI States
   const [tasks, setTasks] = useState<any[]>([]);
   const [usersMap, setUsersMap] = useState<Record<string, string>>({});
+  const [orgUserId, setOrgUserId] = useState<string>(currentUserId); // ⚡ Dual-ID Tracking
   const [isLoading, setIsLoading] = useState(true);
   const [isTaskPanelOpen, setIsTaskPanelOpen] = useState(false); 
 
@@ -861,69 +967,68 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
 
     const fetchTasksData = async () => {
       try {
+        console.log('\n[DEBUG - MAIN VIEW] --- STARTING TASKS FETCH ---');
+        console.log('[DEBUG - MAIN VIEW] Current User IDs:', { currentUserId });
+
         // ⚡ FIX: Use active organization directly to prevent cross-contamination
-        const { data: orgUsers } = await supabase.schema('app_private')
+        const { data: orgUsers, error: orgUsersError } = await supabase.schema('app_private')
           .from('organization_users')
-          .select('user_id, full_name')
+          .select('id, full_name, email')
           .eq('organization_id', organization.id);
+          
+        if (orgUsersError) console.error('[DEBUG - MAIN VIEW] Error fetching orgUsers:', orgUsersError);
+
+        const currentUserEmail = (user as any)?.email;
+        const me = orgUsers?.find(u => u.email === currentUserEmail);
+        const resolvedOrgUserId = me ? me.id : currentUserId;
+        setOrgUserId(resolvedOrgUserId);
+        
+        console.log('[DEBUG - MAIN VIEW] Resolved Org User ID:', resolvedOrgUserId);
 
         const uMap: Record<string, string> = {};
-        orgUsers?.forEach(u => {
-          uMap[u.user_id] = u.full_name || 'Unknown';
+        orgUsers?.forEach((u: any) => {
+          uMap[u.id] = u.full_name || u.email || 'Unknown';
         });
         setUsersMap(uMap);
 
-        // Fetch User Settings (Notifications)
-        const { data: dbSettings } = await supabase.schema('app_private')
-          .from('user_settings')
-          .select('notification_settings')
-          .eq('user_id', currentUserId)
-          .eq('organization_id', organization.id)
-          .maybeSingle();
-
-        // Fetch Org Settings (Tags, Statuses, Priorities)
-        const { data: orgSettings } = await supabase.schema('app_private')
-          .from('organizations')
-          .select('tags, custom_statuses, custom_priorities')
-          .eq('id', organization.id)
-          .maybeSingle();
-
-        if (orgSettings) {
-          if (orgSettings.tags) {
-            const formattedTags = orgSettings.tags.map((t: any) => {
-              if (typeof t === 'string') {
-                try {
-                  const parsed = JSON.parse(t);
-                  if (parsed && typeof parsed === 'object' && parsed.id) return parsed;
-                } catch (e) {}
-                return { id: t.toLowerCase().replace(/\s+/g, '_'), name: t, color: getTagColor(t).bg };
-              }
-              return t;
-            });
-            setAvailableTags(formattedTags);
-          }
-          if (orgSettings.custom_statuses) setAvailableStatuses(orgSettings.custom_statuses);
-          if (orgSettings.custom_priorities) setAvailablePriorities(orgSettings.custom_priorities);
-        }
-        
-        if (dbSettings?.notification_settings) {
-          if (dbSettings.notification_settings.global_alerts !== undefined) setGlobalAlerts(dbSettings.notification_settings.global_alerts);
-          if (dbSettings.notification_settings.push_delegations !== undefined) setPushDelegations(dbSettings.notification_settings.push_delegations);
-          if (dbSettings.notification_settings.daily_summary !== undefined) setDailySummary(dbSettings.notification_settings.daily_summary);
-        }
-
-        const { data: dbTasks } = await supabase.schema('app_private')
+        // ⚡ FETCH ALL tasks for the organization to bypass PostgREST's nested UUID dropping bug
+        console.log('[DEBUG - MAIN VIEW] Fetching all tasks for Org ID:', organization.id);
+        const { data: allTasks, error: allTasksError } = await supabase.schema('app_private')
           .from('tasks')
           .select('*')
-          .eq('organization_id', organization.id) // ⚡ Scope directly to active org
-          .or(`assigned_to.eq.${currentUserId},created_by.eq.${currentUserId}`)
-          .order('created_at', { ascending: false });
+          .eq('organization_id', organization.id)
+          .order('created_at', { ascending: false })
+          .limit(1500); // Generous limit for client-side processing
+          
+        if (allTasksError) console.error('[DEBUG - MAIN VIEW] Error fetching all tasks:', allTasksError);
+        
+        const tasksList = allTasks || [];
+        console.log(`[DEBUG - MAIN VIEW] Fetched ${tasksList.length} total tasks.`);
 
-        if (dbTasks) {
-          setTasks(dbTasks);
+        // ⚡ Fetch member assignments separately in chunks to avoid URL size limits
+        const allIds = tasksList.map(t => t.id);
+        let allMembers: any[] = [];
+        if (allIds.length > 0) {
+           // ⚡ SAFE CHUNKING: Prevents 400 Bad Request URL-too-long errors which silently wipe out team members
+           const chunkSize = 100;
+           for (let i = 0; i < allIds.length; i += chunkSize) {
+             const chunk = allIds.slice(i, i + chunkSize);
+             const { data: tmData } = await supabase.schema('app_private')
+               .from('task_members')
+               .select('task_id, user_id')
+               .in('task_id', chunk);
+             if (tmData) allMembers = [...allMembers, ...tmData];
+           }
         }
+
+        const formattedTasks = tasksList.map(t => ({
+          ...t, members: allMembers.filter(m => m.task_id === t.id).map(m => m.user_id)
+        }));
+
+        console.log('[DEBUG - MAIN VIEW] Final Formatted Tasks (Sample 1st task):', formattedTasks[0]);
+        setTasks(formattedTasks);
       } catch (err) {
-        console.error('Error fetching tasks view data:', err);
+        console.error('[DEBUG - MAIN VIEW] CRITICAL CATCH ERROR:', err);
       } finally {
         setIsLoading(false);
       }
@@ -1455,11 +1560,15 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
     });
 
     const filtered = tasks.filter(task => {
-      if (viewMode === 'mine') {
-        if (task.assigned_to !== currentUserId && !(task.created_by === currentUserId && !task.assigned_to)) return false;
-      } else if (viewMode === 'delegated') {
-        if (task.created_by !== currentUserId || task.assigned_to === currentUserId) return false;
-      } else if (viewMode === 'open') {
+        if (viewMode === 'mine') {
+          if (task.assigned_to !== currentUserId && task.assigned_to !== orgUserId && !(task.created_by === currentUserId && !task.assigned_to)) return false;
+        } else if (viewMode === 'delegated') {
+          if (task.created_by !== currentUserId || !task.assigned_to || task.assigned_to === currentUserId || task.assigned_to === orgUserId) return false;
+        } else if (viewMode === 'team') {
+          const isMember = (task.members || []).includes(currentUserId) || (task.members || []).includes(orgUserId);
+          // ⚡ FIX: Allow tasks to show in the Team tab even if the user is the primary assignee
+          if (!isMember) return false;
+        } else if (viewMode === 'open') {
         if (task.status === 'completed') return false;
       } else if (viewMode === 'completed') {
         if (task.status !== 'completed') return false;
@@ -1508,10 +1617,12 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
       }
       return 0;
     });
-  }, [tasks, viewMode, statusFilters, tagFilters, priorityFilters, searchQuery, viewingTaskId, sortCriteria, currentUserId, availablePriorities]);
+  }, [tasks, viewMode, statusFilters, tagFilters, priorityFilters, searchQuery, viewingTaskId, sortCriteria, currentUserId, orgUserId, availablePriorities]);
 
-  const mineTasksCount = tasks.filter(t => t.assigned_to === currentUserId || (t.created_by === currentUserId && !t.assigned_to)).length;
-  const delegatedTasksCount = tasks.filter(t => t.created_by === currentUserId && t.assigned_to !== currentUserId).length;
+  const mineTasksCount = tasks.filter(t => t.assigned_to === currentUserId || t.assigned_to === orgUserId || (t.created_by === currentUserId && !t.assigned_to)).length;
+  const delegatedTasksCount = tasks.filter(t => t.created_by === currentUserId && t.assigned_to && t.assigned_to !== currentUserId && t.assigned_to !== orgUserId).length;
+  // ⚡ FIX: Removed strict assignee exclusion so counts match the new behavior
+  const teamTasksCount = tasks.filter(t => (t.members || []).includes(currentUserId) || (t.members || []).includes(orgUserId)).length;
   const openTasksCount = tasks.filter(t => t.status !== 'completed').length;
   const completedTasksCount = tasks.filter(t => t.status === 'completed').length;
 
@@ -1819,6 +1930,7 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
                 const count = tasks.filter(t => {
                   if (viewMode === 'mine' && !(t.assigned_to === currentUserId || (t.created_by === currentUserId && !t.assigned_to))) return false;
                   if (viewMode === 'delegated' && !(t.created_by === currentUserId && t.assigned_to !== currentUserId)) return false;
+                  if (viewMode === 'team' && (!((t.members || []).includes(currentUserId) || (t.members || []).includes(orgUserId)) || t.assigned_to === currentUserId || t.assigned_to === orgUserId)) return false;
                   if (viewMode === 'open' && t.status === 'completed') return false;
                   if (viewMode === 'completed' && t.status === 'completed') return true;
 
@@ -2287,28 +2399,38 @@ const TasksView: React.FC<TasksViewProps> = ({ isOpen, onClose, currentWorkspace
           </div>
           </div>
 
-          {/* Center: Mine / Delegated Toggle */}
+          {/* Center: Mine / Delegated / Team Toggle */}
           <div className="flex items-center justify-center flex-1">
             <div className="flex border border-gray-800 rounded-lg overflow-hidden shrink-0 h-[32px] shadow-[0_0_10px_rgba(0,0,0,0.3)]">
               <button
                 onClick={() => setViewMode('mine')}
-                className={`min-w-[100px] flex items-center justify-center gap-1.5 px-3 text-xs font-mono transition-all h-full ${
+                className={`min-w-[80px] sm:min-w-[100px] flex items-center justify-center gap-1.5 px-3 text-xs font-mono transition-all h-full ${
                   viewMode === 'mine' ? 'bg-cyan-500/20 text-cyan-400 border-r border-cyan-500/40 shadow-[0_0_10px_rgba(0,255,255,0.2)]' : 'bg-gray-900/50 text-gray-500 hover:text-gray-300 border-r border-gray-800'
                 }`}
               >
                 <UserIcon size={14} />
-                <span>Mine</span>
+                <span className="hidden sm:inline">Mine</span>
                 <span className="px-1 py-0.5 rounded text-[10px] bg-black/50 border border-gray-800">{mineTasksCount}</span>
               </button>
               <button
                 onClick={() => setViewMode('delegated')}
-                className={`min-w-[110px] flex items-center justify-center gap-1.5 px-3 text-xs font-mono transition-all h-full ${
-                  viewMode === 'delegated' ? 'bg-cyan-500/20 text-cyan-400 shadow-[0_0_10px_rgba(0,255,255,0.2)]' : 'bg-gray-900/50 text-gray-500 hover:text-gray-300'
+                className={`min-w-[90px] sm:min-w-[110px] flex items-center justify-center gap-1.5 px-3 text-xs font-mono transition-all h-full ${
+                  viewMode === 'delegated' ? 'bg-cyan-500/20 text-cyan-400 border-r border-cyan-500/40 shadow-[0_0_10px_rgba(0,255,255,0.2)]' : 'bg-gray-900/50 text-gray-500 hover:text-gray-300 border-r border-gray-800'
                 }`}
               >
                 <UsersIcon size={14} />
-                <span>Delegated</span>
+                <span className="hidden sm:inline">Delegated</span>
                 <span className="px-1 py-0.5 rounded text-[10px] bg-black/50 border border-gray-800">{delegatedTasksCount}</span>
+              </button>
+              <button
+                onClick={() => setViewMode('team')}
+                className={`min-w-[80px] sm:min-w-[100px] flex items-center justify-center gap-1.5 px-3 text-xs font-mono transition-all h-full ${
+                  viewMode === 'team' ? 'bg-cyan-500/20 text-cyan-400 shadow-[0_0_10px_rgba(0,255,255,0.2)]' : 'bg-gray-900/50 text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                <LucideIcons.Users2 size={14} />
+                <span className="hidden sm:inline">Team</span>
+                <span className="px-1 py-0.5 rounded text-[10px] bg-black/50 border border-gray-800">{teamTasksCount}</span>
               </button>
             </div>
           </div>
