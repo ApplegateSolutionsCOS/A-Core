@@ -285,15 +285,30 @@ self.addEventListener('push', function(event) {
   if (!event.data) return;
   
   const data = event.data.json();
-  const title = data.title || 'New Message';
-  const options = {
-    body: data.body || 'You have a new message.',
-    icon: '/logo192.png', // Update with your app's icon path
-    badge: '/badge.png',  // Small monochrome icon for Android status bar
-    data: { url: data.url || '/' }
-  };
 
-  event.waitUntil(self.registration.showNotification(title, options));
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function(clientList) {
+      // ⚡ Check if the user already has the app open and focused
+      const isFocused = clientList.some(client => client.focused);
+
+      // ⚡ If the app is focused, SILENCE the OS notification. 
+      // App.tsx's in-app toast will handle the alert visually.
+      if (isFocused) return;
+
+      // Otherwise, fire the OS notification
+      const title = data.title || 'New Message';
+      const options = {
+        body: data.body || 'You have a new message.',
+        icon: '/favicon.ico', 
+        badge: '/favicon.ico',  
+        tag: data.tag || `chat-msg-${Date.now()}`, // Unique tag prevents OS squashing
+        renotify: true,
+        data: { url: data.url || '/' }
+      };
+
+      return self.registration.showNotification(title, options);
+    })
+  );
 });
 
 self.addEventListener('notificationclick', function(event) {

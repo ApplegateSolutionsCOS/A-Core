@@ -37,89 +37,6 @@ import DatabaseTest from "./pages/DatabaseTest";
 import PhoneMirrorPage from "./pages/PhoneMirrorPage";
 import { supabase } from "@/lib/supabase";
 
-// ⚡ GLOBAL NOTIFICATION COMPONENT
-// This safely runs the hook inside the React lifecycle, with access to AuthContext
-const GlobalNotificationListener = () => {
-  const { user } = useAuth();
-  const currentUserId = user?.id || (user as any)?.uid;
-
-  React.useEffect(() => {
-    console.log('[Push Diagnostics] Component mounted. User ID:', currentUserId || 'Not logged in yet');
-    
-    if (!currentUserId) return;
-
-    console.log('[Push Diagnostics] Setting up global listener for user:', currentUserId);
-
-    const globalSubscription = supabase.channel(`global_notifications_app_${currentUserId}_${Date.now()}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'app_private', table: 'messages' }, async (payload) => {
-        console.log('[Push Diagnostics] 1. REALTIME EVENT RECEIVED:', payload);
-        const newDbMsg = payload.new as any;
-        
-        if (newDbMsg.sender_id === currentUserId) {
-           console.log('[Push Diagnostics] 2. Ignoring message (I am the sender)');
-           return;
-        }
-
-        console.log('[Push Diagnostics] 2. Checking if user is participant in thread:', newDbMsg.thread_id);
-        const { data: participant, error: partErr } = await supabase.schema('app_private')
-          .from('chat_participants')
-          .select('user_id')
-          .eq('thread_id', newDbMsg.thread_id)
-          .eq('user_id', currentUserId)
-          .maybeSingle();
-
-        if (partErr) console.error('[Push Diagnostics] Participant check error:', partErr);
-
-        if (participant) {
-          console.log('[Push Diagnostics] 3. User IS a participant. Browser Permission Status:', Notification.permission);
-          
-          if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-            const { data: sender } = await supabase.schema('app_private')
-              .from('organization_users')
-              .select('full_name, email')
-              .eq('id', newDbMsg.sender_id)
-              .maybeSingle();
-              
-            const senderName = sender?.full_name || sender?.email || 'New Message';
-            const previewText = newDbMsg.message_type === 'text' ? newDbMsg.content : `Sent a ${newDbMsg.message_type}`;
-            
-            console.log('[Push Diagnostics] 4. FIRING DESKTOP NOTIFICATION NOW:', senderName, previewText);
-            
-            try {
-              // Modern approach: Route through the Service Worker
-              if ('serviceWorker' in navigator) {
-                const registration = await navigator.serviceWorker.getRegistration();
-                if (registration) {
-                  await registration.showNotification(`${senderName}`, {
-                    body: previewText,
-                    tag: 'chat-message' // Prevents spamming by replacing older unread notifications
-                  });
-                  return; 
-                }
-              }
-              
-              // Fallback
-              const notification = new Notification(`${senderName}`, { body: previewText });
-              notification.onclick = () => { window.focus(); notification.close(); };
-            } catch (err) {
-              console.error('[Push Diagnostics] ERROR: Browser threw error firing notification:', err);
-            }
-          } else {
-            console.log('[Push Diagnostics] ABORT: Notification permission is not granted.');
-          }
-        } else {
-           console.log('[Push Diagnostics] ABORT: User is NOT a participant in this thread.');
-        }
-      }).subscribe((status) => {
-         console.log('[Push Diagnostics] Channel subscription status:', status);
-      });
-
-    return () => { supabase.removeChannel(globalSubscription); };
-  }, [currentUserId]);
-
-  return null;
-};
-
 const queryClient = new QueryClient();
 
 // --- GLOBAL NOTIFICATION SYSTEM ---
@@ -149,18 +66,26 @@ export const useNotifications = () => {
 const NotificationProvider = ({ children }: { children: React.ReactNode }) => {
   const [alerts, setAlerts] = useState<AppAlert[]>([]);
 
+  const generateId = () => {
+    // Fallback for non-https local development environments
+    return (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') 
+      ? crypto.randomUUID() 
+      : `alert-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  };
+
   const addAlert = useCallback((alert: Omit<AppAlert, 'id'>) => {
-    setAlerts(prev => [...prev, { ...alert, id: crypto.randomUUID() }]);
+    const id = generateId();
+    setAlerts(prev => [...prev, { ...alert, id }]);
     
     // Auto-remove after 5 seconds
     setTimeout(() => {
-      setAlerts(current => current.filter(a => a.id !== alert.id)); // Use alert.id (which is undefined), wait, we need the generated ID
+      setAlerts(current => current.filter(a => a.id !== id));
     }, 5000);
   }, []);
 
   // Fix for auto-remove: generate ID first
   const addAlertWithTimeout = useCallback((alert: Omit<AppAlert, 'id'>) => {
-    const id = crypto.randomUUID();
+    const id = generateId();
     setAlerts(prev => [...prev, { ...alert, id }]);
     setTimeout(() => setAlerts(current => current.filter(a => a.id !== id)), 5000);
   }, []);
@@ -180,11 +105,24 @@ const NotificationProvider = ({ children }: { children: React.ReactNode }) => {
   return (
     <NotificationContext.Provider value={{ alerts, addAlert: addAlertWithTimeout, removeAlert }}>
       {alerts.length > 0 && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[100] w-[calc(100%-2rem)] max-w-2xl flex flex-col gap-2 pointer-events-none animate-in slide-in-from-top-4">
+        <div className="fixed bottom-6 right-6 z-[100] w-[350px] flex flex-col gap-3 pointer-events-none">
           {alerts.map(alert => (
-            <div key={alert.id} className={`pointer-events-auto flex items-center justify-between p-3 rounded-lg border backdrop-blur-md font-mono text-sm ${getAlertStyles(alert.type)}`}>
-              <span className="flex-1">{alert.message}</span>
-              <button onClick={() => removeAlert(alert.id)} className="ml-4 opacity-70 hover:opacity-100 hover:text-white transition-opacity font-bold">✕</button>
+            <div 
+              key={alert.id} 
+              className={`pointer-events-auto flex flex-col p-4 rounded-xl border backdrop-blur-xl shadow-2xl animate-in slide-in-from-bottom-8 fade-in duration-300 font-mono text-sm ${getAlertStyles(alert.type)}`}
+            >
+              <div className="flex justify-between items-start mb-1.5">
+                <span className="font-bold text-white tracking-wide text-xs uppercase">
+                  {alert.type === 'info' ? 'Incoming Message' : 'System Alert'}
+                </span>
+                <button 
+                  onClick={() => removeAlert(alert.id)} 
+                  className="opacity-50 hover:opacity-100 hover:text-white transition-opacity ml-4"
+                >
+                  ✕
+                </button>
+              </div>
+              <span className="opacity-90 leading-relaxed text-sm">{alert.message}</span>
             </div>
           ))}
         </div>
@@ -195,14 +133,75 @@ const NotificationProvider = ({ children }: { children: React.ReactNode }) => {
 };
 // ----------------------------------
 
+// ⚡ GLOBAL NOTIFICATION COMPONENT
+// Moved below NotificationProvider so it can safely use the useNotifications hook
+const GlobalNotificationListener = () => {
+  const { user } = useAuth();
+  const { addAlert } = useNotifications();
+  const currentUserId = user?.id || (user as any)?.uid;
+
+  React.useEffect(() => {
+    if (!currentUserId) return;
+
+    const globalSubscription = supabase.channel(`global_notifications_app_${currentUserId}_${Date.now()}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'app_private', table: 'messages' }, async (payload) => {
+        const newDbMsg = payload.new as any;
+        
+        // ⚡ FIX: Strictly typecast both IDs to strings to prevent phantom self-notifications
+        if (String(newDbMsg.sender_id) === String(currentUserId)) return;
+
+        const { data: participant } = await supabase.schema('app_private')
+          .from('chat_participants')
+          .select('user_id')
+          .eq('thread_id', newDbMsg.thread_id)
+          .eq('user_id', currentUserId)
+          .maybeSingle();
+
+        if (participant) {
+          // 1. Fetch Sender Info
+          const { data: sender } = await supabase.schema('app_private')
+            .from('organization_users')
+            .select('full_name, email')
+            .eq('id', newDbMsg.sender_id)
+            .maybeSingle();
+
+          // 2. Fetch Thread Info (to check for Group Chats)
+          const { data: thread } = await supabase.schema('app_private')
+            .from('chat_threads')
+            .select('title, is_group')
+            .eq('id', newDbMsg.thread_id)
+            .maybeSingle();
+            
+          const senderName = sender?.full_name || sender?.email || 'New Message';
+          
+          // 3. Format the Display Title
+          const displayTitle = (thread?.is_group && thread?.title) 
+            ? `${senderName} (${thread.title})` 
+            : senderName;
+
+          const previewText = newDbMsg.message_type === 'text' ? newDbMsg.content : `Sent a ${newDbMsg.message_type}`;
+          
+          // ⚡ ALWAYS FIRE THE IN-APP TOAST (The OS Notification is now handled exclusively by sw.js)
+          addAlert({ 
+            message: `${displayTitle}: "${previewText}"`, 
+            type: 'info' 
+          });
+        }
+      }).subscribe();
+
+    return () => { supabase.removeChannel(globalSubscription); };
+  }, [currentUserId, addAlert]);
+
+  return null;
+};
 
 const App = () => (
   <ThemeProvider defaultTheme="dark">
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <GlobalNotificationListener />
         <ConnectionProvider>
           <NotificationProvider>
+            <GlobalNotificationListener />
             <TooltipProvider>
             <Toaster />
             <Sonner />

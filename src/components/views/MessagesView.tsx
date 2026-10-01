@@ -389,7 +389,7 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
 
     fetchChatHistory();
 
-    const messageSubscription = supabase.channel(`chat_${selectedContact.id}`)
+    const messageSubscription = supabase.channel(`chat_${selectedContact.id}_${Date.now()}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'app_private', table: 'messages' }, (payload) => {
           const newDbMsg = payload.new as any;
           if (newDbMsg.thread_id === selectedContact.id) {
