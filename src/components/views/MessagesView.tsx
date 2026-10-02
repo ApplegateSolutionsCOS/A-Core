@@ -145,7 +145,6 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
       alert('Push notifications are not supported by this browser.'); return;
     }
     
-    // ⚡ FIX: iOS Safari will crash here if not added to the Home Screen first.
     if (!('Notification' in window)) {
       alert('To enable push notifications on iOS, please tap the "Share" icon and select "Add to Home Screen" first. Then open the app from your home screen.'); 
       return;
@@ -158,7 +157,6 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
       const currentUserId = user?.id || (user as any)?.uid;
 
       if (pushEnabled) {
-        // TURN OFF: Unsubscribe and delete from DB
         const subscription = await registration.pushManager.getSubscription();
         if (subscription) await subscription.unsubscribe();
         if (currentUserId) {
@@ -166,7 +164,6 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
         }
         setPushEnabled(false);
       } else {
-        // TURN ON: Get permission, subscribe, and insert into DB
         const permission = await Notification.requestPermission();
         if (permission !== 'granted') {
           alert('Notification permission denied.');
@@ -174,6 +171,10 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
         }
 
         const vapidPublicKey = import.meta.env.VITE_VAPID_PUBLIC_KEY;
+        if (!vapidPublicKey) {
+          throw new Error("VITE_VAPID_PUBLIC_KEY is missing from this environment. Please add it to your hosting provider's environment variables.");
+        }
+
         const padding = '='.repeat((4 - vapidPublicKey.length % 4) % 4);
         const base64 = (vapidPublicKey + padding).replace(/\-/g, '+').replace(/_/g, '/');
         const rawData = window.atob(base64);
@@ -185,16 +186,18 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
         });
 
         if (currentUserId) {
-          // Clean up any stale records first, then insert new one
           await supabase.schema('app_private').from('user_push_subscriptions').delete().eq('user_id', currentUserId);
-          await supabase.schema('app_private').from('user_push_subscriptions').insert({
+          const { error: insertError } = await supabase.schema('app_private').from('user_push_subscriptions').insert({
             user_id: currentUserId, subscription: JSON.parse(JSON.stringify(subscription))
           });
+          
+          if (insertError) throw new Error(`Database error: ${insertError.message}`);
         }
         setPushEnabled(true);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Push toggle error:', err);
+      alert(`Failed to enable push: ${err.message || JSON.stringify(err)}`);
     }
     setIsPushLoading(false);
   };
