@@ -23,7 +23,7 @@
 // guarantees stale (old-version) assets are removed from the browser. It is
 // also intentionally byte-different from the previous worker so the browser's
 // update check reliably detects this as a NEW worker and installs it.
-const SW_VERSION = 'v16'; // ⚡ BUMPED to fix cold-boot fallback routing
+const SW_VERSION = 'v17'; // ⚡ BUMPED to fix production issues
 const CACHE_NAME = `applegate-core-${SW_VERSION}`;
 const STATIC_CACHE = `applegate-static-${SW_VERSION}`;
 const API_CACHE = `applegate-api-${SW_VERSION}`;
