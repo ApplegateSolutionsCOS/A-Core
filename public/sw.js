@@ -23,7 +23,7 @@
 // guarantees stale (old-version) assets are removed from the browser. It is
 // also intentionally byte-different from the previous worker so the browser's
 // update check reliably detects this as a NEW worker and installs it.
-const SW_VERSION = 'v18'; // ⚡ BUMPED to update cold-start routing
+const SW_VERSION = 'v19'; // ⚡ BUMPED to fix SPA 404 routing
 const CACHE_NAME = `applegate-core-${SW_VERSION}`;
 const STATIC_CACHE = `applegate-static-${SW_VERSION}`;
 const API_CACHE = `applegate-api-${SW_VERSION}`;
@@ -334,9 +334,9 @@ self.addEventListener('notificationclick', function(event) {
       }
 
       // 3. Fallback: The app was completely killed by the OS.
-      // Route to the dashboard home page. The ?thread query param will automatically pop the Messages View modal open.
+      // Route to the root path (/) to avoid SPA server 404s. The ?thread param handles the modal.
       if (clients.openWindow) {
-        const targetUrl = new URL(`/dashboard?thread=${threadId || ''}`, self.location.origin).href;
+        const targetUrl = new URL(`/?thread=${threadId || ''}`, self.location.origin).href;
         return clients.openWindow(targetUrl);
       }
     })
