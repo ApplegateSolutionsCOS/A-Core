@@ -23,7 +23,7 @@
 // guarantees stale (old-version) assets are removed from the browser. It is
 // also intentionally byte-different from the previous worker so the browser's
 // update check reliably detects this as a NEW worker and installs it.
-const SW_VERSION = 'v17'; // ⚡ BUMPED to fix production issues
+const SW_VERSION = 'v18'; // ⚡ BUMPED to update cold-start routing
 const CACHE_NAME = `applegate-core-${SW_VERSION}`;
 const STATIC_CACHE = `applegate-static-${SW_VERSION}`;
 const API_CACHE = `applegate-api-${SW_VERSION}`;
@@ -334,9 +334,9 @@ self.addEventListener('notificationclick', function(event) {
       }
 
       // 3. Fallback: The app was completely killed by the OS.
-      // We MUST route to the dedicated /messages path so the modal is guaranteed to mount.
+      // Route to the dashboard home page. The ?thread query param will automatically pop the Messages View modal open.
       if (clients.openWindow) {
-        const targetUrl = new URL(`/messages?thread=${threadId || ''}`, self.location.origin).href;
+        const targetUrl = new URL(`/dashboard?thread=${threadId || ''}`, self.location.origin).href;
         return clients.openWindow(targetUrl);
       }
     })
