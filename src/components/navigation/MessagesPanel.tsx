@@ -110,6 +110,12 @@ const MessagesPanel: React.FC<MessagesPanelProps> = ({
       alert('Push notifications are not supported by this browser.'); return;
     }
     
+    // ⚡ FIX: iOS Safari will crash here if not added to the Home Screen first.
+    if (!('Notification' in window)) {
+      alert('To enable push notifications on iOS, please tap the "Share" icon and select "Add to Home Screen" first. Then open the app from your home screen.'); 
+      return;
+    }
+    
     setIsPushLoading(true);
     try {
       const registration = await navigator.serviceWorker.register('/sw.js');

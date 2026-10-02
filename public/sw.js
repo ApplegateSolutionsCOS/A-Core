@@ -23,7 +23,7 @@
 // guarantees stale (old-version) assets are removed from the browser. It is
 // also intentionally byte-different from the previous worker so the browser's
 // update check reliably detects this as a NEW worker and installs it.
-const SW_VERSION = 'v4';
+const SW_VERSION = 'v16'; // ⚡ BUMPED to fix cold-boot fallback routing
 const CACHE_NAME = `applegate-core-${SW_VERSION}`;
 const STATIC_CACHE = `applegate-static-${SW_VERSION}`;
 const API_CACHE = `applegate-api-${SW_VERSION}`;
@@ -288,22 +288,22 @@ self.addEventListener('push', function(event) {
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function(clientList) {
-      // ⚡ Check if the user already has the app open and focused
+      // Check if the user already has the app open and focused
       const isFocused = clientList.some(client => client.focused);
-
-      // ⚡ If the app is focused, SILENCE the OS notification. 
-      // App.tsx's in-app toast will handle the alert visually.
       if (isFocused) return;
 
-      // Otherwise, fire the OS notification
       const title = data.title || 'New Message';
+      // Safely extract threadId from the new payload structure
+      const threadId = data.threadId || data.thread_id || '';
+
       const options = {
         body: data.body || 'You have a new message.',
         icon: '/favicon.ico', 
         badge: '/favicon.ico',  
-        tag: data.tag || `chat-msg-${Date.now()}`, // Unique tag prevents OS squashing
+        tag: data.tag || `chat-msg-${Date.now()}`,
         renotify: true,
-        data: { url: data.url || '/' }
+        // ⚡ ELIMINATE THE URL: Store threadId purely as hidden data for the SW to read
+        data: { threadId: threadId } 
       };
 
       return self.registration.showNotification(title, options);
@@ -313,6 +313,32 @@ self.addEventListener('push', function(event) {
 
 self.addEventListener('notificationclick', function(event) {
   event.notification.close();
-  // Opens the app when the notification is clicked
-  event.waitUntil(clients.openWindow(event.notification.data.url));
+  
+  const data = event.notification.data || {};
+  const threadId = data.threadId || null;
+
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function(clientList) {
+      // 1. Loop through all clients to aggressively find the backgrounded app
+      for (const client of clientList) {
+        if (client.url && client.url.includes(self.location.origin)) {
+          return client.focus().then(c => {
+            if (threadId) {
+              // 2. Fire multiple times to guarantee the app catches it as it thaws from being frozen by the OS
+              c.postMessage({ type: 'OPEN_CHAT_THREAD', threadId: threadId });
+              setTimeout(() => c.postMessage({ type: 'OPEN_CHAT_THREAD', threadId: threadId }), 500);
+              setTimeout(() => c.postMessage({ type: 'OPEN_CHAT_THREAD', threadId: threadId }), 1500);
+            }
+          });
+        }
+      }
+
+      // 3. Fallback: The app was completely killed by the OS.
+      // We MUST route to the dedicated /messages path so the modal is guaranteed to mount.
+      if (clients.openWindow) {
+        const targetUrl = new URL(`/messages?thread=${threadId || ''}`, self.location.origin).href;
+        return clients.openWindow(targetUrl);
+      }
+    })
+  );
 });

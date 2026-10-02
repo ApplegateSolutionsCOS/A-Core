@@ -145,6 +145,12 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
       alert('Push notifications are not supported by this browser.'); return;
     }
     
+    // ⚡ FIX: iOS Safari will crash here if not added to the Home Screen first.
+    if (!('Notification' in window)) {
+      alert('To enable push notifications on iOS, please tap the "Share" icon and select "Add to Home Screen" first. Then open the app from your home screen.'); 
+      return;
+    }
+    
     setIsPushLoading(true);
     try {
       const registration = await navigator.serviceWorker.register('/sw.js');
@@ -202,6 +208,25 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
   const [allUsers, setAllUsers] = useState<Contact[]>([]);
   const [newGroupName, setNewGroupName] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+
+  // ⚡ NEW: Force Open State for Push Notifications
+  const [forceOpen, setForceOpen] = useState(false);
+  const [pendingThreadId, setPendingThreadId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'OPEN_CHAT_THREAD' && event.data?.threadId) {
+        setForceOpen(true);
+        setPendingThreadId(event.data.threadId);
+      }
+    };
+    navigator.serviceWorker?.addEventListener('message', handleMessage);
+    window.addEventListener('message', handleMessage);
+    return () => {
+      navigator.serviceWorker?.removeEventListener('message', handleMessage);
+      window.removeEventListener('message', handleMessage);
+    };
+  }, []);
 
   const toggleGroupMember = (contact: Contact) => {
     setSelectedGroupMembers(prev => 
@@ -414,6 +439,31 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // ⚡ NEW: Auto-select thread if coming from an OS Push Notification or In-App Toast
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const urlThreadId = params.get('thread');
+    const targetThreadId = pendingThreadId || urlThreadId;
+    
+    if (targetThreadId) {
+      // Unconditionally pop the modal open immediately, even if contacts are still loading from the DB
+      setForceOpen(true);
+      
+      if (contacts.length === 0) return; // Wait for contacts to load before auto-selecting
+      
+      const targetContact = contacts.find(c => c.id === targetThreadId);
+      if (targetContact && selectedContact?.id !== targetThreadId) {
+        setSelectedContact(targetContact);
+        setChatTitle(targetContact.name);
+        
+        if (urlThreadId) {
+          window.history.replaceState({}, '', window.location.pathname);
+        }
+        setPendingThreadId(null);
+      }
+    }
+  }, [contacts, selectedContact, pendingThreadId]);
+
   // 4. Send Message Handler
   const handleSendMessage = async () => {
     if (!newMessage.trim() || !selectedContact || !currentUserId || !currentUserOrg) return;
@@ -475,7 +525,7 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
     }
   };
 
-  if (!isOpen) return null;
+  if (!isOpen && !forceOpen) return null;
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 sm:p-6" id="messages-view-modal">
@@ -510,7 +560,7 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
         #messages-view-modal .shadow-\\[0_0_10px_rgba\\(59\\,130\\,246\\,0\\.15\\)\\] { box-shadow: 0 0 10px rgba(${panelAccentRGB}, 0.15) !important; }
       `}</style>
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => { setForceOpen(false); onClose(); }} />
       
       {/* Modal Container */}
       <div className="relative w-full max-w-[1376px] h-full max-h-[95vh] bg-black/90 backdrop-blur-2xl border rounded-2xl flex flex-col animate-in zoom-in-95 duration-200 overflow-hidden"
@@ -540,7 +590,7 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
               <BellIcon size={14} /> {pushEnabled ? 'Push: ON' : 'Push: OFF'}
             </button>
             <button 
-              onClick={onClose} 
+              onClick={() => { setForceOpen(false); onClose(); }} 
               className="p-2 text-gray-400 hover:text-white bg-black/50 border border-gray-800 rounded-lg hover:bg-gray-700 transition-colors"
             >
               <CloseIcon size={24} />

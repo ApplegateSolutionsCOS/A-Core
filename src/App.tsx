@@ -1,5 +1,14 @@
 // Insert this at the very top, before other imports
 if (typeof window !== 'undefined') {
+  // ⚡ ROBOT-BEATING ANDROID PUSH FIX
+  // We MUST halt JS execution by throwing an error after setting href. 
+  // Otherwise, React Router mounts too fast and cancels the browser's redirect attempt.
+  const cleanPath = window.location.pathname.toLowerCase().replace(/\/$/, '');
+  if (cleanPath !== '/messages' && cleanPath.endsWith('messages')) {
+    window.location.href = '/messages' + window.location.search;
+    throw new Error("HALT: Fixing bad Android native push route.");
+  }
+
   const rawConsoleError = console.error;
   console.error = (...args) => {
     // If the error contains the specific Edge Function message, kill it.
@@ -23,7 +32,7 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import React, { createContext, useContext, useState, useCallback } from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { ThemeProvider } from "@/components/theme-provider";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { ConnectionProvider } from "@/contexts/ConnectionContext";
@@ -46,6 +55,7 @@ export interface AppAlert {
   id: string;
   message: string;
   type: AlertType;
+  onClick?: () => void;
 }
 
 interface NotificationContextType {
@@ -109,7 +119,8 @@ const NotificationProvider = ({ children }: { children: React.ReactNode }) => {
           {alerts.map(alert => (
             <div 
               key={alert.id} 
-              className={`pointer-events-auto flex flex-col p-4 rounded-xl border backdrop-blur-xl shadow-2xl animate-in slide-in-from-bottom-8 fade-in duration-300 font-mono text-sm ${getAlertStyles(alert.type)}`}
+              onClick={() => { if(alert.onClick) { alert.onClick(); removeAlert(alert.id); } }}
+              className={`pointer-events-auto flex flex-col p-4 rounded-xl border backdrop-blur-xl shadow-2xl animate-in slide-in-from-bottom-8 fade-in duration-300 font-mono text-sm ${alert.onClick ? 'cursor-pointer hover:scale-[1.02] transition-transform' : ''} ${getAlertStyles(alert.type)}`}
             >
               <div className="flex justify-between items-start mb-1.5">
                 <span className="font-bold text-white tracking-wide text-xs uppercase">
@@ -181,10 +192,13 @@ const GlobalNotificationListener = () => {
 
           const previewText = newDbMsg.message_type === 'text' ? newDbMsg.content : `Sent a ${newDbMsg.message_type}`;
           
-          // ⚡ ALWAYS FIRE THE IN-APP TOAST (The OS Notification is now handled exclusively by sw.js)
+          // ⚡ ALWAYS FIRE THE IN-APP TOAST (Clicking it opens the thread!)
           addAlert({ 
             message: `${displayTitle}: "${previewText}"`, 
-            type: 'info' 
+            type: 'info',
+            onClick: () => {
+              window.postMessage({ type: 'OPEN_CHAT_THREAD', threadId: newDbMsg.thread_id }, '*');
+            }
           });
         }
       }).subscribe();
@@ -193,6 +207,14 @@ const GlobalNotificationListener = () => {
   }, [currentUserId, addAlert]);
 
   return null;
+};
+
+// ⚡ OS PUSH NOTIFICATION FIX
+// Android natively resolves relative push URLs against the suspended background tab.
+// This catches those bad OS-level native navigations and forces them to the absolute path.
+const OSPushRedirect = () => {
+  const location = useLocation();
+  return <Navigate to={`/messages${location.search}`} replace />;
 };
 
 const App = () => (
@@ -223,6 +245,11 @@ const App = () => (
                 <Route path="/tasks" element={<Index initialView="tasks" />} />
                 <Route path="/messages" element={<Index initialView="messages" />} />
                 
+                {/* ⚡ Catch and correct bad OS-level relative push navigations */}
+                <Route path="/workspace/messages" element={<OSPushRedirect />} />
+                <Route path="/admin/messages" element={<OSPushRedirect />} />
+                <Route path="/settings/messages" element={<OSPushRedirect />} />
+
                 {/* Workspace routes */}
                 <Route path="/workspace" element={<Navigate to="/workspaces" replace />} />
                 <Route path="/workspace/:slug" element={<Index initialView="workspace" />} />
