@@ -2469,6 +2469,7 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
   const [podioStep, setPodioStep] = useState<'credentials' | 'dependencies' | 'mapping'>('credentials');
   const [podioFields, setPodioFields] = useState<{ external_id: string; label: string }[]>([]);
   const [podioDependencies, setPodioDependencies] = useState<{ app_id: number; name: string }[]>([]);
+  const [manualAppIdMode, setManualAppIdMode] = useState(false);
   const [podioMapping, setPodioMapping] = useState<Record<string, string>>({});
   const [isAwaitingAuth, setIsAwaitingAuth] = useState(false);
   
@@ -2485,6 +2486,7 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
         body: { userId }
       });
       if (error) throw error;
+      if (data?.error) throw new Error(data.error);
       
       // Sort alphabetically by Workspace, then App Name
       const sortedApps = (data.apps || []).sort((a: any, b: any) => {
@@ -3327,6 +3329,7 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
         body: { podioAppId: depId.toString(), userId }
       });
       if (error) throw error;
+      if (data?.error) throw new Error(data.error);
       
       // ⚡ WE REMOVED THE RECURSIVE QUEUE-JUMPING LOGIC HERE!
       // Because we now recursively resolve the entire tree upfront.
@@ -3384,6 +3387,7 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
         }
       });
       if (error) throw error;
+      if (data?.error) throw new Error(data.error);
       
       updateDepState(depId, { isCompleted: true });
       setExpandedDepId(null); 
@@ -3404,6 +3408,7 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
         body: { podioAppId, userId }
       });
       if (error) throw error;
+      if (mainData?.error) throw new Error(mainData.error);
       
       // ⚡ 2. Recursively discover ALL nested dependencies upfront
       const allDepsMap = new Map();
@@ -3418,6 +3423,8 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
         const { data: depData, error: depErr } = await supabase.functions.invoke('fetch-podio-schema', {
           body: { podioAppId: currentDep.app_id.toString(), userId }
         });
+        
+        if (depData?.error) throw new Error(depData.error);
         
         if (!depErr && depData) {
           const children = depData.dependencies || [];
@@ -3451,7 +3458,7 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
       };
       
       // Run the sort on everything we found
-      allDepsMap.forEach((_, id) => dfs(id));
+      Array.from(allDepsMap.keys()).forEach(id => dfs(id));
       
       setPodioFields(mainData.fields || []);
       setPodioDependencies(sortedDeps);
@@ -3495,6 +3502,7 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
       });
       
       if (error) throw error;
+      if (data?.error) throw new Error(data.error);
       
       setShowPodioModal(false); 
       setPodioAppId(''); 
@@ -5918,17 +5926,43 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
                       <>
                         <p className="text-center text-gray-400 font-mono text-xs mb-6">Select the specific Podio App you want to import data from.</p>
                         <div className="mb-6">
-                          <label className="block text-[11px] font-mono font-medium text-gray-500 mb-1.5 uppercase tracking-wider">Podio Workspace & App</label>
-                          <select 
-                            value={podioAppId} 
-                            onChange={(e) => setPodioAppId(e.target.value)} 
-                            className="w-full bg-black/60 border border-gray-700 rounded-lg px-4 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-emerald-500 transition-colors"
-                          >
-                            <option value="">-- Choose an App --</option>
-                            {podioAppsList.map(app => (
-                              <option key={app.app_id} value={app.app_id}>{app.space_name} - {app.name}</option>
-                            ))}
-                          </select>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="block text-[11px] font-mono font-medium text-gray-500 uppercase tracking-wider">Podio Workspace & App</label>
+                            <button onClick={() => setManualAppIdMode(!manualAppIdMode)} className="text-[10px] text-emerald-500 hover:text-emerald-400 font-mono transition-colors">
+                              {manualAppIdMode ? 'Select from List' : 'Enter ID Manually'}
+                            </button>
+                          </div>
+                          
+                          {manualAppIdMode ? (
+                            <input 
+                              type="text" 
+                              value={podioAppId} 
+                              onChange={(e) => setPodioAppId(e.target.value)} 
+                              placeholder="Enter Podio App ID directly..."
+                              className="w-full bg-black/60 border border-gray-700 rounded-lg px-4 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-emerald-500 transition-colors"
+                            />
+                          ) : (
+                            <select 
+                              value={podioAppId} 
+                              onChange={(e) => setPodioAppId(e.target.value)} 
+                              className="w-full bg-black/60 border border-gray-700 rounded-lg px-4 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-emerald-500 transition-colors"
+                            >
+                              <option value="">-- Choose an App --</option>
+                              {Object.entries(
+                                podioAppsList.reduce((acc, app) => {
+                                  if (!acc[app.space_name]) acc[app.space_name] = [];
+                                  acc[app.space_name].push(app);
+                                  return acc;
+                                }, {} as Record<string, typeof podioAppsList>)
+                              ).map(([spaceName, apps]) => (
+                                <optgroup key={spaceName} label={spaceName}>
+                                  {apps.map(app => (
+                                    <option key={app.app_id} value={app.app_id}>{app.name}</option>
+                                  ))}
+                                </optgroup>
+                              ))}
+                            </select>
+                          )}
                         </div>
                       </>
                     )}
@@ -6035,7 +6069,7 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
                   if (state.isCompleted) {
                     return (
                       <div key={dep.app_id} className="aspect-square bg-black/80 border border-emerald-500/30 rounded-xl flex flex-col items-center justify-center p-4 transition-all shadow-[0_0_15px_rgba(16,185,129,0.1)]">
-                        <CheckCircleIcon size={32} className="text-emerald-400 mb-2" />
+                        <LucideIcons.CheckCircle size={32} className="text-emerald-400 mb-2" />
                         <span className="text-xs font-mono text-emerald-500/70 text-center line-clamp-2">{dep.name}</span>
                       </div>
                     );
