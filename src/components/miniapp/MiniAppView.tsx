@@ -22,6 +22,21 @@ import { ChartNetwork, MessageSquare, MessagesSquare, Activity, CheckSquare, Mai
 import * as LucideIcons from 'lucide-react';
 import { useWorkspaceColor } from '@/contexts/WorkspaceColorContext';
 
+// ⚡ NATIVE JAVASCRIPT SHORT-CIRCUIT (OAuth Popup Interceptor)
+// This runs instantly when the file is parsed by the browser, BEFORE React boots up.
+// It prevents the router from stripping the URL or loading the full app inside the popup.
+if (typeof window !== 'undefined') {
+  if (window.location.search.includes('podio_auth=success') || window.location.hash.includes('podio_auth=success')) {
+    // Signal the parent window that auth was successful
+    if (window.opener) {
+      window.opener.postMessage({ type: 'PODIO_AUTH_SUCCESS' }, '*');
+    }
+    // Instantly nuke the DOM to show a sleek loading screen, then close the window
+    document.write('<body style="background: #0a0a0a; display: flex; align-items: center; justify-content: center; height: 100vh; color: white; font-family: monospace;">Authentication successful. Closing window...</body>');
+    window.close();
+  }
+}
+
 // Helper to safely map lowercase DB icon strings to Lucide's PascalCase exports
 const resolveAppIcon = (iconStr: string | null | undefined, appName: string) => {
   if (!iconStr) return getMiniAppIcon(appName);
@@ -2445,6 +2460,81 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
   const [importData, setImportData] = useState<{ headers: string[]; rows: string[][] } | null>(null);
   const [importMapping, setImportMapping] = useState<Record<string, string>>({});
   const [isImporting, setIsImporting] = useState(false);
+
+  // Podio Migration States
+  const [showPodioModal, setShowPodioModal] = useState(false);
+  const [podioAppId, setPodioAppId] = useState('');
+  const [podioAppToken, setPodioAppToken] = useState('');
+  const [isImportingPodio, setIsImportingPodio] = useState(false);
+  const [podioStep, setPodioStep] = useState<'credentials' | 'dependencies' | 'mapping'>('credentials');
+  const [podioFields, setPodioFields] = useState<{ external_id: string; label: string }[]>([]);
+  const [podioDependencies, setPodioDependencies] = useState<{ app_id: number; name: string }[]>([]);
+  const [podioMapping, setPodioMapping] = useState<Record<string, string>>({});
+  const [isAwaitingAuth, setIsAwaitingAuth] = useState(false);
+  
+  // New state for the Dropdown Menu
+  const [podioAppsList, setPodioAppsList] = useState<{app_id: number, name: string, space_name: string}[]>([]);
+  const [isLoadingPodioApps, setIsLoadingPodioApps] = useState(false);
+
+  const fetchPodioAppsList = async () => {
+    setIsLoadingPodioApps(true);
+    setDbError(null);
+    try {
+      // Call our backend to securely fetch the user's Podio Apps using their saved token
+      const { data, error } = await supabase.functions.invoke('fetch-podio-apps', {
+        body: { userId }
+      });
+      if (error) throw error;
+      
+      // Sort alphabetically by Workspace, then App Name
+      const sortedApps = (data.apps || []).sort((a: any, b: any) => {
+        if (a.space_name === b.space_name) return a.name.localeCompare(b.name);
+        return a.space_name.localeCompare(b.space_name);
+      });
+      setPodioAppsList(sortedApps);
+    } catch (err: any) {
+      setDbError(err.message || 'Failed to fetch Podio apps list');
+    } finally {
+      setIsLoadingPodioApps(false);
+    }
+  };
+
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'PODIO_AUTH_SUCCESS') {
+        setIsAwaitingAuth(false);
+        setPodioAppToken('oauth-connected');
+        fetchPodioAppsList(); // Trigger the dropdown population immediately after auth closes!
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [userId]);
+  
+  // Dependency Wizard States
+  const [expandedDepId, setExpandedDepId] = useState<number | null>(null);
+  const [depStates, setDepStates] = useState<Record<number, {
+    targetWorkspaceId: string;
+    targetAppId: string;
+    step: 'init' | 'mapping';
+    fields: { external_id: string; label: string }[];
+    mapping: Record<string, string>;
+    isImporting: boolean;
+    isCompleted: boolean;
+    error: string | null;
+  }>>({});
+  
+  const initDepState = useCallback((id: number) => {
+    setDepStates(prev => {
+      if (prev[id]) return prev;
+      return { ...prev, [id]: { targetWorkspaceId: '', targetAppId: '', step: 'init', fields: [], mapping: {}, isImporting: false, isCompleted: false, error: null } };
+    });
+  }, []);
+
+  const updateDepState = useCallback((id: number, updates: Partial<typeof depStates[number]>) => {
+    setDepStates(prev => ({ ...prev, [id]: { ...prev[id], ...updates } }));
+  }, []);
+
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportTarget, setExportTarget] = useState<'all' | 'selected'>('all');
   const [selectedExportColumns, setSelectedExportColumns] = useState<Set<string>>(new Set());
@@ -2459,7 +2549,8 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
   const [bulkEditValue, setBulkEditValue] = useState('');
   const [isBulkProcessing, setIsBulkProcessing] = useState(false);
   const [showAddToAppModal, setShowAddToAppModal] = useState(false);
-  const [availableMiniApps, setAvailableMiniApps] = useState<Array<{ id: string; name: string; slug: string }>>([]);
+  const [availableMiniApps, setAvailableMiniApps] = useState<Array<{ id: string; name: string; slug: string; workspace_id?: string }>>([]);
+  const [allWorkspaces, setAllWorkspaces] = useState<Array<{ id: string; name: string }>>([]);
   const [targetAppId, setTargetAppId] = useState('');
   const [addToAppSearchQuery, setAddToAppSearchQuery] = useState('');
 
@@ -3227,6 +3318,200 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
     } catch (err: any) { setDbError(err.message || 'Import failed'); } finally { setIsImporting(false); }
   };
 
+  const fetchDepSchema = async (depId: number) => {
+    const state = depStates[depId];
+    updateDepState(depId, { isImporting: true, error: null });
+    try {
+      // ⚡ Pass userId so the Edge Function can grab the token
+      const { data, error } = await supabase.functions.invoke('fetch-podio-schema', {
+        body: { podioAppId: depId.toString(), userId }
+      });
+      if (error) throw error;
+      
+      // ⚡ WE REMOVED THE RECURSIVE QUEUE-JUMPING LOGIC HERE!
+      // Because we now recursively resolve the entire tree upfront.
+      
+      const targetApp = availableMiniApps.find(a => a.id === state.targetAppId);
+      const targetSchemaDef = targetApp?.schema_definition;
+      const parsedSchema = typeof targetSchemaDef === 'string' ? JSON.parse(targetSchemaDef) : targetSchemaDef;
+      
+      let targetCols: string[] = [];
+      if (parsedSchema?.fields) {
+         targetCols = parsedSchema.fields.map((f:any) => f.name);
+      } else if (parsedSchema?.base_fields || parsedSchema?.custom_fields) {
+         targetCols = [...(parsedSchema.base_fields || []), ...(parsedSchema.custom_fields || [])].map((f:any) => f.name);
+      }
+      
+      const autoMapping: Record<string, string> = {};
+      (data.fields || []).forEach((pf: any) => {
+        const match = targetCols.find(c => c?.toLowerCase() === pf.label.toLowerCase() || c?.toLowerCase() === pf.external_id.toLowerCase());
+        if (match) autoMapping[pf.external_id] = match;
+      });
+
+      updateDepState(depId, { fields: data.fields || [], mapping: autoMapping, step: 'mapping' });
+    } catch (err: any) {
+      updateDepState(depId, { error: err.message || 'Failed to fetch schema' });
+    } finally {
+      updateDepState(depId, { isImporting: false });
+    }
+  };
+
+  const handleDepImport = async (depId: number) => {
+    const state = depStates[depId];
+    if (!state?.targetAppId || !organization?.id) return; // Removed token check
+    updateDepState(depId, { isImporting: true, error: null });
+    try {
+      const targetApp = availableMiniApps.find(a => a.id === state.targetAppId);
+      const targetSchemaDef = targetApp?.schema_definition;
+      const parsedSchema = typeof targetSchemaDef === 'string' ? JSON.parse(targetSchemaDef) : targetSchemaDef;
+      
+      let targetSchemaFields = [];
+      if (parsedSchema?.fields) {
+         targetSchemaFields = parsedSchema.fields;
+      } else if (parsedSchema?.base_fields || parsedSchema?.custom_fields) {
+         targetSchemaFields = [...(parsedSchema.base_fields || []), ...(parsedSchema.custom_fields || [])];
+      }
+
+      // ⚡ Pass userId so the Edge Function can grab the token
+      const { data, error } = await supabase.functions.invoke('import-podio-data', {
+        body: { 
+          podioAppId: depId.toString(), 
+          targetMiniAppId: state.targetAppId, 
+          organizationId: organization.id,
+          fieldMapping: state.mapping,
+          schemaFields: targetSchemaFields,
+          userId
+        }
+      });
+      if (error) throw error;
+      
+      updateDepState(depId, { isCompleted: true });
+      setExpandedDepId(null); 
+    } catch (err: any) {
+      updateDepState(depId, { error: err.message || 'Import failed' });
+    } finally {
+      updateDepState(depId, { isImporting: false });
+    }
+  };
+
+  const fetchPodioSchema = async () => {
+    if (!podioAppId) return;
+    setIsImportingPodio(true);
+    setDbError(null);
+    try {
+      // ⚡ 1. Fetch the main app schema
+      const { data: mainData, error } = await supabase.functions.invoke('fetch-podio-schema', {
+        body: { podioAppId, userId }
+      });
+      if (error) throw error;
+      
+      // ⚡ 2. Recursively discover ALL nested dependencies upfront
+      const allDepsMap = new Map();
+      const queue = [...(mainData.dependencies || [])];
+      
+      while(queue.length > 0) {
+        const currentDep = queue.shift();
+        // Prevent circular dependencies and redundant lookups
+        if (allDepsMap.has(currentDep.app_id) || currentDep.app_id.toString() === podioAppId) continue;
+        
+        // Fetch this dependency's schema to see if IT has dependencies
+        const { data: depData, error: depErr } = await supabase.functions.invoke('fetch-podio-schema', {
+          body: { podioAppId: currentDep.app_id.toString(), userId }
+        });
+        
+        if (!depErr && depData) {
+          const children = depData.dependencies || [];
+          allDepsMap.set(currentDep.app_id, { ...currentDep, children: children.map((c: any) => c.app_id) });
+          
+          children.forEach((c: any) => {
+             if (!allDepsMap.has(c.app_id) && c.app_id.toString() !== podioAppId) {
+                queue.push(c);
+             }
+          });
+        }
+      }
+      
+      // ⚡ 3. Topological Sort: Orders dependencies so the deepest/baseline apps are mapped first
+      const sortedDeps: any[] = [];
+      const visited = new Set();
+      const visiting = new Set();
+      
+      const dfs = (id: number) => {
+        if (visited.has(id) || visiting.has(id)) return;
+        visiting.add(id); // Track to prevent infinite loops on crazy Podio setups
+        
+        const node = allDepsMap.get(id);
+        if (node) {
+           node.children.forEach((childId: number) => dfs(childId));
+           sortedDeps.push({ app_id: node.app_id, name: node.name }); // Push AFTER children
+        }
+        
+        visiting.delete(id);
+        visited.add(id);
+      };
+      
+      // Run the sort on everything we found
+      allDepsMap.forEach((_, id) => dfs(id));
+      
+      setPodioFields(mainData.fields || []);
+      setPodioDependencies(sortedDeps);
+      
+      // Attempt to auto-map fields with matching names
+      const autoMapping: Record<string, string> = {};
+      (mainData.fields || []).forEach((pf: any) => {
+        const match = columns.find(c => c.toLowerCase() === pf.label.toLowerCase() || c.toLowerCase() === pf.external_id.toLowerCase());
+        if (match) autoMapping[pf.external_id] = match;
+      });
+      
+      setPodioMapping(autoMapping);
+      
+      // Route to dependencies warning screen if relationships are detected
+      if (sortedDeps.length > 0) {
+        setPodioStep('dependencies');
+      } else {
+        setPodioStep('mapping');
+      }
+    } catch (err: any) {
+      setDbError(err.message || 'Failed to fetch Podio schema');
+    } finally {
+      setIsImportingPodio(false);
+    }
+  };
+
+  const handlePodioImport = async () => {
+    if (!podioAppId || !miniAppId || !organization?.id) return;
+    setIsImportingPodio(true);
+    try {
+      // ⚡ Trigger secure backend Edge Function passing the userId
+      const { data, error } = await supabase.functions.invoke('import-podio-data', {
+        body: { 
+          podioAppId, 
+          targetMiniAppId: miniAppId, 
+          organizationId: organization.id,
+          fieldMapping: podioMapping,
+          schemaFields,
+          userId 
+        }
+      });
+      
+      if (error) throw error;
+      
+      setShowPodioModal(false); 
+      setPodioAppId(''); 
+      setPodioAppToken('');
+      setPodioStep('credentials');
+      setPodioFields([]);
+      setPodioDependencies([]);
+      setPodioMapping({});
+      await loadRecords();
+      window.dispatchEvent(new CustomEvent('miniapp_records_updated'));
+    } catch (err: any) { 
+      setDbError(err.message || 'Podio import failed'); 
+    } finally { 
+      setIsImportingPodio(false); 
+    }
+  };
+
   const toggleConnectionExpand = (recordId: string) => setExpandedConnections(prev => ({ ...prev, [recordId]: !prev[recordId] }));
 
   useEffect(() => {
@@ -3765,8 +4050,11 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
 
   const loadAvailableMiniApps = async () => {
     try {
-      const { data: apps } = await supabase.schema('app_private').from('mini_apps').select('id, name, slug').eq('organization_id', organization?.id || '').neq('name', appName).limit(50);
+      // ⚡ ADDED 'schema_definition' to the select query so fields appear in the mapping dropdown
+      const { data: apps } = await supabase.schema('app_private').from('mini_apps').select('id, name, slug, workspace_id, schema_definition').eq('organization_id', organization?.id || '').limit(200);
       if (apps) setAvailableMiniApps(apps);
+      const { data: workspaces } = await supabase.schema('app_private').from('workspaces').select('id, name').eq('organization_id', organization?.id || '');
+      if (workspaces) setAllWorkspaces(workspaces);
     } catch (err) { console.error('Error loading mini apps:', err); }
   };
 
@@ -4318,10 +4606,15 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
                     <DownloadIcon size={16} /> Export CSV
                   </button>
                   {isAdmin && (
+                  <>
                     <button onClick={() => { fileInputRef.current?.click(); setShowDataMenu(false); }} className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm font-mono transition-all text-gray-300 hover:text-white hover:bg-white/5">
                       <UploadIcon size={16} /> Import CSV
                     </button>
-                  )}
+                    <button onClick={() => { loadAvailableMiniApps(); setShowPodioModal(true); setShowDataMenu(false); }} className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm font-mono transition-all text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10">
+                      <LucideIcons.Database size={16} /> Import from Podio
+                    </button>
+                  </>
+                )}
                 </div>
               </>
             )}
@@ -5590,6 +5883,335 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
         </div>
       </div>
     )}
+
+    {showPodioModal && (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 sm:p-8">
+      <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => { if (!isImportingPodio) { setShowPodioModal(false); setPodioStep('credentials'); setExpandedDepId(null); } }} />
+      <div className={`relative bg-black rounded-xl w-full mx-4 max-h-[calc(100vh-140px)] overflow-hidden animate-in fade-in zoom-in-95 duration-300 flex flex-col transition-all ${podioStep === 'dependencies' ? 'max-w-5xl' : 'max-w-lg'}`} style={{ border: `1px solid rgba(${wc.rgb}, 0.5)`, boxShadow: `0 0 40px rgba(${wc.rgb}, 0.2)` }}>
+        <div className="p-6 flex flex-col h-full max-h-[calc(100vh-140px)]">
+          <div className="flex items-center justify-between mb-4 flex-shrink-0">
+            <h3 className="text-lg font-mono font-bold flex items-center gap-2" style={{ color: wc.primary }}>
+              <LucideIcons.Database size={20} />
+              {podioStep === 'dependencies' && expandedDepId ? `Configure Dependency: ${podioDependencies.find(d => d.app_id === expandedDepId)?.name}` : 'Import from Podio'}
+            </h3>
+            <button onClick={() => { if (!isImportingPodio) { setShowPodioModal(false); setPodioStep('credentials'); setExpandedDepId(null); } }} className="p-2 text-gray-400 hover:text-white rounded-lg transition-colors"><CloseIcon size={20} /></button>
+          </div>
+          
+          {podioStep === 'credentials' ? (
+            <>
+              {podioAppToken === 'oauth-connected' ? (
+                 <div className="flex-1 flex flex-col justify-center animate-in fade-in zoom-in-95 duration-300">
+                    <div className="w-16 h-16 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl flex items-center justify-center mb-6 shadow-[0_0_30px_rgba(16,185,129,0.15)] mx-auto">
+                      <LucideIcons.CheckCircle size={32} className="text-emerald-400" />
+                    </div>
+                    <h3 className="text-center text-white font-mono font-bold text-lg mb-2">Podio Connected</h3>
+                    
+                    {/* ⚡ Surface any backend errors to the user here */}
+                    {dbError && <div className="w-full p-3 mb-4 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-400 font-mono text-center">{dbError}</div>}
+
+                    {isLoadingPodioApps ? (
+                      <div className="flex flex-col items-center justify-center py-6">
+                        <div className="w-6 h-6 border-2 border-emerald-500/20 border-t-emerald-400 rounded-full animate-spin mb-3" />
+                        <p className="text-xs text-gray-500 font-mono">Fetching your Podio Workspaces...</p>
+                      </div>
+                    ) : (
+                      <>
+                        <p className="text-center text-gray-400 font-mono text-xs mb-6">Select the specific Podio App you want to import data from.</p>
+                        <div className="mb-6">
+                          <label className="block text-[11px] font-mono font-medium text-gray-500 mb-1.5 uppercase tracking-wider">Podio Workspace & App</label>
+                          <select 
+                            value={podioAppId} 
+                            onChange={(e) => setPodioAppId(e.target.value)} 
+                            className="w-full bg-black/60 border border-gray-700 rounded-lg px-4 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-emerald-500 transition-colors"
+                          >
+                            <option value="">-- Choose an App --</option>
+                            {podioAppsList.map(app => (
+                              <option key={app.app_id} value={app.app_id}>{app.space_name} - {app.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </>
+                    )}
+                    
+                    <button 
+                      onClick={fetchPodioSchema}
+                      disabled={!podioAppId || isImportingPodio || isLoadingPodioApps}
+                      className="w-full py-3 rounded-lg font-mono text-sm font-bold transition-all text-black disabled:opacity-50 hover:scale-105 active:scale-95 bg-emerald-400 hover:bg-emerald-300 shadow-[0_0_20px_rgba(16,185,129,0.3)] flex justify-center items-center gap-2"
+                    >
+                      {isImportingPodio ? <div className="w-4 h-4 border-2 border-black/20 border-t-black rounded-full animate-spin" /> : <LucideIcons.Database size={16} />}
+                      {isImportingPodio ? 'Analyzing Dependency Tree...' : 'Fetch Schema & Continue'}
+                    </button>
+
+                    <div className="flex justify-center mt-6">
+                      <button onClick={() => { setPodioAppToken(''); setPodioAppId(''); }} className="text-xs text-gray-500 hover:text-white font-mono transition-colors">Switch Accounts</button>
+                    </div>
+                 </div>
+              ) : (
+                <>
+                  <p className="text-xs text-gray-500 font-mono mb-6 leading-relaxed flex-shrink-0">
+                    Authenticate your full Podio account to allow A-CORE to automatically map your dependency structures, workspaces, and application data without requiring individual App Tokens.
+                  </p>
+
+                  <div className="flex-1 flex flex-col items-center justify-center py-8">
+                    <div className="w-16 h-16 bg-sky-500/10 border border-sky-500/30 rounded-2xl flex items-center justify-center mb-6 shadow-[0_0_30px_rgba(14,165,233,0.15)]">
+                      {isAwaitingAuth ? (
+                        <div className="w-8 h-8 border-2 border-sky-500/20 border-t-sky-400 rounded-full animate-spin" />
+                      ) : (
+                        <LucideIcons.Database size={32} className="text-sky-400" />
+                      )}
+                    </div>
+                    
+                    <button 
+                      onClick={() => {
+                        setIsAwaitingAuth(true);
+                        const clientId = 'a-core-bos';
+                        const redirectUri = encodeURIComponent('https://rghtxlzzpuazvacupere.supabase.co/functions/v1/podio-oauth');
+                        
+                        // Safely pack the user ID and current URL using Base64 to prevent URL parsing errors
+                        const statePayload = btoa(JSON.stringify({ userId, returnUrl: window.location.href }));
+                        const authUrl = `https://podio.com/oauth/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&state=${statePayload}`;
+                        
+                        // Open a centered popup window instead of redirecting the main tab
+                        const width = 680; // Increased width to prevent horizontal scrolling
+                        const height = 500;
+                        const left = window.screenX + (window.outerWidth - width) / 2;
+                        const top = window.screenY + (window.outerHeight - height) / 2;
+                        
+                        const popup = window.open(authUrl, 'PodioAuth', `width=${width},height=${height},left=${left},top=${top},toolbar=0,scrollbars=1,status=1,resizable=1,location=1,menuBar=0`);
+                        
+                        // Fallback to reset loading state if user manually closes the popup before finishing
+                        const checkClosed = setInterval(() => {
+                          if (popup?.closed) {
+                            clearInterval(checkClosed);
+                            setIsAwaitingAuth(false);
+                          }
+                        }, 1000);
+                      }} 
+                      disabled={isAwaitingAuth}
+                      className="px-8 py-3 rounded-lg font-mono text-sm font-bold transition-all text-black disabled:opacity-50 hover:scale-105 active:scale-95 shadow-[0_0_20px_rgba(14,165,233,0.3)] bg-sky-400 hover:bg-sky-300"
+                    >
+                      {isAwaitingAuth ? 'Awaiting Authorization...' : 'Connect Podio Account'}
+                    </button>
+                  </div>
+
+                  <div className="flex gap-3 mt-4 pt-4 border-t border-gray-800 flex-shrink-0">
+                    <button onClick={() => setShowPodioModal(false)} className="flex-1 py-2 border border-gray-700 text-gray-400 rounded-lg hover:bg-gray-900 font-mono text-sm transition-all">Cancel</button>
+                    <button 
+                      onClick={() => {
+                        // Temporary bypass to allow you to test the rest of the flow before the backend is hooked up
+                        setPodioAppId('demo-app-id');
+                        setPodioAppToken('demo-token');
+                        fetchPodioSchema();
+                      }} 
+                      className="flex-1 py-2 rounded-lg font-mono text-sm font-medium transition-all flex items-center justify-center gap-2 text-white bg-white/5 hover:bg-white/10"
+                    >
+                      Skip Auth (Dev Mode) <ChevronRightIcon size={16} />
+                    </button>
+                  </div>
+                </>
+              )}
+            </>
+          ) : podioStep === 'dependencies' ? (
+            <>
+              {!expandedDepId && (
+                <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-lg mb-4 flex-shrink-0 animate-in fade-in slide-in-from-top-2">
+                  <h4 className="text-sm font-mono font-bold text-amber-400 mb-1.5 flex items-center gap-2">
+                    <GitBranchIcon size={16} /> Relationship Fields Detected
+                  </h4>
+                  <p className="text-xs text-amber-500/80 font-mono leading-relaxed">
+                    This Podio App contains relationship fields linked to other apps. To ensure your A-CORE connections wire up properly, complete the imports for these parent applications in <strong>strict sequential order</strong> before finalizing the main import.
+                  </p>
+                </div>
+              )}
+              
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 overflow-y-auto darkwave-scrollbar flex-1 min-h-0 pr-2 pb-4 items-start">
+                {podioDependencies.map((dep, idx, arr) => {
+                  const state = depStates[dep.app_id] || { token: '', targetWorkspaceId: '', targetAppId: '', step: 'init', fields: [], mapping: {}, isImporting: false, isCompleted: false, error: null };
+                  const isExpanded = expandedDepId === dep.app_id;
+                  
+                  const firstIncompleteIdx = arr.findIndex(d => !depStates[d.app_id]?.isCompleted);
+                  const isLocked = firstIncompleteIdx !== -1 && idx > firstIncompleteIdx;
+
+                  if (state.isCompleted) {
+                    return (
+                      <div key={dep.app_id} className="aspect-square bg-black/80 border border-emerald-500/30 rounded-xl flex flex-col items-center justify-center p-4 transition-all shadow-[0_0_15px_rgba(16,185,129,0.1)]">
+                        <CheckCircleIcon size={32} className="text-emerald-400 mb-2" />
+                        <span className="text-xs font-mono text-emerald-500/70 text-center line-clamp-2">{dep.name}</span>
+                      </div>
+                    );
+                  }
+
+                  if (isExpanded) {
+                    return (
+                      <div key={dep.app_id} className="col-span-2 sm:col-span-3 md:col-span-4 bg-black/60 border border-sky-500/50 rounded-xl p-5 shadow-[0_0_30px_rgba(14,165,233,0.1)] transition-all animate-in zoom-in-95 duration-200">
+                        <div className="flex items-center justify-between mb-4 border-b border-gray-800 pb-3">
+                          <h4 className="text-base font-mono font-bold text-sky-400 flex items-center gap-2">
+                            <GitBranchIcon size={18} /> Map Dependency: {dep.name}
+                          </h4>
+                          <button onClick={(e) => { e.stopPropagation(); setExpandedDepId(null); }} className="text-gray-500 hover:text-white"><CloseIcon size={18} /></button>
+                        </div>
+                        
+                        {state.error && <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-400 font-mono">{state.error}</div>}
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+                          <div>
+                            <label className="block text-[10px] font-mono font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Target Workspace</label>
+                            <select 
+                              value={state.targetWorkspaceId || ''} 
+                              onChange={e => updateDepState(dep.app_id, { targetWorkspaceId: e.target.value, targetAppId: '' })}
+                              className="w-full bg-black/50 border border-gray-700 rounded-lg px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-sky-500 transition-colors"
+                            >
+                              <option value="">Select Workspace...</option>
+                              {allWorkspaces.map(ws => <option key={ws.id} value={ws.id}>{ws.name}</option>)}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-mono font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Target A-CORE App</label>
+                            <select 
+                              value={state.targetAppId} 
+                              onChange={e => {
+                                const newAppId = e.target.value;
+                                updateDepState(dep.app_id, { targetAppId: newAppId });
+                                // ⚡ Auto-fetch the schema instantly when the app is selected!
+                                if (newAppId && state.fields.length === 0) {
+                                  fetchDepSchema(dep.app_id);
+                                }
+                              }}
+                              disabled={!state.targetWorkspaceId}
+                              className="w-full bg-black/50 border border-gray-700 rounded-lg px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-sky-500 transition-colors disabled:opacity-50"
+                            >
+                              <option value="">Select Target App...</option>
+                              {availableMiniApps.filter(a => a.workspace_id === state.targetWorkspaceId).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                            </select>
+                          </div>
+                        </div>
+
+                        {state.isImporting && state.fields.length === 0 ? (
+                           <div className="py-8 flex flex-col items-center justify-center gap-3 border border-dashed border-gray-700 rounded-lg">
+                             <div className="w-6 h-6 border-2 border-sky-500/20 border-t-sky-500 rounded-full animate-spin" />
+                             <span className="text-xs text-gray-500 font-mono">Extracting fields from Podio...</span>
+                           </div>
+                        ) : state.fields.length > 0 ? (
+                           <div className="space-y-2 overflow-y-auto darkwave-scrollbar max-h-[35vh] mb-4 bg-black/30 p-3 rounded-lg border border-gray-800/50">
+                             {state.fields.map(field => {
+                                const targetApp = availableMiniApps.find(a => a.id === state.targetAppId);
+                                const targetSchemaDef = targetApp?.schema_definition as any;
+                                const parsedSchema = typeof targetSchemaDef === 'string' ? JSON.parse(targetSchemaDef) : targetSchemaDef;
+                                let targetCols: string[] = [];
+                                if (parsedSchema?.fields) {
+                                   targetCols = parsedSchema.fields.map((f:any) => f.name);
+                                } else if (parsedSchema?.base_fields || parsedSchema?.custom_fields) {
+                                   targetCols = [...(parsedSchema.base_fields || []), ...(parsedSchema.custom_fields || [])].map((f:any) => f.name);
+                                }
+
+                                return (
+                                  <div key={field.external_id} className="flex items-center gap-3 p-1">
+                                    <span className="text-[11px] text-gray-400 font-mono w-1/3 truncate" title={field.label}>{field.label}</span>
+                                    <ChevronRightIcon size={14} className="text-gray-600 flex-shrink-0" />
+                                    <select 
+                                      value={state.mapping[field.external_id] || ''} 
+                                      onChange={e => {
+                                        const newMapping = { ...state.mapping, [field.external_id]: e.target.value };
+                                        updateDepState(dep.app_id, { mapping: newMapping });
+                                      }} 
+                                      className="flex-1 bg-black/60 border border-gray-700 rounded px-3 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-emerald-500 transition-colors"
+                                    >
+                                      <option value="">Skip</option>
+                                      {targetCols.map(col => <option key={col} value={col}>{col}</option>)}
+                                    </select>
+                                  </div>
+                                )
+                             })}
+                           </div>
+                        ) : (
+                           <div className="py-8 flex flex-col items-center justify-center gap-3 border border-dashed border-gray-700 rounded-lg">
+                             <span className="text-xs text-gray-500 font-mono">Select a target app to fetch schema</span>
+                           </div>
+                        )}
+                        
+                        <div className="flex gap-3 pt-4 border-t border-gray-800">
+                          <button onClick={(e) => { e.stopPropagation(); setExpandedDepId(null); }} className="px-4 py-2 border border-gray-700 text-gray-400 rounded-lg hover:bg-gray-800 font-mono text-xs transition-all">Collapse</button>
+                          <button onClick={(e) => { e.stopPropagation(); handleDepImport(dep.app_id); }} disabled={state.isImporting || !state.targetAppId || Object.values(state.mapping).filter(Boolean).length === 0} className="flex-1 py-2 rounded-lg font-mono text-xs font-bold transition-all text-black bg-emerald-400 hover:bg-emerald-300 disabled:opacity-50 flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(16,185,129,0.3)]">
+                            {state.isImporting ? <div className="w-4 h-4 border-2 border-black/20 border-t-black rounded-full animate-spin" /> : <LucideIcons.Database size={16} />}
+                            {state.isImporting ? 'Importing...' : 'Complete Mapping'}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div key={dep.app_id} 
+                      className={`aspect-square flex flex-col items-center justify-center gap-3 p-4 bg-gray-900/40 border rounded-xl transition-all text-center group ${isLocked ? 'border-gray-800/50 opacity-50 cursor-not-allowed' : 'border-gray-800 cursor-pointer hover:border-sky-500/50 hover:bg-gray-800/50'}`}
+                      onClick={() => {
+                        if (isLocked) return;
+                        initDepState(dep.app_id);
+                        setExpandedDepId(dep.app_id);
+                      }}
+                    >
+                      <div className={`w-12 h-12 rounded-full bg-black/50 border flex items-center justify-center transition-transform ${isLocked ? 'border-gray-800' : 'border-gray-700 group-hover:scale-110'}`}>
+                        {isLocked ? <LucideIcons.Lock size={20} className="text-gray-600" /> : <LucideIcons.Database size={20} className="text-gray-400 group-hover:text-sky-400 transition-colors" />}
+                      </div>
+                      <div>
+                        <p className="text-sm font-mono font-bold text-white line-clamp-2">{dep.name}</p>
+                        <p className="text-[10px] text-gray-500 font-mono mt-1">{isLocked ? 'Locked (Complete previous)' : 'Pending Config'}</p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {!expandedDepId && (
+                <div className="flex gap-3 mt-4 pt-4 border-t border-gray-800 flex-shrink-0 bg-black animate-in fade-in">
+                  <button onClick={() => setPodioStep('credentials')} className="flex-1 py-2 border border-gray-700 text-gray-400 rounded-lg hover:bg-gray-900 font-mono text-sm transition-all">Back</button>
+                  <button 
+                    onClick={() => setPodioStep('mapping')} 
+                    disabled={podioDependencies.some(d => !depStates[d.app_id]?.isCompleted)} 
+                    className="flex-1 py-2 rounded-lg font-mono text-sm font-medium transition-all flex items-center justify-center gap-2 disabled:opacity-30 disabled:cursor-not-allowed text-black" 
+                    style={podioDependencies.some(d => !depStates[d.app_id]?.isCompleted) ? { background: '#4b5563' } : { background: wc.primary, boxShadow: `0 0 15px rgba(${wc.rgb}, 0.3)` }}
+                    title={podioDependencies.some(d => !depStates[d.app_id]?.isCompleted) ? "Complete all dependencies first" : ""}
+                  >
+                    Finalize Main Import <ChevronRightIcon size={16} />
+                  </button>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <p className="text-xs text-gray-500 font-mono mb-4 flex-shrink-0">
+                Map your Podio App fields to the columns in this A-CORE MiniApp.
+              </p>
+              
+              <div className="space-y-3 overflow-y-auto darkwave-scrollbar flex-1 min-h-0 pr-2">
+                {podioFields.map(field => (
+                  <div key={field.external_id} className="flex items-center gap-3">
+                    <span className="text-xs text-gray-400 font-mono w-40 truncate" title={field.label}>{field.label} <span className="text-[9px] text-gray-600 block">{field.external_id}</span></span>
+                    <ChevronRightIcon size={14} className="text-gray-600 flex-shrink-0" />
+                    <select 
+                      value={podioMapping[field.external_id] || ''} 
+                      onChange={e => setPodioMapping(prev => ({ ...prev, [field.external_id]: e.target.value }))} 
+                      className="flex-1 bg-gray-900/80 border border-gray-800 rounded-lg px-3 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-emerald-500 transition-colors"
+                    >
+                      <option value="">Skip</option>
+                      {columns.map(col => <option key={col} value={col}>{col}</option>)}
+                    </select>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex gap-3 mt-4 pt-4 border-t border-gray-800 flex-shrink-0 bg-black">
+                <button onClick={() => setPodioStep(podioDependencies.length > 0 ? 'dependencies' : 'credentials')} disabled={isImportingPodio} className="flex-1 py-2 border border-gray-700 text-gray-400 rounded-lg hover:bg-gray-900 font-mono text-sm transition-all disabled:opacity-50">Back</button>
+                <button onClick={handlePodioImport} disabled={isImportingPodio || Object.values(podioMapping).filter(Boolean).length === 0} className="flex-1 py-2 rounded-lg font-mono text-sm font-medium disabled:opacity-30 transition-all flex items-center justify-center gap-2 text-black hover:scale-105 active:scale-95" style={{ background: wc.primary, boxShadow: `0 0 20px rgba(${wc.rgb}, 0.3)` }}>
+                  {isImportingPodio ? <div className="w-4 h-4 border-2 border-black/20 border-t-black rounded-full animate-spin" /> : <LucideIcons.Database size={16} />}
+                  {isImportingPodio ? 'Migrating Data...' : 'Start Import'}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )}
 
     {showImportModal && importData && (
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
