@@ -169,8 +169,34 @@ const parseCSV = (text: string): { headers: string[]; rows: string[][] } => {
   };
 
   const headers = parseLine(lines[0]);
-  const rows = lines.slice(1).map(parseLine);
-  return { headers, rows };
+      const rows = lines.slice(1).map(parseLine);
+      return { headers, rows };
+    };
+
+// ⚡ CLEAN RAW API JSON: Podio returns emails/phones as [{"type":"work","value":"email@url.com"}]. 
+// This helper safely parses and flattens those into a clean, comma-separated string for the UI.
+const cleanComplexValue = (val: any): string => {
+  if (val === null || val === undefined) return '';
+  let strVal = String(val);
+  if (strVal.trim().startsWith('[') && strVal.trim().endsWith(']')) {
+    try {
+      const parsed = JSON.parse(strVal);
+      if (Array.isArray(parsed)) {
+        const extracted = parsed.map((item: any) => {
+          if (item && typeof item === 'object' && 'value' in item) {
+            // If the value is a nested object (like a Podio Contact), grab its name
+            if (typeof item.value === 'object' && item.value !== null) {
+               return item.value.name || item.value.title || JSON.stringify(item.value);
+            }
+            return item.value;
+          }
+          return item;
+        }).filter(Boolean);
+        if (extracted.length > 0) return extracted.join(', ');
+      }
+    } catch (e) { /* Not valid JSON, return original string */ }
+  }
+  return strVal;
 };
 
 // Helper to turn hex strings into 'R, G, B' formats
@@ -2470,6 +2496,7 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
   const [podioFields, setPodioFields] = useState<{ external_id: string; label: string }[]>([]);
   const [podioDependencies, setPodioDependencies] = useState<{ app_id: number; name: string }[]>([]);
   const [manualAppIdMode, setManualAppIdMode] = useState(false);
+  const [podioWorkspaceName, setPodioWorkspaceName] = useState<string>(''); // ⚡ NEW STATE
   const [podioMapping, setPodioMapping] = useState<Record<string, string>>({});
   const [isAwaitingAuth, setIsAwaitingAuth] = useState(false);
   
@@ -2488,11 +2515,21 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
       if (error) throw error;
       if (data?.error) throw new Error(data.error);
       
+      // ⚡ Safely normalize Podio's nested API structure (app.config.name and app.space.name)
+      const normalizedApps = (data.apps || []).map((app: any) => ({
+        app_id: app.app_id,
+        name: app.config?.name || app.name || 'Unnamed App',
+        space_name: app.space?.name || app.space_name || 'Unknown Workspace'
+      }));
+
       // Sort alphabetically by Workspace, then App Name
-      const sortedApps = (data.apps || []).sort((a: any, b: any) => {
-        if (a.space_name === b.space_name) return a.name.localeCompare(b.name);
-        return a.space_name.localeCompare(b.space_name);
+      const sortedApps = normalizedApps.sort((a: any, b: any) => {
+        const spaceA = a.space_name || '';
+        const spaceB = b.space_name || '';
+        if (spaceA === spaceB) return (a.name || '').localeCompare(b.name || '');
+        return spaceA.localeCompare(spaceB);
       });
+      
       setPodioAppsList(sortedApps);
     } catch (err: any) {
       setDbError(err.message || 'Failed to fetch Podio apps list');
@@ -2787,7 +2824,8 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
     ? schemaFields.filter(f => f.name && f.type !== 'submenu').map((f: any) => f.name)
     : (data.length > 0 ? Object.keys(data[0]).filter(k => k !== 'id' && !k.startsWith('connected') && !k.startsWith('_')) : []);
 
-  const renderSchemaCell = (fieldName: string, value: any) => {
+  const renderSchemaCell = (fieldName: string, rawValue: any) => {
+    const value = cleanComplexValue(rawValue); // ⚡ Clean the raw Podio JSON immediately before render
     const fieldDef = schemaFields.find((f: any) => f.name === fieldName);
     if (!fieldDef || !value) return renderCellContent(fieldName, value);
     switch (fieldDef.type) {
@@ -2821,7 +2859,8 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
     }
   };
 
-  const renderSchemaInput = (fieldDefOrName: any, value: string, onChange: (val: string) => void, activeTabColor?: string) => {
+  const renderSchemaInput = (fieldDefOrName: any, rawValue: string, onChange: (val: string) => void, activeTabColor?: string) => {
+    const value = cleanComplexValue(rawValue); // ⚡ Flatten the JSON string so it populates inputs cleanly
     // ⚡ FIX: Allow passing full field objects directly so nested fields don't fail lookup!
     const isString = typeof fieldDefOrName === 'string';
     const fieldName = isString ? fieldDefOrName : (fieldDefOrName.name || 'Unnamed');
@@ -3612,7 +3651,8 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedRecord, enlargedCode, itemIdSettings, wc.primary, workspaceSlug, appName]);
 
-  const renderCellContent = (col: string, value: any) => {
+  const renderCellContent = (col: string, rawValue: any) => {
+    const value = cleanComplexValue(rawValue); // ⚡ Clean the raw Podio JSON immediately before render
     if (col === 'status') return <span className={`px-2 py-1 rounded border text-xs font-mono font-medium ${getStatusClasses(value)}`}>{value}</span>;
     if (col === 'priority') return <span className={`px-2 py-1 rounded border text-xs font-mono font-medium ${value === 'High' ? 'bg-red-500/20 text-red-400 border-red-500/40' : value === 'Medium' ? 'bg-orange-500/20 text-orange-400 border-orange-500/40' : 'bg-gray-500/20 text-gray-400 border-gray-500/40'}`}>{value}</span>;
     if (col === 'progress') return (
@@ -5925,43 +5965,59 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
                     ) : (
                       <>
                         <p className="text-center text-gray-400 font-mono text-xs mb-6">Select the specific Podio App you want to import data from.</p>
-                        <div className="mb-6">
-                          <div className="flex items-center justify-between mb-1.5">
-                            <label className="block text-[11px] font-mono font-medium text-gray-500 uppercase tracking-wider">Podio Workspace & App</label>
+                        <div className="mb-6 space-y-4">
+                          <div className="flex items-center justify-between pb-1 border-b border-gray-800">
+                            <span className="text-[11px] font-mono font-bold text-gray-400 uppercase tracking-wider">App Selection</span>
                             <button onClick={() => setManualAppIdMode(!manualAppIdMode)} className="text-[10px] text-emerald-500 hover:text-emerald-400 font-mono transition-colors">
-                              {manualAppIdMode ? 'Select from List' : 'Enter ID Manually'}
+                              {manualAppIdMode ? 'Use Dropdowns' : 'Enter ID Manually'}
                             </button>
                           </div>
                           
                           {manualAppIdMode ? (
-                            <input 
-                              type="text" 
-                              value={podioAppId} 
-                              onChange={(e) => setPodioAppId(e.target.value)} 
-                              placeholder="Enter Podio App ID directly..."
-                              className="w-full bg-black/60 border border-gray-700 rounded-lg px-4 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-emerald-500 transition-colors"
-                            />
+                            <div>
+                              <label className="block text-[10px] font-mono font-medium text-gray-500 mb-1.5 uppercase tracking-wider">Podio App ID</label>
+                              <input 
+                                type="text" 
+                                value={podioAppId} 
+                                onChange={(e) => setPodioAppId(e.target.value)} 
+                                placeholder="Enter Podio App ID directly..."
+                                className="w-full bg-black/60 border border-gray-700 rounded-lg px-4 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-emerald-500 transition-colors"
+                              />
+                            </div>
                           ) : (
-                            <select 
-                              value={podioAppId} 
-                              onChange={(e) => setPodioAppId(e.target.value)} 
-                              className="w-full bg-black/60 border border-gray-700 rounded-lg px-4 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-emerald-500 transition-colors"
-                            >
-                              <option value="">-- Choose an App --</option>
-                              {Object.entries(
-                                podioAppsList.reduce((acc, app) => {
-                                  if (!acc[app.space_name]) acc[app.space_name] = [];
-                                  acc[app.space_name].push(app);
-                                  return acc;
-                                }, {} as Record<string, typeof podioAppsList>)
-                              ).map(([spaceName, apps]) => (
-                                <optgroup key={spaceName} label={spaceName}>
-                                  {apps.map(app => (
+                            <div className="flex flex-col gap-4">
+                              <div>
+                                <label className="block text-[10px] font-mono font-medium text-gray-500 mb-1.5 uppercase tracking-wider">1. Select Workspace</label>
+                                <select 
+                                  value={podioWorkspaceName} 
+                                  onChange={(e) => {
+                                    setPodioWorkspaceName(e.target.value);
+                                    setPodioAppId(''); // Reset app selection when workspace changes
+                                  }} 
+                                  className="w-full bg-black/60 border border-gray-700 rounded-lg px-4 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-emerald-500 transition-colors"
+                                >
+                                  <option value="">-- Choose Workspace --</option>
+                                  {Array.from(new Set(podioAppsList.map(app => app.space_name).filter(Boolean))).map(ws => (
+                                    <option key={ws} value={ws}>{ws}</option>
+                                  ))}
+                                </select>
+                              </div>
+
+                              <div>
+                                <label className="block text-[10px] font-mono font-medium text-gray-500 mb-1.5 uppercase tracking-wider">2. Select App</label>
+                                <select 
+                                  value={podioAppId} 
+                                  onChange={(e) => setPodioAppId(e.target.value)}
+                                  disabled={!podioWorkspaceName}
+                                  className="w-full bg-black/60 border border-gray-700 rounded-lg px-4 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-emerald-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                  <option value="">{podioWorkspaceName ? '-- Choose an App --' : 'Select a Workspace First'}</option>
+                                  {podioAppsList.filter(app => app.space_name === podioWorkspaceName).map(app => (
                                     <option key={app.app_id} value={app.app_id}>{app.name}</option>
                                   ))}
-                                </optgroup>
-                              ))}
-                            </select>
+                                </select>
+                              </div>
+                            </div>
                           )}
                         </div>
                       </>
@@ -5977,7 +6033,23 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
                     </button>
 
                     <div className="flex justify-center mt-6">
-                      <button onClick={() => { setPodioAppToken(''); setPodioAppId(''); }} className="text-xs text-gray-500 hover:text-white font-mono transition-colors">Switch Accounts</button>
+                      <button 
+                        onClick={async () => { 
+                          // ⚡ Force delete the expired token from the DB so the next OAuth flow does a clean insert!
+                          await supabase.schema('app_private')
+                            .from('user_integrations')
+                            .delete()
+                            .eq('user_id', userId)
+                            .eq('provider', 'podio');
+                            
+                          setPodioAppToken(''); 
+                          setPodioAppId(''); 
+                          setDbError(null);
+                        }} 
+                        className="text-xs text-gray-500 hover:text-white font-mono transition-colors"
+                      >
+                        Switch Accounts & Reconnect
+                      </button>
                     </div>
                  </div>
               ) : (
@@ -5998,7 +6070,8 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
                     <button 
                       onClick={() => {
                         setIsAwaitingAuth(true);
-                        const clientId = 'a-core-bos';
+                        // ⚡ Paste the EXACT Client ID of your new "A-CORE Dev" key here!
+                        const clientId = 'a-core-dev'; 
                         const redirectUri = encodeURIComponent('https://rghtxlzzpuazvacupere.supabase.co/functions/v1/podio-oauth');
                         
                         // Safely pack the user ID and current URL using Base64 to prevent URL parsing errors
@@ -6199,13 +6272,104 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
                 <div className="flex gap-3 mt-4 pt-4 border-t border-gray-800 flex-shrink-0 bg-black animate-in fade-in">
                   <button onClick={() => setPodioStep('credentials')} className="flex-1 py-2 border border-gray-700 text-gray-400 rounded-lg hover:bg-gray-900 font-mono text-sm transition-all">Back</button>
                   <button 
-                    onClick={() => setPodioStep('mapping')} 
-                    disabled={podioDependencies.some(d => !depStates[d.app_id]?.isCompleted)} 
+                    onClick={async () => {
+                      setIsImportingPodio(true);
+                      try {
+                        let updatedSchemaFields = [...schemaFields];
+                        let schemaChanged = false;
+                        const newMapping = { ...podioMapping };
+
+                        // ⚡ 1. Scan for Podio Relationship Fields
+                        for (const pf of podioFields) {
+                          if (pf.type === 'app') {
+                            const refAppIds = pf.config?.settings?.referenced_apps?.map((a: any) => a.app_id) || [];
+                            
+                            if (refAppIds.length > 0) {
+                              // Translate Podio App IDs to A-CORE App IDs
+                              const targetAcoreAppIds = refAppIds
+                                .map((id: number) => depStates[id]?.targetAppId)
+                                .filter(Boolean);
+
+                              if (targetAcoreAppIds.length > 0) {
+                                // ⚡ 2. Search A-CORE schema for an existing Connection Field
+                                let matchingField = updatedSchemaFields.find(f => 
+                                  f.type === 'connection_field' &&
+                                  targetAcoreAppIds.some(targetId => f.settings?.connectedMiniAppIds?.includes(targetId))
+                                );
+
+                                if (matchingField) {
+                                  newMapping[pf.external_id] = matchingField.name;
+                                } else {
+                                  // ⚡ 3. Auto-Create a new Connection Field if missing!
+                                  const newFieldId = `field_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+                                  const newField = {
+                                    id: newFieldId,
+                                    name: pf.label || 'Linked Item',
+                                    type: 'connection_field',
+                                    required: false,
+                                    column: 1,
+                                    colSpan: 60,
+                                    rowSpan: 1,
+                                    row: updatedSchemaFields.length > 0 ? Math.max(...updatedSchemaFields.map(f => f.row || 0)) + 1 : 0,
+                                    settings: {
+                                      connectedMiniAppIds: targetAcoreAppIds,
+                                      allowMultipleConnections: pf.config?.settings?.multiple !== false,
+                                      connectionLayoutMode: 'dropdown',
+                                      connectionDropdownSearchable: true
+                                    }
+                                  };
+                                  updatedSchemaFields.push(newField);
+                                  newMapping[pf.external_id] = newField.name;
+                                  schemaChanged = true;
+                                }
+                              }
+                            }
+                          }
+                        }
+
+                        // ⚡ 4. Save the modified schema to the database instantly
+                        if (schemaChanged && miniAppId) {
+                          const { data: currentApp } = await supabase.schema('app_private')
+                            .from('mini_apps')
+                            .select('schema_definition')
+                            .eq('id', miniAppId)
+                            .single();
+                            
+                          if (currentApp) {
+                            const schemaDef = typeof currentApp.schema_definition === 'string' 
+                              ? JSON.parse(currentApp.schema_definition) 
+                              : currentApp.schema_definition;
+                              
+                            if (schemaDef.custom_fields) {
+                              schemaDef.custom_fields = updatedSchemaFields.filter(f => !f.is_base);
+                            } else {
+                              schemaDef.fields = updatedSchemaFields;
+                            }
+                            
+                            await supabase.schema('app_private')
+                              .from('mini_apps')
+                              .update({ schema_definition: schemaDef, updated_at: new Date().toISOString() })
+                              .eq('id', miniAppId);
+                              
+                            setSchemaFields(updatedSchemaFields);
+                          }
+                        }
+                        
+                        setPodioMapping(newMapping);
+                        setPodioStep('mapping');
+                      } catch (err) {
+                        console.error("Failed to auto-map relationship fields", err);
+                      } finally {
+                        setIsImportingPodio(false);
+                      }
+                    }} 
+                    disabled={podioDependencies.some(d => !depStates[d.app_id]?.isCompleted) || isImportingPodio} 
                     className="flex-1 py-2 rounded-lg font-mono text-sm font-medium transition-all flex items-center justify-center gap-2 disabled:opacity-30 disabled:cursor-not-allowed text-black" 
                     style={podioDependencies.some(d => !depStates[d.app_id]?.isCompleted) ? { background: '#4b5563' } : { background: wc.primary, boxShadow: `0 0 15px rgba(${wc.rgb}, 0.3)` }}
                     title={podioDependencies.some(d => !depStates[d.app_id]?.isCompleted) ? "Complete all dependencies first" : ""}
                   >
-                    Finalize Main Import <ChevronRightIcon size={16} />
+                    {isImportingPodio && <div className="w-4 h-4 border-2 border-black/20 border-t-black rounded-full animate-spin" />}
+                    {isImportingPodio ? 'Analyzing Fields...' : 'Finalize Main Import'} {!isImportingPodio && <ChevronRightIcon size={16} />}
                   </button>
                 </div>
               )}
