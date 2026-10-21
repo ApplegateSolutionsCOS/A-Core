@@ -1333,6 +1333,18 @@
         const { data, error } = await supabase.schema('app_private').from('tasks').insert(taskPayload).select().single();
         if (error) throw error;
 
+        // ⚡ OUTBOUND PODIO TASK SYNC: Push new task to Podio (attached to the specific Podio Item if contextRecordId is set!)
+        supabase.functions.invoke('sync-to-podio', {
+          body: {
+            action: 'create_task',
+            workspaceId: contextWorkspaceId || null,
+            miniAppId: contextAppId || null,
+            recordId: contextRecordId || null,
+            taskData: data,
+            userId
+          }
+        }).catch(err => console.warn('[Podio Task Sync] Warning:', err));
+
         // Insert into junction table
         if (newTaskMembers.length > 0) {
           await supabase.schema('app_private').from('task_members').insert(
@@ -1630,8 +1642,11 @@
                   let currentGroup: string | null = null;
                   const priorityWeight: Record<string, number> = { urgent: 4, high: 3, medium: 2, low: 1 };
                   
-                  // ⚡ MULTI-FILTER ENGINE
+                  // ⚡ MULTI-FILTER ENGINE (Scopes to the specific Record when opened from a Record's Tasks tab!)
                   const filtered = tasks.filter(t => {
+                    // 0. If opened from a specific Record, scope to tasks linked to that Record!
+                    if (contextRecordId && t.record_id !== contextRecordId) return false;
+
                     // 1. View Mode Logic
                   if (taskFilter === 'mine' && !(t.assigned_to === userId || t.assigned_to === orgUserId || (t.created_by === userId && !t.assigned_to))) return false;
                   if (taskFilter === 'delegated' && !(t.created_by === userId && t.assigned_to && t.assigned_to !== userId && t.assigned_to !== orgUserId)) return false;
@@ -1789,11 +1804,11 @@
                                         inputClassName="min-w-[150px] max-w-full text-xs"
                                       />
                                     </h3>
-                                    {/* App Source Link */}
+                                    {/* App & Record Source Link */}
                                     {task.app_name && (
                                       <span className="flex items-center gap-1 w-fit px-1.5 py-0.5 rounded text-[8px] bg-black/40 border border-gray-700 text-gray-400 uppercase tracking-widest whitespace-nowrap mt-1">
                                         <TaskIcon size={10} />
-                                        {task.app_name}
+                                        {task.app_name}{task.record_title ? ` • ${task.record_title}` : (task.record_id ? ` • ${task.record_id}` : '')}
                                       </span>
                                     )}
                                   </div>
@@ -2340,6 +2355,7 @@
       try {
         // ⚡ FIX: Stripped out event_type, color, and user_id since they don't exist in the DB schema yet.
         const { data, error } = await supabase.schema('app_private').from('calendar_events').insert({ 
+          organization_id: organization?.id || null,
           created_by: userId, 
           title: newEventTitle.trim(), 
           start_time: startTime.toISOString(), 

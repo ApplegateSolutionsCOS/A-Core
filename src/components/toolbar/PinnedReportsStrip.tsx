@@ -28,18 +28,42 @@ const PinnedReportsStrip: React.FC<Props> = ({ dashboardId, label }) => {
   const [editing, setEditing] = useState<SavedReportConfig | null>(null);
   const [showBuilder, setShowBuilder] = useState(false);
 
+  const localReportsKey = orgId ? `acore_saved_reports_${orgId}` : 'acore_saved_reports_default';
+
   const load = useCallback(async () => {
     if (!orgId || !dashboardId) return;
     setLoading(true);
     try {
+      const targetIds = dashboardId === 'main' ? ['main', 'home'] : [dashboardId];
+
+      let localPinned: SavedReportConfig[] = [];
+      try {
+        const raw = localStorage.getItem(localReportsKey);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            localPinned = parsed.filter((r: any) => targetIds.includes(r.pinned_dashboard));
+          }
+        }
+      } catch {}
+
+      let dbRows: SavedReportConfig[] = [];
       const { data, error } = await supabase.schema('app_private')
         .from('reports')
         .select('*')
         .eq('organization_id', orgId)
-        .eq('pinned_dashboard', dashboardId)
+        .in('pinned_dashboard', targetIds)
         .order('created_at', { ascending: false });
-      if (error) throw error;
-      const rows = (data || []) as SavedReportConfig[];
+
+      if (!error && data) {
+        dbRows = data as SavedReportConfig[];
+      }
+
+      const mergedMap = new Map<string, SavedReportConfig>();
+      [...dbRows, ...localPinned].forEach((r: any) => {
+        if (r?.id && r?.source_app_id) mergedMap.set(r.id, r);
+      });
+      const rows = Array.from(mergedMap.values());
       setReports(rows);
 
       // Fetch app names for header labels
@@ -58,23 +82,40 @@ const PinnedReportsStrip: React.FC<Props> = ({ dashboardId, label }) => {
     } finally {
       setLoading(false);
     }
-  }, [orgId, dashboardId]);
+  }, [orgId, dashboardId, localReportsKey]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    window.addEventListener('reportsUpdated', load);
+    window.addEventListener('miniapp_records_updated', load);
+    return () => {
+      window.removeEventListener('reportsUpdated', load);
+      window.removeEventListener('miniapp_records_updated', load);
+    };
+  }, [load]);
 
   const handleRemove = async (reportId: string) => {
     if (!confirm('Remove this report from the dashboard?')) return;
+    setReports(prev => prev.filter(r => r.id !== reportId));
     try {
-      // Unpin (rather than delete) so the user keeps it in "My Reports"
-      const { error } = await supabase.schema('app_private')
+      const raw = localStorage.getItem(localReportsKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          localStorage.setItem(
+            localReportsKey,
+            JSON.stringify(parsed.map((r: any) => r.id === reportId ? { ...r, pinned_dashboard: null } : r))
+          );
+        }
+      }
+    } catch {}
+    try {
+      await supabase.schema('app_private')
         .from('reports')
         .update({ pinned_dashboard: null })
         .eq('id', reportId);
-      if (error) throw error;
-      setReports(prev => prev.filter(r => r.id !== reportId));
     } catch (e: any) {
-      console.error('[PinnedReportsStrip] remove error:', e);
-      alert('Could not unpin report: ' + (e.message || 'Unknown'));
+      console.warn('[PinnedReportsStrip] DB unpin warning:', e);
     }
   };
 

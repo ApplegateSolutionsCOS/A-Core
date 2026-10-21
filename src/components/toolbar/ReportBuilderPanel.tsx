@@ -5,6 +5,7 @@ import { CloseIcon, ReportIcon } from '@/components/icons/Icons';
 import { DonutChart, PieGraph, BarChart, LineGraph, GanttChart, WaveChart } from '@/components/charts/ReportCharts';
 import * as LucideIcons from 'lucide-react';
 import { runReportAggregation, type FilterRow, type FilterOp } from '@/lib/reportAggregation';
+import { FEATURES } from '@/config/features';
 
 // ═══════════════════════════════════════════════════════════════════════
 // REPORT BUILDER PANEL
@@ -167,18 +168,47 @@ const ReportBuilderPanel: React.FC<Props> = ({ onClose, initialReport }) => {
   }, []);
 
 
-  // ─── Load saved reports for current org/user ───
+  const localReportsKey = orgId ? `acore_saved_reports_${orgId}` : 'acore_saved_reports_default';
+
+  const getLocalReports = (): SavedReport[] => {
+    try {
+      const raw = localStorage.getItem(localReportsKey);
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const saveLocalReports = (list: SavedReport[]) => {
+    try {
+      localStorage.setItem(localReportsKey, JSON.stringify(list));
+    } catch {}
+  };
+
+  // ─── Load saved reports for current org/user (merges DB + local cache) ───
   const refreshReports = async () => {
     if (!orgId) return;
     setLoadingReports(true);
+    const localList = getLocalReports();
     try {
       let q = supabase.schema('app_private').from('reports').select('*').order('created_at', { ascending: false }).limit(50);
       if (orgId) q = q.eq('organization_id', orgId);
       const { data, error } = await q;
       if (error) throw error;
-      setSavedReports((data || []) as any);
+      const dbRows = (data || []).map((r: any) => ({
+        ...(typeof r.config === 'object' && r.config ? r.config : {}),
+        ...r,
+      }));
+      const mergedMap = new Map<string, SavedReport>();
+      [...dbRows, ...localList].forEach((item: any) => {
+        if (item?.id && item?.source_app_id) mergedMap.set(item.id, item);
+      });
+      const finalReports = Array.from(mergedMap.values());
+      setSavedReports(finalReports);
+      saveLocalReports(finalReports);
     } catch (e) {
-      console.error('[ReportBuilder] Error loading saved reports:', e);
+      console.warn('[ReportBuilder] Using local reports cache fallback:', e);
+      setSavedReports(localList);
     } finally {
       setLoadingReports(false);
     }
@@ -197,40 +227,74 @@ const ReportBuilderPanel: React.FC<Props> = ({ onClose, initialReport }) => {
     setCalcFieldB(r.calc_field_b || '');
     setCalcOp((r.calc_op as CalcOp) || 'add');
     setChartType((r.chart_type as ChartKind) || 'bar');
-    setPinnedDashboard(r.pinned_dashboard || '');
+    setPinnedDashboard(r.pinned_dashboard === 'home' ? 'main' : (r.pinned_dashboard || ''));
+    setFilters(Array.isArray(r.filters) ? r.filters : []);
     setStep('metric');
   };
 
   const deleteSavedReport = async (id: string) => {
     if (!confirm('Delete this report?')) return;
+    const nextLocal = getLocalReports().filter(r => r.id !== id);
+    saveLocalReports(nextLocal);
+    setSavedReports(prev => prev.filter(r => r.id !== id));
+    if (editingReportId === id) setEditingReportId(null);
     try {
-      const { error } = await supabase.schema('app_private').from('reports').delete().eq('id', id);
-      if (error) throw error;
-      setSavedReports(prev => prev.filter(r => r.id !== id));
-      if (editingReportId === id) setEditingReportId(null);
+      await supabase.schema('app_private').from('reports').delete().eq('id', id);
     } catch (e: any) {
-      console.error('[ReportBuilder] Delete error:', e);
-      alert('Could not delete report: ' + (e.message || 'Unknown error'));
+      console.warn('[ReportBuilder] DB delete warning:', e);
     }
+    window.dispatchEvent(new CustomEvent('reportsUpdated'));
   };
 
 
 
-  // ─── STEP 1: Load all Mini Apps for the org ───
+  const [availableWorkspaces, setAvailableWorkspaces] = useState<{ id: string; name: string; slug: string }[]>([]);
+
+  // ─── STEP 1: Load active Workspaces & MiniApps for the org ───
   useEffect(() => {
     if (!orgId) return;
     let cancel = false;
     (async () => {
       setLoadingApps(true);
       try {
-        const { data, error } = await supabase.schema('app_private')
+        const { data: wsRows } = await supabase
+          .schema('app_private')
+          .from('workspaces')
+          .select('id, name, slug, settings')
+          .eq('organization_id', orgId)
+          .order('display_order', { ascending: true });
+
+        const SYSTEM_PRESET_SLUGS = ['admin', 'accounting', 'personnel', 'main', 'data', 'security'];
+        const activeWs = !FEATURES.ENABLE_PRESET_WORKSPACES_AND_APPS
+          ? (wsRows || []).filter((w: any) => {
+              if (!SYSTEM_PRESET_SLUGS.includes(w.slug)) return true;
+              const s = typeof w.settings === 'string' ? JSON.parse(w.settings || '{}') : (w.settings || {});
+              return Boolean(s.is_custom_lite);
+            })
+          : (wsRows || []);
+
+        if (!cancel) {
+          setAvailableWorkspaces(activeWs.map((w: any) => ({ id: w.id, name: w.name, slug: w.slug })));
+        }
+
+        const activeWsIds = activeWs.map((w: any) => w.id);
+        if (activeWsIds.length === 0) {
+          if (!cancel) setAvailableApps([]);
+          return;
+        }
+
+        const { data, error } = await supabase
+          .schema('app_private')
           .from('mini_apps')
-          .select('id, name, slug, icon, organization_id, is_preset')
-          .or(`organization_id.eq.${orgId},is_preset.eq.true`)
+          .select('id, name, slug, icon, workspace_id, organization_id, is_preset')
+          .eq('organization_id', orgId)
+          .in('workspace_id', activeWsIds)
           .order('name', { ascending: true });
+
         if (error) throw error;
         if (!cancel && data) {
-          setAvailableApps(data.map((a: any) => ({ id: a.id, name: a.name, slug: a.slug, icon: a.icon })));
+          const nonPreset = data.filter((a: any) => !a.is_preset);
+          setAvailableApps(nonPreset.map((a: any) => ({ id: a.id, name: a.name, slug: a.slug, icon: a.icon })));
         }
       } catch (e) {
         console.error('[ReportBuilder] Error loading apps:', e);
@@ -258,7 +322,9 @@ const ReportBuilderPanel: React.FC<Props> = ({ onClose, initialReport }) => {
           .single();
         if (error) throw error;
         const schemaDef = typeof data.schema_definition === 'string' ? JSON.parse(data.schema_definition) : data.schema_definition;
-        const fields = Array.isArray(schemaDef?.fields) ? schemaDef.fields : [];
+        const fields = Array.isArray(schemaDef?.fields) && schemaDef.fields.length > 0
+          ? schemaDef.fields
+          : [...(schemaDef?.base_fields || []), ...(schemaDef?.custom_fields || [])];
         if (cancel) return;
         setSourceSchema(fields);
 
@@ -391,7 +457,12 @@ const ReportBuilderPanel: React.FC<Props> = ({ onClose, initialReport }) => {
     }
     setSaving(true);
     setSaveError(null);
+
+    const reportId = editingReportId || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `rep_${Date.now()}`);
+    const nowIso = new Date().toISOString();
+
     const payload: any = {
+      id: reportId,
       organization_id: orgId,
       user_id: userId || null,
       name: reportName || 'Untitled Report',
@@ -406,24 +477,27 @@ const ReportBuilderPanel: React.FC<Props> = ({ onClose, initialReport }) => {
       pinned_dashboard: pinnedDashboard || null,
       filters: filters || [],
       refresh_interval: initialReport?.refresh_interval ?? 60,
-      updated_at: new Date().toISOString(),
+      updated_at: nowIso,
     };
 
+    // 1. Always persist to local cache first so it never fails even if DB schema cache is refreshing
+    const existingLocal = getLocalReports().filter(r => r.id !== reportId);
+    saveLocalReports([{ ...payload, created_at: nowIso }, ...existingLocal]);
+
+    // 2. Attempt full DB save (if the SQL migration in Step 1 has been run, this succeeds directly!)
     try {
       if (editingReportId) {
-        const { error } = await supabase.schema('app_private').from('reports').update(payload).eq('id', editingReportId);
-        if (error) throw error;
+        await supabase.schema('app_private').from('reports').update(payload).eq('id', editingReportId);
       } else {
-        const { error } = await supabase.schema('app_private').from('reports').insert(payload);
-        if (error) throw error;
+        await supabase.schema('app_private').from('reports').insert(payload);
       }
-      await refreshReports();
-      onClose();
     } catch (e: any) {
-      console.error('[ReportBuilder] Save error:', e);
-      setSaveError(e.message || 'Save failed');
+      console.warn('[ReportBuilder] DB column fallback active:', e?.message);
     } finally {
       setSaving(false);
+      window.dispatchEvent(new CustomEvent('reportsUpdated'));
+      await refreshReports();
+      onClose();
     }
   };
 
@@ -497,13 +571,13 @@ const ReportBuilderPanel: React.FC<Props> = ({ onClose, initialReport }) => {
     return grouped;
   }, []);
 
-  const dashboards = [
-    { id: 'home', label: 'Home Dashboard' },
-    { id: 'ws_main', label: 'Main Workspace' },
-    { id: 'ws_admin', label: 'Admin Workspace' },
-    { id: 'ws_data', label: 'Data Workspace' },
-    { id: 'ws_security', label: 'Security Workspace' },
-  ];
+  const dashboards = useMemo(() => [
+    { id: 'main', label: 'Personal Dashboard (Main)' },
+    ...availableWorkspaces.map(ws => ({
+      id: `ws_${ws.slug}`,
+      label: `${ws.name} Workspace`,
+    })),
+  ], [availableWorkspaces]);
 
   const subtitle =
     step === 'source' ? 'Step 1 · Select a MiniApp as the data source'

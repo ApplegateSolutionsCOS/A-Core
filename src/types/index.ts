@@ -518,23 +518,41 @@ export interface PlatformUser {
   updated_at: string;
 }
 
+export type SubscriptionTier =
+  | 'basic'
+  | 'pro'
+  | 'expert'
+  | 'enterprise'
+  | 'enterprisePlus'
+  | 'whiteGlove';
+
+export type QCoreAddonId =
+  | 'qcore_commercial_ai'
+  | 'qcore_active_defense'
+  | 'qcore_security_workspace'
+  | 'qcore_green_horizon_quantum';
+
 export interface Organization {
   id: string;
   name: string;
   domain: string;
   logo_url?: string;
-  subscription_tier: 'basic' | 'pro' | 'expert';
+  subscription_tier: SubscriptionTier;
   monthly_base_price: number;
   per_user_price: number;
   max_workspaces: number;
   max_organizations: number;
   parent_organization_id?: string;
+  active_qcore_addons?: QCoreAddonId[];
+  metered_cloud_card_on_file_id?: string;
+  paid_cloud_connector_slots?: number;
+  paid_hardware_connector_slots?: number;
   is_active: boolean;
   created_at: string;
   updated_at: string;
 }
 
-// Subscription tier definitions
+// 6-Tier Subscription Definitions with Simplified 2-Category Integration Caps
 export const SUBSCRIPTION_TIERS = {
   basic: {
     name: 'Basic Account',
@@ -542,7 +560,19 @@ export const SUBSCRIPTION_TIERS = {
     perUserPrice: 19,
     maxWorkspaces: 6,
     maxOrganizations: 1,
-    features: ['6 Default Workspaces', 'All Preset Mini Apps', 'Up to 60 Mini Apps per Workspace', 'Standard Support'],
+    includedFreeConnectors: 1,
+    maxPaidAddonConnectors: 2,
+    maxTotalConnectorsCap: 3,
+    allowHardwareConnectors: false,
+    cloudConnectorAddonPrice: 49,
+    hardwareConnectorAddonPrice: null,
+    features: [
+      'Downloadable Local-First App (30-Day Offline Engine)',
+      'Q-CORE Encrypted File Vault (ML-KEM-1024 + AES-256-GCM + SHA-512)',
+      'All 6 Default Workspaces & 60+ Built-in MiniApps',
+      '1 Free Cloud Software Connector (Max 3 Total)',
+      'Radial QBall Menu, Custom Themes & Instant Mass-Edit/Delete',
+    ],
   },
   pro: {
     name: 'Pro Account',
@@ -550,7 +580,19 @@ export const SUBSCRIPTION_TIERS = {
     perUserPrice: 19,
     maxWorkspaces: 30,
     maxOrganizations: 1,
-    features: ['Up to 30 Workspaces', 'All Preset Mini Apps', 'Up to 60 Mini Apps per Workspace', 'Priority Support', 'Custom Workspace Creation'],
+    includedFreeConnectors: 3,
+    maxPaidAddonConnectors: 4,
+    maxTotalConnectorsCap: 7,
+    allowHardwareConnectors: false,
+    cloudConnectorAddonPrice: 49,
+    hardwareConnectorAddonPrice: null,
+    features: [
+      'Everything in Basic Account',
+      'Up to 30 Custom Workspaces ($0 extra per workspace)',
+      '3 Free Cloud Software Connectors (Max 7 Total)',
+      'Unified Cell + Business Phone Dialer, SMS & WhatsApp Hub',
+      'Advanced Cross-System Workflow Automation & Priority Support',
+    ],
   },
   expert: {
     name: 'Expert Account',
@@ -558,11 +600,116 @@ export const SUBSCRIPTION_TIERS = {
     perUserPrice: 19,
     maxWorkspaces: 30,
     maxOrganizations: 12,
-    features: ['Up to 12 Organizations', 'Up to 30 Workspaces per Org', 'All Preset Mini Apps', 'Up to 60 Mini Apps per Workspace', 'Dedicated Support', 'Multi-Org Management'],
+    includedFreeConnectors: 6,
+    maxPaidAddonConnectors: 6,
+    maxTotalConnectorsCap: 12,
+    allowHardwareConnectors: true,
+    cloudConnectorAddonPrice: 49,
+    hardwareConnectorAddonPrice: 199,
+    features: [
+      'Everything in Pro Account',
+      'Up to 12 Organizations & 30 Workspaces per Org',
+      '6 Free Connectors — Cloud or Hardware (Max 12 Total)',
+      'Unlocks Barcode/RFID Printers, POS Terminals & Scales',
+      'Mobile Field Layouts, Cross-Org Reporting & Enterprise SSO',
+    ],
+  },
+  enterprise: {
+    name: 'Enterprise',
+    price: 1999,
+    perUserPrice: 19,
+    maxWorkspaces: 60,
+    maxOrganizations: 25,
+    includedFreeConnectors: 12,
+    maxPaidAddonConnectors: 8,
+    maxTotalConnectorsCap: 20,
+    allowHardwareConnectors: true,
+    cloudConnectorAddonPrice: 49,
+    hardwareConnectorAddonPrice: 199,
+    features: [
+      'Everything in Expert Account',
+      '12 Free Connectors — Includes Industrial Sensors & ERPs (Max 20 Total)',
+      'Interactive 2D/3D Facility Floor-Plan WMS & Fleet Route Planning',
+      'Live Industrial PLC, Turbine & Frequency Sensor Telemetry',
+      'Pop-Out Live News Stations Tab',
+    ],
+  },
+  enterprisePlus: {
+    name: 'Enterprise +',
+    price: 4999,
+    perUserPrice: 15,
+    maxWorkspaces: 100,
+    maxOrganizations: 50,
+    includedFreeConnectors: 20,
+    maxPaidAddonConnectors: 15,
+    maxTotalConnectorsCap: 35,
+    allowHardwareConnectors: true,
+    cloudConnectorAddonPrice: 49,
+    hardwareConnectorAddonPrice: 199,
+    features: [
+      'Everything in Enterprise',
+      '20 Free Connectors across Cloud, ERP & Hardware (Max 35 Total)',
+      'Full Custom Branded UX & Interactive Bubble Analysis Tool',
+      'Activity & Data Point Amortization + Real-Time Runtime Analytics',
+      '1-Click Quantum Cloud Bridge Ready',
+    ],
+  },
+  whiteGlove: {
+    name: 'White Glove',
+    price: 8999,
+    perUserPrice: 0,
+    maxWorkspaces: 999,
+    maxOrganizations: 100,
+    includedFreeConnectors: 40,
+    maxPaidAddonConnectors: 20,
+    maxTotalConnectorsCap: 60,
+    allowHardwareConnectors: true,
+    cloudConnectorAddonPrice: 0,
+    hardwareConnectorAddonPrice: 0,
+    features: [
+      'Everything in Enterprise +',
+      'Unlimited Additional User Seats Included ($0/user)',
+      '40 Free Standard Connectors + Custom In-House Dev Builds (Max 60 Total)',
+      'Dedicated Account Manager & In-House Development Team Access',
+      'Custom Ongoing UX Development & 24/7 Executive Support Line',
+    ],
   },
 } as const;
 
-export type SubscriptionTier = keyof typeof SUBSCRIPTION_TIERS;
+export const QCORE_STANDALONE_ADDONS = {
+  qcore_commercial_ai: {
+    id: 'qcore_commercial_ai',
+    name: 'Q-CORE Commercial Agentic AI Suite',
+    monthlyPrice: 299,
+    billingNote: '+$299/mo + metered token usage',
+    description:
+      'Unlocks A-CORE BOS Org Admin AI Assistant, Team Alpha AI (Customer Support & Employee Co-Pilot), Team Bravo AI (Internal Affairs AI), and Team Delta AI (On-Demand Special Ops Builder) via the Q-CORE API bridge.',
+  },
+  qcore_active_defense: {
+    id: 'qcore_active_defense',
+    name: 'Q-CORE Active Cyber Defense AI',
+    monthlyPrice: 299,
+    billingNote: '+$299/mo',
+    description:
+      'Activates Kurogo Systems & Kovac Security active deception honeypots, automated intrusion sandboxing, and real-time threat containment.',
+  },
+  qcore_security_workspace: {
+    id: 'qcore_security_workspace',
+    name: 'Q-CORE Physical Security & Live Camera Workspace',
+    monthlyPrice: 499,
+    billingNote: '+$499/mo (+$12/camera over 8 streams)',
+    description:
+      'Unlocks the 6th Workspace ("Security") with Live WebRTC/RTSP Camera Feeds, Q-CORE Encrypted NVR Video Vault, physical badge/gate access logs, and AI Vision camera monitoring.',
+  },
+  qcore_green_horizon_quantum: {
+    id: 'qcore_green_horizon_quantum',
+    name: 'Green Horizon Quantum Predictive Threat Intelligence',
+    monthlyPrice: 1499,
+    billingNote: '+$1,499/mo + Direct Card-on-File Cloud/Quantum Compute Passthrough',
+    description:
+      '1-Click integration cross-referencing IBM Quantum Cloud (Qiskit Runtime) with Google Cloud (Vertex AI) to predict internal and external security threats.',
+  },
+} as const;
 
 
 export interface OrganizationUser {
@@ -645,8 +792,126 @@ export const DEFAULT_FOOTER_CONFIG: FooterConfig = {
   height: 64,
 };
 
+export interface FacilityZoneNode {
+  id: string;
+  label: string;
+  code: string;
+  type: 'room' | 'zone' | 'rack' | 'workstation' | 'dock' | 'sensor' | 'camera' | 'corridor' | 'vault' | 'office';
+  x: number; // percentage 0..100
+  y: number; // percentage 0..100
+  width: number; // percentage 2..100
+  height: number; // percentage 2..100
+  rotation?: number;
+  elevationHeight?: number; // 3D extrusion height in px
+  wallOpacity?: number; // 0.1..1.0
+  hasRoof?: boolean;
+  doorPosition?: 'north' | 'south' | 'east' | 'west' | 'none';
+  windowWall?: 'north' | 'south' | 'east' | 'west' | 'all' | 'none';
+  interiorProp?: 'auto' | 'racks' | 'desks' | 'conference' | 'vault-core' | 'conveyor' | 'none';
+  color?: string;
+  floorId?: string;
+  capacity?: number;
+  linkedFieldValue?: string; // matches value in record's location/zone field
+  assignedRecordIds?: string[];
+  description?: string;
+}
+
+export interface FacilityWallSegment {
+  id: string;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  thickness?: number;
+  height?: number; // 3D wall extrusion height in px
+  color?: string;
+  hasDoor?: boolean;
+  floorId?: string;
+}
+
+export interface FacilityFloorSchema {
+  id: string;
+  name: string;
+  level: number;
+  blueprintImageUrl?: string;
+  blueprintSvgText?: string;
+  blueprintOpacity?: number;
+}
+
+export interface FacilityTemplateConfig {
+  id?: string;
+  name: string;
+  presetType?: 'cyber-datacenter' | 'smart-warehouse' | 'executive-hq' | 'manufacturing-plant' | 'medical-wing' | 'custom';
+  gridColumns?: number;
+  gridRows?: number;
+  showGrid?: boolean;
+  default3DMode?: boolean;
+  defaultTiltAngle?: number;
+  defaultRotationAngle?: number;
+  wallCutawayMode?: 'full' | 'cutaway' | 'xray' | 'wireframe';
+  multiFloorStack3D?: boolean;
+  facilityAddress?: string;
+  facilityLat?: number;
+  facilityLng?: number;
+  organizationId?: string;
+  organizationName?: string;
+  blueprintImageUrl?: string;
+  blueprintSvgText?: string;
+  blueprintOpacity?: number;
+  locationMatchFieldId?: string; // Field ID on record used to match zone/room label or code
+  statusFieldId?: string;        // Field ID on record used to color-code status glow
+  titleFieldId?: string;         // Field ID on record used for primary node label
+  metricFieldId?: string;        // Field ID on record used for live telemetry badge
+  floors: FacilityFloorSchema[];
+  nodes: FacilityZoneNode[];
+  walls: FacilityWallSegment[];
+  updatedAt?: string;
+}
+
+export interface FormField {
+  id: string;
+  name: string;
+  type: string;
+  required?: boolean;
+  order?: number;
+  settings?: Record<string, any>;
+}
+
+export interface AppRecord {
+  id: string;
+  miniAppId: string;
+  data: Record<string, any>;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MapLayoutConfig {
+  addressFieldId?: string;
+  latitudeFieldId?: string;
+  longitudeFieldId?: string;
+  latFieldId?: string;
+  lngFieldId?: string;
+  titleFieldId?: string;
+  statusFieldId?: string;
+  categoryFieldId?: string;
+  metricFieldId?: string;
+  defaultCenter?: [number, number]; // [lat, lng]
+  defaultCenterLat?: number;
+  defaultCenterLng?: number;
+  defaultZoom?: number;
+  defaultTileStyle?: 'darkwave' | 'satellite' | 'street' | 'terrain';
+  defaultStyle?: 'darkwave' | 'satellite' | 'street' | 'terrain';
+  enable3DTilt?: boolean;
+  enableClustering?: boolean;
+  enableHeatmap?: boolean;
+  enableRouteLines?: boolean;
+  geofenceRadiusKm?: number;
+  radiusKm?: number;
+}
+
 export interface AppSettings {
-  layouts: string[];            // e.g., ['table', 'card', 'badge', 'calendar']
+  layouts: string[];            // e.g., ['table', 'card', 'badge', 'calendar', 'facility', 'map']
   defaultLayout: string;        // e.g., 'table'
   recordsPerPage: number;       // e.g., 25
   allowExport: boolean;
@@ -660,6 +925,8 @@ export interface AppSettings {
   disable_user_edits?: boolean;
   disable_notifications?: boolean;
   footer?: FooterConfig;       // ⚡ NEW: Frozen footer configuration
+  facilityTemplate?: FacilityTemplateConfig;
+  mapConfig?: MapLayoutConfig;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
 import { CloseIcon, EyeIcon, EyeOffIcon, LockIcon, CheckIcon, ApplegateCoreLogo } from '@/components/icons/Icons';
+import { FEATURES } from '@/config/features';
 
 interface RegisterModalProps {
   isOpen: boolean;
@@ -22,10 +23,11 @@ const PLAN_INFO: Record<string, { name: string; price: string }> = {
 
 
 // TOGGLE THIS TO 'live' WHEN YOU ARE READY FOR REAL SIGNUPS
-const REGISTRATION_MODE: 'beta' | 'live' = 'beta';
+// In Lite mode, we automatically enable live signups so Podio users can create their account immediately!
+const REGISTRATION_MODE: 'beta' | 'live' = FEATURES.IS_LITE_MODE ? 'live' : 'beta';
 
 const RegisterModal: React.FC<RegisterModalProps> = ({ isOpen, onClose, onSwitchToLogin, selectedPlan }) => {
-  const planInfo = selectedPlan ? PLAN_INFO[selectedPlan] : undefined;
+  const planInfo = !FEATURES.IS_LITE_MODE && selectedPlan ? PLAN_INFO[selectedPlan] : undefined;
   const { register } = useAuth();
   
   // Shared States
@@ -210,13 +212,15 @@ const RegisterModal: React.FC<RegisterModalProps> = ({ isOpen, onClose, onSwitch
               <ApplegateCoreLogo size={48} className="mx-auto mb-4 relative z-10" />
             </div>
             <h2 className="text-2xl font-bold text-white font-mono">
-              {REGISTRATION_MODE === 'beta' ? 'Request Beta Access' : 'Create Account'}
-            </h2>
-            <p className="text-cyan-300/60 mt-1 font-mono text-sm">
-              {REGISTRATION_MODE === 'beta' 
-                ? 'Join the waitlist for A-CORE BOS' 
-                : 'Start your 14-day free trial'}
-            </p>
+              {REGISTRATION_MODE === 'beta' ? 'Request Beta Access' : 'Create Account'}
+            </h2>
+            <p className="text-cyan-300/60 mt-1 font-mono text-sm">
+              {REGISTRATION_MODE === 'beta' 
+                ? 'Join the waitlist for A-CORE BOS' 
+                : FEATURES.IS_LITE_MODE
+                  ? 'Set up your organization & connect Podio'
+                  : 'Start your 14-day free trial'}
+            </p>
           </div>
 
           {/* Selected plan banner */}
@@ -324,12 +328,20 @@ const RegisterModal: React.FC<RegisterModalProps> = ({ isOpen, onClose, onSwitch
                     <div className="relative z-10 p-4">
                       <h4 className="text-cyan-300 font-medium mb-2 font-mono">What you'll get:</h4>
                       <ul className="space-y-2 text-sm text-cyan-200/60 font-mono">
-                        {[
-                          'Organization Admin access ($249/mo after trial)',
-                          'All 6 workspaces with 60+ MiniApps',
-                          'Add team members at $19/user/mo',
-                          'Q-CORE quantum-immune encryption',
-                        ].map((item, i) => (
+                        {(FEATURES.IS_LITE_MODE
+                          ? [
+                              'Dedicated Organization Workspace for your Podio Apps',
+                              'Real-time bi-directional Podio schema & record sync',
+                              'Visual Workflows, PDF Builder & QBall Quick Actions',
+                              'Integrated Tasks, Calendar, Messages & Q-CORE Security',
+                            ]
+                          : [
+                              'Organization Admin access ($249/mo after trial)',
+                              'All 6 workspaces with 60+ MiniApps',
+                              'Add team members at $19/user/mo',
+                              'Q-CORE quantum-immune encryption',
+                            ]
+                        ).map((item, i) => (
                           <li key={i} className="flex items-center gap-2">
                             <CheckIcon size={16} className="text-cyan-400 flex-shrink-0" />
                             {item}

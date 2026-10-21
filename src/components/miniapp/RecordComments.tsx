@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { SendIcon, TrashIcon, CloseIcon, MessageIcon } from '@/components/icons/Icons';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/AuthContext';
+import { encryptTextInlinePqc, decryptTextInlinePqc } from '@/lib/encryption';
 
 interface Comment {
   id: string;
@@ -57,7 +58,13 @@ const RecordComments: React.FC<RecordCommentsProps> = ({
         .order('created_at', { ascending: true });
 
       if (!error && data) {
-        setComments(data);
+        const decrypted = await Promise.all(
+          data.map(async (c: any) => ({
+            ...c,
+            comment_text: await decryptTextInlinePqc(c.comment_text || '', recordId),
+          }))
+        );
+        setComments(decrypted);
       }
     } catch (err) {
       console.error('Error loading comments:', err);
@@ -79,9 +86,11 @@ const RecordComments: React.FC<RecordCommentsProps> = ({
         schema: 'public',
         table: 'record_comments',
         filter: `record_id=eq.${recordId}`,
-      }, (payload) => {
+      }, async (payload) => {
         if (payload.eventType === 'INSERT') {
-          setComments(prev => [...prev, payload.new as Comment]);
+          const incoming = payload.new as Comment;
+          const decryptedText = await decryptTextInlinePqc(incoming.comment_text || '', recordId);
+          setComments(prev => [...prev, { ...incoming, comment_text: decryptedText }]);
         } else if (payload.eventType === 'DELETE') {
           setComments(prev => prev.filter(c => c.id !== (payload.old as any).id));
         }
@@ -104,6 +113,7 @@ const RecordComments: React.FC<RecordCommentsProps> = ({
     if (!newComment.trim()) return;
     setIsSending(true);
     try {
+      const encryptedComment = await encryptTextInlinePqc(newComment.trim(), recordId);
       const { error } = await supabase
         .from('record_comments')
         .insert({
@@ -111,7 +121,7 @@ const RecordComments: React.FC<RecordCommentsProps> = ({
           mini_app_id: miniAppId,
           user_id: userId,
           user_name: userName,
-          comment_text: newComment.trim(),
+          comment_text: encryptedComment,
         });
 
       if (error) throw error;

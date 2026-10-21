@@ -17,6 +17,8 @@ import FavoritesPanel from './FavoritesPanel';
 import PhoneMirror from './PhoneMirror';
 import ReportBuilderPanel from './ReportBuilderPanel';
 
+import { FEATURES } from '@/config/features';
+
 // Selectable Color Palette for Customization
 const COLOR_PALETTE: Record<string, { color: string; rgb: string }> = {
   // Reds & Pinks
@@ -1140,6 +1142,257 @@ const ActivityFeedPanel: React.FC<{ onClose: () => void; availableWorkspaces: st
   );
 };
 
+// ═══════════════ GLOBAL WORKFLOW HUB MODAL (100% REAL DATA) ═══════════════
+const GlobalWorkflowHubModal: React.FC<{
+  onClose: () => void;
+  orgId?: string;
+  onNavigateToMiniApp?: (wsSlug: string, appName: string) => void;
+}> = ({ onClose, orgId, onNavigateToMiniApp }) => {
+  const [loading, setLoading] = useState(true);
+  const [appsWithMeta, setAppsWithMeta] = useState<any[]>([]);
+  const [workflowsList, setWorkflowsList] = useState<any[]>([]);
+  const [selectedAppIdToCreate, setSelectedAppIdToCreate] = useState<string>('');
+
+  const loadWorkflows = useCallback(async () => {
+    if (!orgId) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    try {
+      const { data: wsRows } = await supabase
+        .schema('app_private')
+        .from('workspaces')
+        .select('id, name, slug, settings')
+        .eq('organization_id', orgId)
+        .order('display_order', { ascending: true });
+
+      const SYSTEM_PRESET_SLUGS = ['admin', 'accounting', 'personnel', 'main', 'data', 'security'];
+      const visibleWs = !FEATURES.ENABLE_PRESET_WORKSPACES_AND_APPS
+        ? (wsRows || []).filter((w: any) => {
+            if (!SYSTEM_PRESET_SLUGS.includes(w.slug)) return true;
+            const s = typeof w.settings === 'string' ? JSON.parse(w.settings || '{}') : (w.settings || {});
+            return Boolean(s.is_custom_lite);
+          })
+        : (wsRows || []);
+
+      const wsMap = new Map<string, any>();
+      visibleWs.forEach((w: any) => wsMap.set(w.id, w));
+      const wsIds = Array.from(wsMap.keys());
+
+      if (wsIds.length === 0) {
+        setAppsWithMeta([]);
+        setWorkflowsList([]);
+        setLoading(false);
+        return;
+      }
+
+      const { data: appRows } = await supabase
+        .schema('app_private')
+        .from('mini_apps')
+        .select('id, name, workspace_id, is_preset, app_settings')
+        .eq('organization_id', orgId)
+        .in('workspace_id', wsIds)
+        .order('name', { ascending: true });
+
+      const validApps = (appRows || []).filter((a: any) => !a.is_preset).map((a: any) => ({
+        ...a,
+        wsName: wsMap.get(a.workspace_id)?.name || 'Workspace',
+        wsSlug: wsMap.get(a.workspace_id)?.slug || 'main',
+      }));
+
+      setAppsWithMeta(validApps);
+      if (validApps.length > 0 && !selectedAppIdToCreate) {
+        setSelectedAppIdToCreate(validApps[0].id);
+      }
+
+      const appIds = validApps.map((a: any) => a.id);
+      const { data: wfRows } = appIds.length > 0
+        ? await supabase.schema('app_private').from('mini_app_workflows').select('*').in('mini_app_id', appIds)
+        : { data: [] };
+
+      const mergedMap = new Map<string, any>();
+
+      (wfRows || []).forEach((w: any) => {
+        const appInfo = validApps.find((a: any) => a.id === w.mini_app_id);
+        if (!appInfo) return;
+        const steps = typeof w.steps === 'string' ? JSON.parse(w.steps || '[]') : (w.steps || []);
+        mergedMap.set(w.id, {
+          id: w.id,
+          name: w.name || 'Untitled Workflow',
+          isActive: Boolean(w.is_active),
+          trigger: w.trigger_event || 'record_created',
+          stepCount: Array.isArray(steps) ? steps.length : 0,
+          miniAppId: appInfo.id,
+          miniAppName: appInfo.name,
+          wsName: appInfo.wsName,
+          wsSlug: appInfo.wsSlug,
+        });
+      });
+
+      // Also include any workflows stored in app_settings.workflows JSON fallback
+      validApps.forEach((appInfo: any) => {
+        const settings = typeof appInfo.app_settings === 'string' ? JSON.parse(appInfo.app_settings || '{}') : (appInfo.app_settings || {});
+        if (Array.isArray(settings.workflows)) {
+          settings.workflows.forEach((w: any) => {
+            if (w?.id && !mergedMap.has(w.id)) {
+              mergedMap.set(w.id, {
+                id: w.id,
+                name: w.name || 'Untitled Workflow',
+                isActive: Boolean(w.isActive),
+                trigger: w.trigger || 'record_created',
+                stepCount: Array.isArray(w.steps) ? w.steps.length : 0,
+                miniAppId: appInfo.id,
+                miniAppName: appInfo.name,
+                wsName: appInfo.wsName,
+                wsSlug: appInfo.wsSlug,
+              });
+            }
+          });
+        }
+      });
+
+      setWorkflowsList(Array.from(mergedMap.values()));
+    } catch (e) {
+      console.error('[GlobalWorkflowHub] Error loading workflows:', e);
+    } finally {
+      setLoading(false);
+    }
+  }, [orgId]);
+
+  useEffect(() => { loadWorkflows(); }, [loadWorkflows]);
+
+  const handleToggleWorkflowActive = async (wf: any, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const nextActive = !wf.isActive;
+    setWorkflowsList(prev => prev.map(item => item.id === wf.id ? { ...item, isActive: nextActive } : item));
+    try {
+      await supabase.schema('app_private')
+        .from('mini_app_workflows')
+        .update({ is_active: nextActive })
+        .eq('id', wf.id);
+    } catch {}
+  };
+
+  const handleOpenBuilderForApp = (wsSlug: string, appName: string, appId?: string) => {
+    if (onNavigateToMiniApp) {
+      onNavigateToMiniApp(wsSlug, appName);
+    }
+    onClose();
+    setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('openMiniAppWorkflowBuilder', { detail: { appName, appId } }));
+    }, 250);
+  };
+
+  return (
+    <div className="fixed inset-0 flex items-center justify-center p-4" style={{ zIndex: 10010 }}>
+      <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-black border border-cyan-500/30 rounded-2xl w-full max-w-3xl max-h-[90vh] overflow-hidden shadow-[0_0_40px_rgba(0,255,255,0.2)] flex flex-col">
+        <div className="flex items-center justify-between p-4 border-b border-cyan-500/20">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-cyan-500/20 to-blue-500/20 border border-cyan-500/30 flex items-center justify-center">
+              <WorkflowIcon size={24} className="text-cyan-400" />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-white font-mono">Workflow Automation</h2>
+              <p className="text-xs text-gray-400 font-mono">Live automated workflows across your Workspaces &amp; MiniApps</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-2 text-gray-400 hover:text-white rounded-lg"><CloseIcon size={24} /></button>
+        </div>
+
+        <div className="p-6 overflow-y-auto max-h-[75vh] darkwave-scrollbar space-y-6">
+          {/* Quick Launch Bar to Create/Edit Workflows in a MiniApp */}
+          <div className="p-4 rounded-xl bg-cyan-950/20 border border-cyan-500/30 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+            <div className="flex-1">
+              <label className="block text-[10px] font-mono uppercase tracking-wider text-cyan-400 mb-1">
+                Build or Edit Workflows for MiniApp
+              </label>
+              <select
+                value={selectedAppIdToCreate}
+                onChange={e => setSelectedAppIdToCreate(e.target.value)}
+                className="w-full bg-black border border-gray-700 rounded-lg px-3 py-2 text-white text-xs font-mono focus:outline-none focus:border-cyan-400"
+              >
+                {appsWithMeta.length === 0 ? (
+                  <option value="">No MiniApps found</option>
+                ) : (
+                  appsWithMeta.map((a: any) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name} ({a.wsName})
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
+            <button
+              disabled={!selectedAppIdToCreate}
+              onClick={() => {
+                const target = appsWithMeta.find((a: any) => a.id === selectedAppIdToCreate);
+                if (target) handleOpenBuilderForApp(target.wsSlug, target.name, target.id);
+              }}
+              className="px-5 py-2.5 sm:mt-4 rounded-lg bg-cyan-500/20 border border-cyan-500/50 text-cyan-300 hover:bg-cyan-500/30 font-mono text-xs font-bold transition-all disabled:opacity-40 flex items-center justify-center gap-2 whitespace-nowrap"
+            >
+              <WorkflowIcon size={15} /> Open Workflow Builder
+            </button>
+          </div>
+
+          {/* Live Workflows List */}
+          {loading ? (
+            <div className="py-12 text-center text-xs font-mono text-gray-500 animate-pulse">Loading live workflows...</div>
+          ) : workflowsList.length === 0 ? (
+            <div className="py-12 px-4 text-center border border-dashed border-gray-800 rounded-xl bg-gray-950/40">
+              <WorkflowIcon size={36} className="text-gray-700 mx-auto mb-3" />
+              <p className="text-sm font-mono text-gray-300 font-semibold">No workflows created yet</p>
+              <p className="text-xs font-mono text-gray-500 mt-1">
+                Select a MiniApp above and click <strong>Open Workflow Builder</strong> to automate record creation, updates, tasks, math, and alerts.
+              </p>
+            </div>
+          ) : (
+            <div className="grid md:grid-cols-2 gap-4">
+              {workflowsList.map((wf) => (
+                <div
+                  key={wf.id}
+                  onClick={() => handleOpenBuilderForApp(wf.wsSlug, wf.miniAppName, wf.miniAppId)}
+                  className="p-4 bg-gray-900/50 border border-gray-800 rounded-xl hover:border-cyan-500/40 transition-all cursor-pointer group"
+                >
+                  <div className="flex items-center justify-between mb-1.5">
+                    <h4 className="text-white font-mono font-bold text-sm truncate pr-2 group-hover:text-cyan-300 transition-colors">
+                      {wf.name}
+                    </h4>
+                    <button
+                      type="button"
+                      onClick={(e) => handleToggleWorkflowActive(wf, e)}
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-mono border transition-all ${
+                        wf.isActive
+                          ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400'
+                          : 'bg-gray-800 border-gray-700 text-gray-500'
+                      }`}
+                      title="Click to toggle active/paused"
+                    >
+                      {wf.isActive ? 'Active' : 'Paused'}
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-gray-400 font-mono truncate mb-3">
+                    {wf.miniAppName} • <span className="text-gray-500">{wf.wsName}</span>
+                  </p>
+                  <div className="flex items-center justify-between pt-2 border-t border-gray-800/80">
+                    <span className="text-[10px] text-cyan-400 font-mono uppercase">
+                      Trigger: {String(wf.trigger).replace(/_/g, ' ')} ({wf.stepCount} step{wf.stepCount === 1 ? '' : 's'})
+                    </span>
+                    <span className="text-xs text-gray-400 group-hover:text-cyan-400 font-mono transition-colors">
+                      Edit →
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ═══════════════ MAIN COMPONENT ═══════════════
 const QuantumBalltool: React.FC<QuantumBalltoolProps> = ({
   onOpenActivity, onOpenStatus, onOpenTask, onOpenEvent, onOpenProject, onOpenMicrophone,
@@ -1460,16 +1713,36 @@ const QuantumBalltool: React.FC<QuantumBalltoolProps> = ({
     };
   }, [isDocked, ballSz, savePosDb, isExpanded]);
 
+  const BASIC_ALLOWED_QBALL_TOOLS = ['favorites', 'task', 'workflow', 'report', 'event', 'activity'];
+
+  const isTargetPlatformAdmin =
+    isPlatformOwner() ||
+    (user as any)?.email?.toLowerCase() === 'andrew@applegate.solutions';
+
   const vis = useMemo(() => tools.filter(t => {
+    // 1. Always show the Demos button for the Platform Owner Admin (andrew@applegate.solutions),
+    // even in Basic Tier or when viewing a Demo organization
+    if (t.id === 'demos') {
+      return isTargetPlatformAdmin;
+    }
+
+    // 2. Bury unbuilt / dummy-data Q-Ball tools in higher tiers:
+    // - Basic Tier ($249): Only 100% real-data tools (favorites, task, workflow, report, event, activity)
+    // - Pro Tier ($499+): Unlocks status, microphone, scanner
+    // - Expert Tier ($899+): Unlocks phone-mirror, email-mirror
+    if (!FEATURES.ENABLE_ADVANCED_QBALL_TOOLS && !BASIC_ALLOWED_QBALL_TOOLS.includes(t.id)) {
+      return false;
+    }
+    if ((t.id === 'phone-mirror' || t.id === 'email-mirror') && !FEATURES.ENABLE_PHONE_AND_EMAIL_MIRROR) {
+      return false;
+    }
+
+    // 3. Role-based filters
     if (t.adminOnly && !isAdmin) return false;
-    // ⚡ FIX: Use the robust isPlatformOwner() check so the button doesn't vanish inside Demos!
-    if (t.platformOwnerOnly && !isPlatformOwner()) return false;
-    
-    // Restrict Demos button exclusively to Applegate Solutions
-    if (t.id === 'demos' && organization?.name !== 'Applegate Solutions') return false;
+    if (t.platformOwnerOnly && !isTargetPlatformAdmin) return false;
     
     return true;
-  }), [isAdmin, isPlatformOwner, organization?.name]);
+  }), [isAdmin, isTargetPlatformAdmin]);
   const N = vis.length;
 
   const [wsC, setWsC] = useState<WsColorSet>(targetWsC);
@@ -2570,30 +2843,11 @@ const QuantumBalltool: React.FC<QuantumBalltoolProps> = ({
       )}
 
       {showWorkflowBuilder && (
-        <div className="fixed inset-0 flex items-center justify-center p-4" style={{ zIndex: 10010 }}>
-          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setShowWorkflowBuilder(false)} />
-          <div className="relative bg-black border border-cyan-500/30 rounded-2xl w-full max-w-3xl max-h-[90vh] overflow-hidden shadow-[0_0_40px_rgba(0,255,255,0.2)]">
-            <div className="flex items-center justify-between p-4 border-b border-cyan-500/20">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-cyan-500/20 to-blue-500/20 border border-cyan-500/30 flex items-center justify-center"><WorkflowIcon size={24} className="text-cyan-400" /></div>
-                <div><h2 className="text-lg font-semibold text-white font-mono">Workflow Automation</h2><p className="text-xs text-gray-400 font-mono">Create and manage automated workflows</p></div>
-              </div>
-              <button onClick={() => setShowWorkflowBuilder(false)} className="p-2 text-gray-400 hover:text-white rounded-lg"><CloseIcon size={24} /></button>
-            </div>
-            <div className="p-6 overflow-y-auto max-h-[70vh] darkwave-scrollbar">
-              <div className="grid md:grid-cols-2 gap-4 mb-6">
-                {[{ name: 'Task Assignment', desc: 'Auto-assign tasks based on workload', triggers: 3, active: true }, { name: 'Approval Chain', desc: 'Multi-level approval workflow', triggers: 5, active: true }, { name: 'Notification Alerts', desc: 'Send alerts on status changes', triggers: 8, active: false }, { name: 'Data Sync', desc: 'Sync records across workspaces', triggers: 2, active: true }].map((wf, i) => (
-                  <div key={i} className="p-4 bg-gray-900/50 border border-gray-800 rounded-xl hover:border-cyan-500/30 transition-all cursor-pointer group">
-                    <div className="flex items-center justify-between mb-2"><h4 className="text-white font-mono font-medium">{wf.name}</h4><div className={`w-2 h-2 rounded-full ${wf.active ? 'bg-green-400' : 'bg-gray-600'}`} /></div>
-                    <p className="text-xs text-gray-500 font-mono mb-3">{wf.desc}</p>
-                    <div className="flex items-center justify-between"><span className="text-xs text-cyan-400 font-mono">{wf.triggers} triggers</span><button className="text-xs text-gray-500 hover:text-cyan-400 font-mono transition-colors">Edit</button></div>
-                  </div>
-                ))}
-              </div>
-              <button className="w-full py-3 border-2 border-dashed border-gray-700 rounded-xl text-gray-500 hover:border-cyan-500/50 hover:text-cyan-400 transition-all font-mono flex items-center justify-center gap-2"><WorkflowIcon size={18} /> Create New Workflow</button>
-            </div>
-          </div>
-        </div>
+        <GlobalWorkflowHubModal
+          onClose={() => setShowWorkflowBuilder(false)}
+          orgId={organization?.id}
+          onNavigateToMiniApp={onNavigateToMiniApp}
+        />
       )}
 
       {showReportBuilder && <ReportBuilderPanel onClose={() => setShowReportBuilder(false)} />}

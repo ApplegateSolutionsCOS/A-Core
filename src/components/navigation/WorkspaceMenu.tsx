@@ -24,6 +24,7 @@ import { useWorkspaceColor } from '@/contexts/WorkspaceColorContext';
 import { getMiniAppIcon } from '@/components/miniapp/MiniAppIcons';
 import * as LucideIcons from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { FEATURES, getEffectiveTier } from '@/config/features';
 
 const LOGO_URL = 'https://d64gsuwffb70l.cloudfront.net/695fc81af8bb22c52e2539fb_1769628610343_93d83d41.png';
 
@@ -403,11 +404,21 @@ const WorkspaceMenu: React.FC<WorkspaceMenuProps> = ({
       fetchAlerts();
       fetchApps();
     }
+    const handleAppsUpdate = () => {
+      fetchApps();
+    };
+    window.addEventListener('miniapp_schema_updated', handleAppsUpdate);
+    window.addEventListener('workspacesUpdated', handleAppsUpdate);
+    return () => {
+      window.removeEventListener('miniapp_schema_updated', handleAppsUpdate);
+      window.removeEventListener('workspacesUpdated', handleAppsUpdate);
+    };
   }, [isOpen, organization]);
 
   const isPlatOwner = isPlatformOwner();
   const isOrgAdmin = isOrganizationAdmin();
-  const tier = (organization?.subscription_tier || 'basic') as 'basic' | 'pro' | 'expert';
+  const effectiveTier = getEffectiveTier(organization?.subscription_tier);
+  const tier = (['basic', 'pro', 'expert'].includes(effectiveTier) ? effectiveTier : 'expert') as 'basic' | 'pro' | 'expert';
   const tierConfig = SUBSCRIPTION_TIERS[tier] || SUBSCRIPTION_TIERS.basic;
 
   if (!isOpen) return null;
@@ -427,12 +438,12 @@ const WorkspaceMenu: React.FC<WorkspaceMenuProps> = ({
     }
   };
 
-  const handleAddMiniAppItem = (workspaceSlug: string, miniAppName: string, e: React.MouseEvent) => {
+  const handleAddMiniAppItem = (workspaceSlug: string, miniAppName: string, e: React.MouseEvent, explicitWsId?: string) => {
     e.preventDefault();
     e.stopPropagation();
+    const orderedWs = orderedWorkspaces?.find(w => w.slug === workspaceSlug);
     const realWs = workspaces?.find(w => w.slug === workspaceSlug);
-    // ⚡ REPLICATING THE DASHBOARD: Fallback to the exact mapped UUID if it's a preset
-    const targetWsId = realWs?.id || WORKSPACE_ID_MAP[workspaceSlug] || workspaceSlug;
+    const targetWsId = explicitWsId || orderedWs?.id || realWs?.id || WORKSPACE_ID_MAP[workspaceSlug] || undefined;
     setGlobalAddApp({ wsSlug: workspaceSlug, wsId: targetWsId, appName: miniAppName });
   };
 
@@ -473,7 +484,15 @@ const WorkspaceMenu: React.FC<WorkspaceMenuProps> = ({
         if (error) throw error;
 
         if (data) {
-          let sortedWs = [...data];
+          const SYSTEM_PRESET_SLUGS = ['admin', 'accounting', 'personnel', 'main', 'data', 'security'];
+          let sortedWs = !FEATURES.ENABLE_PRESET_WORKSPACES_AND_APPS
+            ? data.filter((w: any) => {
+                if (!SYSTEM_PRESET_SLUGS.includes(w.slug)) return true;
+                // Only keep if user explicitly created it via the custom workspace modal (which sets settings.is_custom_lite)
+                const s = typeof w.settings === 'string' ? JSON.parse(w.settings || '{}') : (w.settings || {});
+                return Boolean(s.is_custom_lite);
+              })
+            : [...data];
           
           // 2. Apply LocalStorage drag-and-drop order if it exists
           const savedOrderStr = localStorage.getItem(`workspace-order-${organization.id}`);
@@ -499,6 +518,15 @@ const WorkspaceMenu: React.FC<WorkspaceMenuProps> = ({
     if (isOpen) {
       fetchWorkspaces();
     }
+    const handleSchemaOrWsUpdate = () => {
+      fetchWorkspaces();
+    };
+    window.addEventListener('miniapp_schema_updated', handleSchemaOrWsUpdate);
+    window.addEventListener('workspacesUpdated', handleSchemaOrWsUpdate);
+    return () => {
+      window.removeEventListener('miniapp_schema_updated', handleSchemaOrWsUpdate);
+      window.addEventListener('workspacesUpdated', handleSchemaOrWsUpdate);
+    };
   }, [isOpen, organization?.id]);
 
   const handleWsDragStart = (e: React.DragEvent, index: number) => {
@@ -574,8 +602,8 @@ const WorkspaceMenu: React.FC<WorkspaceMenuProps> = ({
         icon: newWsIcon,
         description: newWsDescription,
         display_order: orderedWorkspaces.length,
-        // ⚡ Inject auto_deploy into the settings JSON!
-        settings: { auto_deploy: autoDeployWorkspace } 
+        // ⚡ Inject auto_deploy and is_custom_lite into the settings JSON!
+        settings: { auto_deploy: autoDeployWorkspace, is_custom_lite: true } 
       }));
 
       // 3. Fire the bulk insert (Notice we removed .single() so it returns an array)
@@ -624,7 +652,7 @@ const WorkspaceMenu: React.FC<WorkspaceMenuProps> = ({
     }
   };
 
-  const extraOrgs = tier === 'expert' ? [
+  const extraOrgs = (FEATURES.ENABLE_SUB_ORGANIZATIONS && tier === 'expert') ? [
     { id: 'org-2', name: 'Subsidiary Corp' },
     { id: 'org-3', name: 'Regional Office' },
   ] : [];
@@ -954,7 +982,7 @@ const WorkspaceMenu: React.FC<WorkspaceMenuProps> = ({
                   {organization?.name || 'Applegate'}
                 </h3>
                 <p className="text-[10px] text-gray-500 font-mono">
-                  {isPlatOwner ? 'CORE Platform' : tierConfig.name}
+                  {FEATURES.IS_LITE_MODE ? 'Podio Edition' : (isPlatOwner ? 'CORE Platform' : tierConfig.name)}
                 </p>
               </div>
             </button>
@@ -981,31 +1009,57 @@ const WorkspaceMenu: React.FC<WorkspaceMenuProps> = ({
             {/* Primary Organization Workspaces (Collapsible) */}
             {expandedOrgs.primary && (
               <div className="space-y-2 mb-6 animate-in slide-in-from-top-2 fade-in duration-200">
-                {renderWorkspaceCards()}
+                {orderedWorkspaces.length === 0 ? (
+                  <div className="p-5 rounded-xl border border-dashed border-gray-800 bg-black/40 text-center space-y-2">
+                    <p className="text-xs font-mono text-gray-300 font-bold">No Workspaces Yet</p>
+                    <p className="text-[11px] font-mono text-gray-500 leading-relaxed">
+                      Create your first workspace below, then open it to import your Podio Workspaces, MiniApps, and Records.
+                    </p>
+                  </div>
+                ) : (
+                  renderWorkspaceCards()
+                )}
                 
-                {/* New Workspace Button Nested Inside the Organization */}
-                {(tier === 'pro' || tier === 'expert') && (isOrgAdmin || isPlatOwner) && (
-                  <div className="pt-2">
-                    <button 
+                {/* Import from Podio Shortcut (opens Podio Integration Setup in Admin/Integrations Console) */}
+                {(isOrgAdmin || isPlatOwner) && (
+                  <div className="pt-2 space-y-2">
+                    <button
                       onClick={() => {
-                        if (orderedWorkspaces.length >= tierConfig.maxWorkspaces) { 
-                          alert(`Max ${tierConfig.maxWorkspaces} workspaces.`); 
-                          return; 
-                        }
-                        setShowNewWsModal(true);
-                      }} 
-                      className="w-full flex items-center justify-center gap-2 p-3 rounded-xl border border-dashed border-gray-700 text-gray-400 hover:bg-gray-800/50 hover:border-gray-500 hover:text-white transition-all shadow-none"
+                        onClose();
+                        window.dispatchEvent(new CustomEvent('openIntegrationsModal', { detail: { openPodio: true } }));
+                      }}
+                      className="w-full flex items-center justify-center gap-2 p-3.5 rounded-xl border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 hover:border-emerald-400 transition-all shadow-[0_0_20px_rgba(16,185,129,0.2)]"
                     >
-                      <PlusIcon size={16} className="text-cyan-400" />
-                      <span className="text-sm font-mono font-bold">Workspace ({orderedWorkspaces.length}/{tierConfig.maxWorkspaces})</span>
+                      <DatabaseIcon size={16} className="text-emerald-400" />
+                      <span className="text-sm font-mono font-bold">
+                        ⚡ Import Workspace from Podio
+                      </span>
                     </button>
+
+                    {(tier === 'pro' || tier === 'expert' || isPlatOwner) && (
+                      <button 
+                        onClick={() => {
+                          if (orderedWorkspaces.length >= tierConfig.maxWorkspaces) { 
+                            alert(`Max ${tierConfig.maxWorkspaces} workspaces.`); 
+                            return; 
+                          }
+                          setShowNewWsModal(true);
+                        }} 
+                        className="w-full flex items-center justify-center gap-2 p-3 rounded-xl border border-dashed border-gray-700 text-gray-400 hover:bg-gray-800/50 hover:border-gray-500 hover:text-white transition-all shadow-none"
+                      >
+                        <PlusIcon size={16} className="text-cyan-400" />
+                        <span className="text-sm font-mono font-bold">
+                          Workspace ({orderedWorkspaces.length}/{tierConfig.maxWorkspaces})
+                        </span>
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
             )}
             
-            {/* Extra Subsidiary Orgs (Only for Expert Tier) */}
-            {tier === 'expert' && extraOrgs.length > 0 && (
+            {/* Extra Subsidiary Orgs (Only when sub-organizations are enabled & Expert Tier) */}
+            {FEATURES.ENABLE_SUB_ORGANIZATIONS && tier === 'expert' && extraOrgs.length > 0 && (
               <div className="space-y-4">
                 {extraOrgs.map(org => (
                   <div key={org.id}>

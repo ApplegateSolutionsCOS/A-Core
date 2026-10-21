@@ -15,12 +15,16 @@ import RecordAttachments from './RecordAttachments';
 import ViewPane, { ViewFilter, ViewSort } from './ViewPane';
 import LeftSlidePanel from '@/components/navigation/LeftSlidePanel'; // ⚡ FIXED IMPORT
 import { InlineActivityPanel } from '@/components/toolbar/ToolbarPanels'; // ⚡ ADD THIS IMPORT
+import ReportBuilderPanel from '@/components/toolbar/ReportBuilderPanel';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/AuthContext';
 import { logActivity } from '@/lib/activityLogger';
 import { ChartNetwork, MessageSquare, MessagesSquare, Activity, CheckSquare, Mail, Megaphone, LayoutDashboard } from 'lucide-react';
 import * as LucideIcons from 'lucide-react';
 import { useWorkspaceColor } from '@/contexts/WorkspaceColorContext';
+import FacilityLayoutView from './FacilityLayoutView';
+import MapLayoutView from './MapLayoutView';
+import { encryptTextInlinePqc, decryptTextInlinePqc } from '@/lib/encryption';
 
 // ⚡ NATIVE JAVASCRIPT SHORT-CIRCUIT (OAuth Popup Interceptor)
 // This runs instantly when the file is parsed by the browser, BEFORE React boots up.
@@ -58,7 +62,7 @@ const PaperclipIcon: React.FC<{ size?: number; className?: string; style?: React
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" /></svg>
 );
 
-type LayoutType = 'table' | 'card' | 'badge' | 'calendar';
+type LayoutType = 'table' | 'card' | 'badge' | 'calendar' | 'facility' | 'map';
 
 interface MiniAppViewProps {
   appName: string;
@@ -68,22 +72,43 @@ interface MiniAppViewProps {
   onBack: () => void;
   availableLayouts?: LayoutType[];
   initialAddRecord?: boolean;
-  onEditTemplate?: (appName: string, exactAppId?: string) => void; // ⚡ Added exactAppId
+  onEditTemplate?: (appName: string, exactAppId?: string, targetTab?: 'template' | 'workflows' | 'settings') => void;
   isGlobalAddMode?: boolean;
   onGlobalAddClose?: () => void;
 }
 
-const getConnectedItems = (record: Record<string, any>): { appName: string; items: string[] }[] => {
+const getConnectedItems = (record: Record<string, any>, schemaFields: any[] = []): { appName: string; items: string[] }[] => {
   const connections: { appName: string; items: string[] }[] = [];
+  const connFieldNames = new Set(
+    schemaFields
+      .filter((f: any) => f.type === 'connection_field' || f.type === 'connection')
+      .map((f: any) => f.name)
+  );
+
   Object.entries(record).forEach(([key, value]) => {
     if (key.startsWith('connected') && Array.isArray(value) && value.length > 0) {
-      connections.push({ appName: key.replace('connected', ''), items: value });
+      connections.push({ appName: key.replace('connected', ''), items: value.map((v: any) => cleanComplexValue(v)) });
+    } else if (connFieldNames.has(key) && value !== null && value !== undefined && value !== '') {
+      const cleaned = cleanComplexValue(value);
+      const items = Array.isArray(value)
+        ? value.map((v: any) => cleanComplexValue(v)).filter(Boolean)
+        : cleaned.split(',').map((s: string) => s.trim()).filter(Boolean);
+      if (items.length > 0) {
+        connections.push({ appName: key, items });
+      }
     }
   });
   return connections;
 };
 
-const LAYOUT_ICONS: Record<string, React.FC<any>> = { table: TableIcon, card: CardLayoutIcon, badge: BadgeIcon, calendar: CalendarIcon };
+const LAYOUT_ICONS: Record<string, React.FC<any>> = {
+  table: TableIcon,
+  card: CardLayoutIcon,
+  badge: BadgeIcon,
+  calendar: CalendarIcon,
+  facility: LucideIcons.Building2,
+  map: LucideIcons.MapPin,
+};
 
 // ─── CSV Utilities ───
 const escapeCSV = (val: any): string => {
@@ -177,26 +202,38 @@ const parseCSV = (text: string): { headers: string[]; rows: string[][] } => {
 // This helper safely parses and flattens those into a clean, comma-separated string for the UI.
 const cleanComplexValue = (val: any): string => {
   if (val === null || val === undefined) return '';
-  let strVal = String(val);
-  if (strVal.trim().startsWith('[') && strVal.trim().endsWith(']')) {
-    try {
-      const parsed = JSON.parse(strVal);
-      if (Array.isArray(parsed)) {
-        const extracted = parsed.map((item: any) => {
-          if (item && typeof item === 'object' && 'value' in item) {
-            // If the value is a nested object (like a Podio Contact), grab its name
-            if (typeof item.value === 'object' && item.value !== null) {
-               return item.value.name || item.value.title || JSON.stringify(item.value);
-            }
-            return item.value;
-          }
-          return item;
-        }).filter(Boolean);
-        if (extracted.length > 0) return extracted.join(', ');
-      }
-    } catch (e) { /* Not valid JSON, return original string */ }
+  
+  // ⚡ Parse stringified JSON safely
+  let parsedVal = val;
+  if (typeof val === 'string' && (val.trim().startsWith('[') || val.trim().startsWith('{'))) {
+    try { parsedVal = JSON.parse(val); } catch (e) { /* Ignore */ }
   }
-  return strVal;
+
+  const extractSingle = (item: any): any => {
+    if (item && typeof item === 'object') {
+      if ('value' in item) {
+        if (typeof item.value === 'object' && item.value !== null) {
+          return item.value.name || item.value.title || item.value.text || JSON.stringify(item.value);
+        }
+        return item.value;
+      }
+      // Podio category/app reference fallback
+      if ('text' in item) return item.text;
+      if ('name' in item) return item.name;
+      if ('title' in item) return item.title;
+    }
+    return item;
+  };
+
+  if (Array.isArray(parsedVal)) {
+    const extracted = parsedVal.map(extractSingle).filter(Boolean);
+    if (extracted.length > 0) return extracted.map(e => typeof e === 'object' ? JSON.stringify(e) : String(e)).join(', ');
+  } else if (typeof parsedVal === 'object' && parsedVal !== null) {
+    const extracted = extractSingle(parsedVal);
+    if (extracted !== parsedVal) return typeof extracted === 'object' ? JSON.stringify(extracted) : String(extracted);
+  }
+
+  return typeof parsedVal === 'object' ? JSON.stringify(parsedVal) : String(parsedVal);
 };
 
 // Helper to turn hex strings into 'R, G, B' formats
@@ -1391,7 +1428,45 @@ const ConnectionSelect: React.FC<{ fieldDef: any, value: any, onChange: (val: an
 
           const formatted = filteredRecords.map(r => {
             const data = typeof r.data === 'string' ? JSON.parse(r.data) : r.data || {};
-            const label = data.name || data.Name || data.title || data.Title || data.identifier || r.item_uid || r.id;
+            
+            // ⚡ EXTRACT THE CUSTOM DISPLAY FIELD
+            const displayField = fieldDef.settings?.connectionDisplayField;
+            let customLabel = '';
+            
+            if (displayField) {
+              if (data[displayField] !== undefined) {
+                customLabel = data[displayField];
+              } else {
+                // Try case-insensitive match
+                const matchedKey = Object.keys(data).find(k => k.toLowerCase() === displayField.toLowerCase());
+                if (matchedKey) customLabel = data[matchedKey];
+              }
+            }
+
+            // ⚡ SMART FALLBACK: Try extended common keys, then default to the first valid data field
+            let fallbackLabel = '';
+            if (!customLabel) {
+              const knownKeys = ['name', 'title', 'identifier', 'text', 'label', 'heading'];
+              const dataKeys = Object.keys(data);
+              
+              // 1. Try case-insensitive matching for known display keys
+              for (const known of knownKeys) {
+                const match = dataKeys.find(k => k.toLowerCase() === known);
+                if (match && data[match] !== null && data[match] !== undefined && String(data[match]).trim() !== '') {
+                  fallbackLabel = data[match];
+                  break;
+                }
+              }
+              // 2. If nothing matches, grab the very first populated data field
+              if (!fallbackLabel) {
+                const firstKey = dataKeys.find(k => !k.startsWith('_') && data[k] !== null && data[k] !== undefined && String(data[k]).trim() !== '');
+                if (firstKey) fallbackLabel = data[firstKey];
+              }
+            }
+
+            const rawLabel = customLabel || fallbackLabel || r.item_uid || r.id;
+            const label = cleanComplexValue(rawLabel); // ⚡ Clean any complex JSON arrays from Podio!
+
             const appInfo = Array.isArray(r.mini_apps) ? r.mini_apps[0] : r.mini_apps;
             
             const wsData = appInfo?.workspaces;
@@ -1425,11 +1500,25 @@ const ConnectionSelect: React.FC<{ fieldDef: any, value: any, onChange: (val: an
   }, [fieldDef, organizationId, currentRecordId, isInboundMode]);
 
   const currentValues = React.useMemo(() => {
-    if (Array.isArray(value)) return value.map(String);
-    if (typeof value === 'string' && value.trim()) return value.split(',').map(s => s.trim());
-    if (value) return [String(value)];
-    return [];
-  }, [value]);
+    let rawList: string[] = [];
+    if (Array.isArray(value)) {
+      rawList = value.map(v => cleanComplexValue(v)).filter(Boolean);
+    } else if (typeof value === 'string' && value.trim()) {
+      const cleaned = cleanComplexValue(value);
+      rawList = cleaned.split(',').map(s => s.trim()).filter(Boolean);
+    } else if (value) {
+      rawList = [cleanComplexValue(value)].filter(Boolean);
+    }
+
+    // Resolve any human-readable labels (e.g. "Relationship 1" from Podio) to their A-CORE option ID
+    return rawList.map(val => {
+      const exactIdMatch = options.find(o => o.id === val);
+      if (exactIdMatch) return exactIdMatch.id;
+      const labelMatch = options.find(o => o.label.toLowerCase() === val.toLowerCase());
+      if (labelMatch) return labelMatch.id;
+      return val;
+    });
+  }, [value, options]);
 
   const handleAdd = (newId: string) => {
     if (!newId) return;
@@ -1826,6 +1915,306 @@ const ConnectionSelect: React.FC<{ fieldDef: any, value: any, onChange: (val: an
 };
 
 // ============================================
+// RECORD TASKS VIEWER & INLINE CREATOR
+// ============================================
+const RecordTasksTab: React.FC<{
+  record: Record<string, any>;
+  organizationId: string;
+  workspaceId?: string;
+  miniAppId?: string | null;
+  appName: string;
+  userId: string;
+  wsColor: any;
+  onOpenSlidePanel: () => void;
+}> = ({ record, organizationId, workspaceId, miniAppId, appName, userId, wsColor, onOpenSlidePanel }) => {
+  const [recordTasks, setRecordTasks] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [newTaskTitle, setNewTaskTitle] = useState('');
+  const [newTaskDueDate, setNewTaskDueDate] = useState('');
+  const [newTaskPriority, setNewTaskPriority] = useState<'low' | 'medium' | 'high' | 'urgent'>('medium');
+  const [isAdding, setIsAdding] = useState(false);
+
+  const recordUid = record._item_uid || record.id;
+  const recordDbId = record._db_id;
+  const recordTitle =
+    record.name ||
+    record.Name ||
+    record.title ||
+    record.Title ||
+    (record['First Name'] ? `${record['First Name']} ${record['Last Name'] || ''}`.trim() : '') ||
+    recordUid;
+
+  const fetchRecordTasks = useCallback(async () => {
+    if (!organizationId || !record) return;
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .schema('app_private')
+        .from('tasks')
+        .select('*')
+        .eq('organization_id', organizationId)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      const matched = (data || []).filter((t: any) => {
+        if (recordUid && (t.record_id === recordUid || t.related_record_id === recordUid)) return true;
+        if (recordDbId && (t.record_id === recordDbId || t.related_record_id === recordDbId)) return true;
+        // Also match tasks imported from Podio that reference this record's title or Podio item ID
+        if (record._podio_item_id && Array.isArray(t.tags) && t.tags.includes(`podio_item:${record._podio_item_id}`)) return true;
+        if (
+          recordTitle &&
+          t.record_title &&
+          String(t.record_title).toLowerCase().trim() === String(recordTitle).toLowerCase().trim() &&
+          (!t.mini_app_id || t.mini_app_id === miniAppId || t.app_name === appName)
+        ) {
+          return true;
+        }
+        return false;
+      });
+
+      setRecordTasks(matched);
+    } catch (err) {
+      console.error('Error fetching record tasks:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [organizationId, record, recordUid, recordDbId, recordTitle, miniAppId, appName]);
+
+  useEffect(() => {
+    fetchRecordTasks();
+
+    const channel = supabase
+      .channel(`record-tasks-${recordUid}`)
+      .on('postgres_changes', { event: '*', schema: 'app_private', table: 'tasks' }, () => {
+        fetchRecordTasks();
+      })
+      .subscribe();
+
+    window.addEventListener('refreshTasks', fetchRecordTasks);
+    return () => {
+      supabase.removeChannel(channel);
+      window.removeEventListener('refreshTasks', fetchRecordTasks);
+    };
+  }, [fetchRecordTasks, recordUid]);
+
+  const handleCreateRecordTask = async () => {
+    if (!newTaskTitle.trim() || !organizationId) return;
+    setIsAdding(true);
+    try {
+      let dueIso: string | null = null;
+      if (newTaskDueDate) {
+        const d = new Date(`${newTaskDueDate}T23:59:00`);
+        if (!isNaN(d.getTime())) dueIso = d.toISOString();
+      }
+
+      const tags: string[] = [];
+      if (record._podio_item_id) tags.push(`podio_item:${record._podio_item_id}`);
+
+      const payload = {
+        organization_id: organizationId,
+        workspace_id: workspaceId || null,
+        mini_app_id: miniAppId || null,
+        record_id: recordUid,
+        record_title: recordTitle,
+        app_name: appName,
+        title: newTaskTitle.trim(),
+        status: 'pending',
+        priority: newTaskPriority,
+        due_date: dueIso,
+        show_on_calendar: Boolean(dueIso),
+        created_by: userId,
+        assigned_to: userId,
+        tags
+      };
+
+      const { data: created, error } = await supabase
+        .schema('app_private')
+        .from('tasks')
+        .insert(payload)
+        .select('*')
+        .single();
+
+      if (error) throw error;
+
+      // Sync outbound to Podio attached to this specific record!
+      supabase.functions.invoke('sync-to-podio', {
+        body: {
+          action: 'create_task',
+          workspaceId: workspaceId || null,
+          miniAppId: miniAppId || null,
+          recordId: recordUid,
+          taskData: created,
+          userId
+        }
+      }).catch(err => console.warn('[Podio Record Task Sync] Warning:', err));
+
+      setNewTaskTitle('');
+      setNewTaskDueDate('');
+      setNewTaskPriority('medium');
+      await fetchRecordTasks();
+      window.dispatchEvent(new CustomEvent('refreshTasks'));
+    } catch (err) {
+      console.error('Error creating record task:', err);
+    } finally {
+      setIsAdding(false);
+    }
+  };
+
+  const handleToggleTask = async (task: any) => {
+    const newStatus = task.status === 'completed' ? 'pending' : 'completed';
+    const completedAt = newStatus === 'completed' ? new Date().toISOString() : null;
+    setRecordTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: newStatus, completed_at: completedAt } : t));
+    await supabase
+      .schema('app_private')
+      .from('tasks')
+      .update({ status: newStatus, completed_at: completedAt, updated_at: new Date().toISOString() })
+      .eq('id', task.id);
+    window.dispatchEvent(new CustomEvent('refreshTasks'));
+  };
+
+  const handleDeleteTask = async (taskId: string) => {
+    setRecordTasks(prev => prev.filter(t => t.id !== taskId));
+    await supabase.schema('app_private').from('tasks').delete().eq('id', taskId);
+    window.dispatchEvent(new CustomEvent('refreshTasks'));
+  };
+
+  return (
+    <div className="p-6 space-y-6 w-full">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-4">
+        <div>
+          <h3 className="text-lg font-mono font-bold text-white flex items-center gap-2">
+            <CheckSquareIcon size={20} style={{ color: wsColor.primary }} />
+            Tasks Linked to {recordTitle}
+          </h3>
+          <p className="text-xs font-mono text-gray-500 mt-0.5">
+            Record ID: <span className="text-gray-300">{recordUid}</span> • {recordTasks.length} linked task(s)
+          </p>
+        </div>
+        <button
+          onClick={onOpenSlidePanel}
+          className="px-3 py-1.5 rounded-lg border text-xs font-mono transition-all hover:bg-white/5 flex items-center gap-1.5"
+          style={{ borderColor: `rgba(${wsColor.rgb}, 0.4)`, color: wsColor.primary }}
+        >
+          <PopoutIcon size={14} /> Open Full Tasks Panel
+        </button>
+      </div>
+
+      {/* Quick Add Task Bar for this Record */}
+      <div className="bg-black/60 border rounded-xl p-4 space-y-3" style={{ borderColor: `rgba(${wsColor.rgb}, 0.3)` }}>
+        <div className="flex flex-col sm:flex-row gap-3">
+          <input
+            type="text"
+            value={newTaskTitle}
+            onChange={e => setNewTaskTitle(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleCreateRecordTask(); }}
+            placeholder={`Add a task for ${recordTitle}...`}
+            className="flex-1 bg-gray-900/80 border border-gray-800 rounded-lg px-4 py-2.5 text-white font-mono text-sm focus:outline-none"
+          />
+          <input
+            type="date"
+            value={newTaskDueDate}
+            onChange={e => setNewTaskDueDate(e.target.value)}
+            className="bg-gray-900/80 border border-gray-800 rounded-lg px-3 py-2 text-gray-300 font-mono text-xs focus:outline-none [color-scheme:dark]"
+            title="Due Date"
+          />
+          <select
+            value={newTaskPriority}
+            onChange={e => setNewTaskPriority(e.target.value as any)}
+            className="bg-gray-900/80 border border-gray-800 rounded-lg px-3 py-2 text-gray-300 font-mono text-xs focus:outline-none"
+          >
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+            <option value="urgent">Urgent</option>
+          </select>
+          <button
+            onClick={handleCreateRecordTask}
+            disabled={!newTaskTitle.trim() || isAdding}
+            className="px-5 py-2.5 rounded-lg font-mono text-xs font-bold transition-all disabled:opacity-40 flex items-center justify-center gap-1.5 whitespace-nowrap"
+            style={{ background: wsColor.primary, color: '#000', boxShadow: `0 0 15px rgba(${wsColor.rgb}, 0.25)` }}
+          >
+            <PlusIcon size={14} /> {isAdding ? 'Adding...' : 'Add Task'}
+          </button>
+        </div>
+      </div>
+
+      {/* Tasks List */}
+      {loading ? (
+        <div className="flex flex-col items-center justify-center py-12 gap-3">
+          <div className="w-7 h-7 border-2 rounded-full animate-spin" style={{ borderColor: `rgba(${wsColor.rgb}, 0.3)`, borderTopColor: wsColor.primary }} />
+          <span className="text-xs font-mono text-gray-500 uppercase tracking-widest">Loading linked tasks...</span>
+        </div>
+      ) : recordTasks.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-12 text-center border border-dashed border-gray-800 rounded-xl bg-black/30">
+          <CheckSquareIcon size={32} className="mb-3 text-gray-700" />
+          <h4 className="text-base font-mono font-medium text-white mb-1">No Tasks Linked to This Record Yet</h4>
+          <p className="text-xs text-gray-500 font-mono max-w-md">
+            Use the bar above to add a task directly to <span className="text-gray-300">{recordTitle}</span> (it will also sync to this item in Podio).
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-2.5">
+          {recordTasks.map(task => {
+            const isCompleted = task.status === 'completed';
+            return (
+              <div
+                key={task.id}
+                className={`flex items-center justify-between gap-4 p-4 rounded-xl border transition-all group ${
+                  isCompleted ? 'bg-black/30 border-gray-800/60 opacity-60' : 'bg-black/70 hover:bg-white/[0.03]'
+                }`}
+                style={!isCompleted ? { borderColor: `rgba(${wsColor.rgb}, 0.35)` } : {}}
+              >
+                <div className="flex items-center gap-3.5 min-w-0 flex-1">
+                  <button
+                    onClick={() => handleToggleTask(task)}
+                    className={`w-6 h-6 rounded-md border-2 flex items-center justify-center transition-all flex-shrink-0 ${
+                      isCompleted ? 'bg-green-500/20 border-green-500 text-green-400' : 'border-gray-600 hover:border-white'
+                    }`}
+                  >
+                    {isCompleted && <CheckSquareIcon size={14} />}
+                  </button>
+                  <div className="min-w-0 flex-1">
+                    <p className={`text-sm font-mono font-medium truncate ${isCompleted ? 'line-through text-gray-500' : 'text-white'}`}>
+                      {task.title}
+                    </p>
+                    {task.description && (
+                      <p className="text-xs font-mono text-gray-400 line-clamp-1 mt-0.5">{task.description}</p>
+                    )}
+                    <div className="flex flex-wrap items-center gap-2 mt-1.5">
+                      <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-white/5 border border-white/10 text-gray-300">
+                        {task.priority || 'medium'}
+                      </span>
+                      {task.due_date && (
+                        <span className="text-[10px] font-mono text-gray-400 flex items-center gap-1">
+                          <CalendarIcon size={10} /> {new Date(task.due_date).toLocaleDateString()}
+                        </span>
+                      )}
+                      {Array.isArray(task.tags) && task.tags.includes('podio') && (
+                        <span className="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                          Synced with Podio
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => handleDeleteTask(task.id)}
+                  className="p-2 text-gray-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all rounded-lg hover:bg-red-500/10"
+                  title="Delete Task"
+                >
+                  <TrashIcon size={16} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ============================================
 // RECORD CONNECTIONS VIEWER
 // ============================================
 const RecordConnectionsTab: React.FC<{
@@ -2068,7 +2457,15 @@ const RecordCommentsPane: React.FC<{
         .eq('record_id', recordId)
         .order('created_at', { ascending: true });
 
-      if (!error && data) setComments(data);
+      if (!error && data) {
+        const decrypted = await Promise.all(
+          data.map(async (c: any) => ({
+            ...c,
+            comment_text: await decryptTextInlinePqc(c.comment_text || '', recordId),
+          }))
+        );
+        setComments(decrypted);
+      }
       setIsLoading(false);
       scrollToBottom();
     };
@@ -2080,8 +2477,10 @@ const RecordCommentsPane: React.FC<{
       .channel(`comments-${recordId}`)
       .on('postgres_changes', { 
         event: 'INSERT', schema: 'app_private', table: 'mini_app_record_comments', filter: `record_id=eq.${recordId}`
-      }, (payload) => {
-        setComments(prev => [...prev, payload.new as RecordComment]);
+      }, async (payload) => {
+        const incoming = payload.new as RecordComment;
+        const decryptedText = await decryptTextInlinePqc(incoming.comment_text || '', recordId);
+        setComments(prev => [...prev, { ...incoming, comment_text: decryptedText }]);
         scrollToBottom();
       })
       .subscribe();
@@ -2099,6 +2498,7 @@ const RecordCommentsPane: React.FC<{
     if (!newComment.trim()) return;
     setIsSubmitting(true);
     try {
+      const encryptedComment = await encryptTextInlinePqc(newComment.trim(), recordId);
       // ⚡ FIX: Added schema, injected organization_id, and explicitly captured the error to throw
       const { error } = await supabase.schema('app_private').from('mini_app_record_comments').insert({
         record_id: recordId, 
@@ -2106,7 +2506,7 @@ const RecordCommentsPane: React.FC<{
         organization_id: organization?.id,
         user_id: userId, 
         user_name: userName, 
-        comment_text: newComment.trim(),
+        comment_text: encryptedComment,
       });
       
       if (error) throw error;
@@ -2195,7 +2595,7 @@ const RecordCommentsPane: React.FC<{
 
 const MiniAppView: React.FC<MiniAppViewProps> = ({
   appName, workspaceSlug, workspaceId, isAdmin, onBack,
-  availableLayouts = ['table', 'card', 'badge', 'calendar'],
+  availableLayouts = ['table', 'card', 'badge', 'calendar', 'facility', 'map'],
   initialAddRecord,
   onEditTemplate,
   isGlobalAddMode,
@@ -2493,15 +2893,17 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
   const [podioAppToken, setPodioAppToken] = useState('');
   const [isImportingPodio, setIsImportingPodio] = useState(false);
   const [podioStep, setPodioStep] = useState<'credentials' | 'dependencies' | 'mapping'>('credentials');
-  const [podioFields, setPodioFields] = useState<{ external_id: string; label: string }[]>([]);
-  const [podioDependencies, setPodioDependencies] = useState<{ app_id: number; name: string }[]>([]);
+  const [podioFields, setPodioFields] = useState<any[]>([]);
+  const [podioDependencies, setPodioDependencies] = useState<{ app_id: number; name: string; space_name?: string; space_id?: number | string }[]>([]);
   const [manualAppIdMode, setManualAppIdMode] = useState(false);
   const [podioWorkspaceName, setPodioWorkspaceName] = useState<string>(''); // ⚡ NEW STATE
   const [podioMapping, setPodioMapping] = useState<Record<string, string>>({});
   const [isAwaitingAuth, setIsAwaitingAuth] = useState(false);
+  const [fullWsTargetId, setFullWsTargetId] = useState<string>('__auto_create__');
+  const [fullWsImportStatus, setFullWsImportStatus] = useState<string>('');
   
   // New state for the Dropdown Menu
-  const [podioAppsList, setPodioAppsList] = useState<{app_id: number, name: string, space_name: string}[]>([]);
+  const [podioAppsList, setPodioAppsList] = useState<{app_id: number, name: string, space_name: string, space_id?: number | string}[]>([]);
   const [isLoadingPodioApps, setIsLoadingPodioApps] = useState(false);
 
   const fetchPodioAppsList = async () => {
@@ -2517,9 +2919,10 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
       
       // ⚡ Safely normalize Podio's nested API structure (app.config.name and app.space.name)
       const normalizedApps = (data.apps || []).map((app: any) => ({
-        app_id: app.app_id,
+        app_id: Number(app.app_id),
         name: app.config?.name || app.name || 'Unnamed App',
-        space_name: app.space?.name || app.space_name || 'Unknown Workspace'
+        space_name: app.space?.name || app.space_name || 'Unknown Workspace',
+        space_id: app.space_id || app.space?.space_id
       }));
 
       // Sort alphabetically by Workspace, then App Name
@@ -2677,9 +3080,14 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
     return name;
   }, [appName, appSettings?.itemName]);
 
-  const loadRecords = useCallback(async () => {
+  const hasLoadedOnceRef = useRef<string | null>(null);
+
+  const loadRecords = useCallback(async (silent: boolean = false) => {
   if (!organization?.id) return;
-  setIsLoading(true);
+  const currentKey = `${workspaceId || workspaceSlug}:${appName}`;
+  if (!silent && hasLoadedOnceRef.current !== currentKey) {
+    setIsLoading(true);
+  }
   setDbError(null);
 
   try {
@@ -2755,7 +3163,6 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
       const parentAppId = parsedSettings.parent_preset_id;
       
       // ⚡ 4. FETCH RECORDS
-      // We explicitly query by organization_id to ensure absolute data isolation
       let query = supabase.schema('app_private').from('mini_app_records')
         .select('*')
         .eq('organization_id', organization.id)
@@ -2771,12 +3178,25 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
 
       if (recError) throw recError;
       if (records && records.length > 0) {
-        const transformed = records.map((r: any) => ({
+        // Deduplicate in UI by _podio_item_id (if present) or item_uid so stale duplicates don't clutter the view
+        const seenPodioIds = new Set<string>();
+        const uniqueRecords = records.filter((r: any) => {
+          const d = (r.data as Record<string, any>) || {};
+          if (d._podio_item_id) {
+            const pid = String(d._podio_item_id);
+            if (seenPodioIds.has(pid)) return false;
+            seenPodioIds.add(pid);
+          }
+          return true;
+        });
+
+        const transformed = uniqueRecords.map((r: any) => ({
           _db_id: r.id, _item_uid: r.item_uid, id: r.item_uid || r.id, ...((r.data as Record<string, any>) || {}),
           _created_at: r.created_at, _updated_at: r.updated_at,
         }));
         setDbRecords(transformed);
       } else { setDbRecords([]); }
+      hasLoadedOnceRef.current = currentKey;
     } else {
       setMiniAppId(null); setDbRecords([]); setSchemaFields([]); 
     }
@@ -2787,19 +3207,90 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
 }, [appName, organization?.id, workspaceId, workspaceSlug]);
 
   useEffect(() => { 
-    loadRecords(); 
+    loadRecords(false); 
     
-    // ⚡ Listen for Builder and Record updates so the Viewer refreshes instantly!
-    const handleUpdate = () => loadRecords();
+    // ⚡ Silent refresh on background events so the table doesn't flash a loading spinner!
+    let debounceTimer: any = null;
+    const handleUpdate = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => loadRecords(true), 300);
+    };
     
     window.addEventListener('miniapp_schema_updated', handleUpdate);
     window.addEventListener('miniapp_records_updated', handleUpdate);
     
     return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
       window.removeEventListener('miniapp_schema_updated', handleUpdate);
       window.removeEventListener('miniapp_records_updated', handleUpdate);
     };
   }, [loadRecords]);
+
+  // ⚡ REALTIME INBOUND PODIO SYNC (Debounced so bulk inserts/updates only trigger 1 silent reload!)
+  useEffect(() => {
+    if (!miniAppId) return;
+    let rtTimer: any = null;
+    const channel = supabase
+      .channel(`realtime-miniapp-records-${miniAppId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'app_private',
+          table: 'mini_app_records',
+          filter: `mini_app_id=eq.${miniAppId}`
+        },
+        () => {
+          if (rtTimer) clearTimeout(rtTimer);
+          rtTimer = setTimeout(() => {
+            loadRecords(true);
+          }, 600);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      if (rtTimer) clearTimeout(rtTimer);
+      supabase.removeChannel(channel);
+    };
+  }, [miniAppId, loadRecords]);
+
+  // ⚡ AUTOMATIC BACKGROUND PODIO DELTA SYNC:
+  // Skips if the app was just imported/synced within the last 60 seconds!
+  const autoSyncedAppRef = useRef<string | null>(null);
+  useEffect(() => {
+    const syncConfig = appSettings?.podio_sync_config;
+    if (isImportingPodio) return;
+    if (!miniAppId || !organization?.id || !syncConfig?.podio_app_id || !userId || userId === 'anonymous') return;
+    if (autoSyncedAppRef.current === miniAppId) return;
+    autoSyncedAppRef.current = miniAppId;
+
+    // If this app was synced/imported within the last 60 seconds, skip redundant sync!
+    if (syncConfig.last_synced_at) {
+      const elapsedMs = Date.now() - new Date(syncConfig.last_synced_at).getTime();
+      if (!isNaN(elapsedMs) && elapsedMs < 60_000) {
+        return;
+      }
+    }
+
+    supabase.functions.invoke('import-podio-data', {
+      body: {
+        podioAppId: String(syncConfig.podio_app_id),
+        targetMiniAppId: miniAppId,
+        organizationId: organization.id,
+        fieldMapping: syncConfig.field_mapping || {},
+        schemaFields,
+        userId,
+        skipSpaceSync: true
+      }
+    }).then(({ data }) => {
+      if (data?.success && (data?.insertedCount > 0 || data?.updatedCount > 0)) {
+        loadRecords(true);
+        window.dispatchEvent(new CustomEvent('refreshTasks'));
+        window.dispatchEvent(new CustomEvent('refreshCalendar'));
+      }
+    }).catch(err => console.warn('[Auto Podio Sync] Background sync warning:', err));
+  }, [miniAppId, appSettings, organization?.id, schemaFields, userId, loadRecords, isImportingPodio]);
 
   useEffect(() => {
     const container = usersContainerRef.current;
@@ -2995,165 +3486,368 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
     return groups;
   })() : null;
 
-  // ⚡ SEQUENTIAL WORKFLOW ENGINE (ENTERPRISE)
-  const executeWorkflows = async (triggerEvent: 'record_created' | 'record_updated', recordData: any, recordId: string) => {
-    if (!miniAppId) return;
+  // ⚡ SEQUENTIAL WORKFLOW ENGINE (Supports all triggers, Podio 2-way sync, and all step types)
+  const executeWorkflows = async (
+    triggerEvent: 'record_created' | 'record_updated' | 'record_deleted',
+    recordData: any,
+    recordUid: string,
+    recordDbId?: string,
+    previousData?: any
+  ) => {
+    if (!miniAppId || !organization?.id) return;
 
     let workflowsToRun: any[] = [];
 
-    // Try the dedicated workflows table first
     const { data: wfData, error: fetchError } = await supabase.schema('app_private')
       .from('mini_app_workflows')
       .select('*')
       .eq('mini_app_id', miniAppId)
-      .eq('is_active', true)
-      .eq('trigger_event', triggerEvent);
+      .eq('is_active', true);
 
     if (!fetchError && wfData && wfData.length > 0) {
       workflowsToRun = wfData;
     } else if (appSettings?.workflows && Array.isArray(appSettings.workflows)) {
-      // ⚡ FALLBACK: If the table save was blocked by RLS, read from the JSON fallback!
       workflowsToRun = appSettings.workflows
-        .filter((w: any) => w.isActive && w.trigger === triggerEvent)
+        .filter((w: any) => w.isActive)
         .map((w: any) => ({
           ...w,
           steps: w.steps,
           trigger_event: w.trigger,
+          trigger_field: w.triggerField,
           is_active: w.isActive
         }));
     }
+
+    // Filter workflows matching the current triggerEvent (including `field_changed` on update!)
+    workflowsToRun = workflowsToRun.filter((wf: any) => {
+      const trig = wf.trigger_event || wf.trigger;
+      if (trig === triggerEvent) return true;
+      if (triggerEvent === 'record_updated' && trig === 'field_changed') {
+        const watchFieldId = wf.trigger_field || wf.triggerField;
+        if (!watchFieldId) return true;
+        const fieldDef = schemaFields.find((f: any) => f.id === watchFieldId || f.name === watchFieldId);
+        const fKey = fieldDef?.name || watchFieldId;
+        const oldVal = previousData ? (previousData[fKey] ?? previousData[watchFieldId] ?? '') : '';
+        const newVal = recordData[fKey] ?? recordData[watchFieldId] ?? '';
+        return String(oldVal) !== String(newVal);
+      }
+      return false;
+    });
 
     if (workflowsToRun.length === 0) return;
 
     const safeParse = (val: any, fallback: any) => {
       if (!val) return fallback;
       if (typeof val === 'string') {
-        try { return JSON.parse(val); } catch(e) { return fallback; }
+        try { return JSON.parse(val); } catch (e) { return fallback; }
       }
       return val;
     };
 
+    const getRecordFieldVal = (data: any, fieldIdOrName: string): any => {
+      if (!data || !fieldIdOrName) return '';
+      if (fieldIdOrName === '_record_id') return recordUid;
+      if (data[fieldIdOrName] !== undefined) return cleanComplexValue(data[fieldIdOrName]);
+      const fieldDef = schemaFields.find((f: any) => f.id === fieldIdOrName || f.name === fieldIdOrName);
+      if (fieldDef) {
+        if (data[fieldDef.name] !== undefined) return cleanComplexValue(data[fieldDef.name]);
+        if (data[fieldDef.id] !== undefined) return cleanComplexValue(data[fieldDef.id]);
+      }
+      const lower = String(fieldIdOrName).toLowerCase();
+      const ciKey = Object.keys(data).find(k => k.toLowerCase() === lower);
+      return ciKey ? cleanComplexValue(data[ciKey]) : '';
+    };
+
     const parseDynamicTokens = (text: string, data: any, schema: any[]) => {
       if (!text || typeof text !== 'string') return text;
-      let parsedText = text;
+      let parsedText = text.split('@_record_id').join(String(recordUid));
       schema.forEach(field => {
-        const token = `@${(field.name || '').replace(/\s+/g, '')}`;
-        const val = data[field.id] || data[field.name] || '';
-        parsedText = parsedText.split(token).join(String(val));
+        const noSpaceToken = `@${(field.name || '').replace(/\s+/g, '')}`;
+        const exactToken = `@${field.name || ''}`;
+        const idToken = `@${field.id}`;
+        const val = getRecordFieldVal(data, field.name || field.id);
+        parsedText = parsedText.split(noSpaceToken).join(String(val));
+        if (exactToken !== noSpaceToken) parsedText = parsedText.split(exactToken).join(String(val));
+        parsedText = parsedText.split(idToken).join(String(val));
       });
       return parsedText;
     };
 
+    let workingRecordData = { ...recordData };
+
     for (const wf of workflowsToRun) {
-      // ⚡ The new sequential steps array
       const steps = safeParse(wf.steps, []);
       let workflowPasses = true;
 
       for (const step of steps) {
-        if (!workflowPasses) break; // Stop execution if a previous condition failed
+        if (!workflowPasses) break;
 
         try {
           if (step.type === 'condition') {
-            const rule = step.config;
-            const val1 = String(recordData[rule.fieldId] || '').toLowerCase();
-            const val2 = String(rule.value || '').toLowerCase();
+            const rule = step.config || {};
+            const rawVal = getRecordFieldVal(workingRecordData, rule.fieldId);
+            const val1 = String(rawVal ?? '').toLowerCase().trim();
+            const val2 = String(rule.value ?? '').toLowerCase().trim();
+            const num1 = parseFloat(String(rawVal).replace(/[^0-9.\-]/g, ''));
+            const num2 = parseFloat(String(rule.value).replace(/[^0-9.\-]/g, ''));
             let result = false;
-            
-            switch(rule.operator) {
+
+            switch (rule.operator || 'equals') {
               case 'equals': result = val1 === val2; break;
               case 'not_equals': result = val1 !== val2; break;
               case 'contains': result = val1.includes(val2); break;
-              case 'greater_than': result = Number(recordData[rule.fieldId]) > Number(rule.value); break;
-              case 'less_than': result = Number(recordData[rule.fieldId]) < Number(rule.value); break;
+              case 'greater_than': result = !isNaN(num1) && !isNaN(num2) && num1 > num2; break;
+              case 'less_than': result = !isNaN(num1) && !isNaN(num2) && num1 < num2; break;
               case 'is_empty': result = !val1; break;
               case 'is_not_empty': result = !!val1; break;
+              default: result = val1 === val2;
             }
-            if (!result) workflowPasses = false; // Kill the timeline
+            if (!result) workflowPasses = false;
           }
-          
+
+          else if (step.type === 'delay') {
+            const seconds = Math.min(10, Math.max(0, Number(step.config?.seconds || 1)));
+            if (seconds > 0) {
+              await new Promise(res => setTimeout(res, seconds * 1000));
+            }
+          }
+
           else if (step.type === 'create_record' && step.config?.targetAppId) {
-            const { data: targetApp } = await supabase.schema('app_private').from('mini_apps').select('name, item_id_settings, schema_definition').eq('id', step.config.targetAppId).single();
+            const { data: targetApp } = await supabase.schema('app_private')
+              .from('mini_apps')
+              .select('id, name, item_id_settings, schema_definition')
+              .eq('id', step.config.targetAppId)
+              .single();
             if (!targetApp) continue;
 
             const targetSchema = targetApp.schema_definition ? safeParse(targetApp.schema_definition, { fields: [] }) : { fields: [] };
-            const targetFields = targetSchema.fields || [];
+            const targetFields = targetSchema.fields || [...(targetSchema.base_fields || []), ...(targetSchema.custom_fields || [])];
             const newRecordData: any = {};
-            
-            Object.entries(step.config.fieldMapping || {}).forEach(([targetFieldId, sourceFieldId]) => {
-              const mappedValue = sourceFieldId === '_record_id' ? recordId : recordData[sourceFieldId as string];
-              newRecordData[targetFieldId] = mappedValue;
-              const targetFieldDef = targetFields.find((f: any) => f.id === targetFieldId);
-              if (targetFieldDef && targetFieldDef.name) newRecordData[targetFieldDef.name] = mappedValue; 
-            });
-            
+
+            const rawMapping = step.config.fieldMapping;
+            if (Array.isArray(rawMapping)) {
+              rawMapping.forEach((m: any) => {
+                if (!m?.targetFieldId) return;
+                const rawSource = String(m.sourceValue || '');
+                const resolvedVal = rawSource.includes('@')
+                  ? parseDynamicTokens(rawSource, workingRecordData, schemaFields)
+                  : (getRecordFieldVal(workingRecordData, rawSource) || rawSource);
+                const tFieldDef = targetFields.find((f: any) => f.id === m.targetFieldId || f.name === m.targetFieldId);
+                if (tFieldDef) {
+                  newRecordData[tFieldDef.id] = resolvedVal;
+                  if (tFieldDef.name) newRecordData[tFieldDef.name] = resolvedVal;
+                } else {
+                  newRecordData[m.targetFieldId] = resolvedVal;
+                }
+              });
+            } else if (rawMapping && typeof rawMapping === 'object') {
+              Object.entries(rawMapping).forEach(([targetFieldId, sourceFieldId]) => {
+                const resolvedVal = getRecordFieldVal(workingRecordData, String(sourceFieldId));
+                const tFieldDef = targetFields.find((f: any) => f.id === targetFieldId || f.name === targetFieldId);
+                if (tFieldDef) {
+                  newRecordData[tFieldDef.id] = resolvedVal;
+                  if (tFieldDef.name) newRecordData[tFieldDef.name] = resolvedVal;
+                } else {
+                  newRecordData[targetFieldId] = resolvedVal;
+                }
+              });
+            }
+
             const targetSettings = targetApp.item_id_settings ? safeParse(targetApp.item_id_settings, {}) : {};
             const prefix = targetSettings.prefix || targetApp.name?.substring(0, 3).toUpperCase() || 'APP';
             const itemUid = `${prefix}-${Date.now().toString(36).toUpperCase()}`;
 
-            const { error: insertError } = await supabase.schema('app_private').from('mini_app_records').insert({
-              mini_app_id: step.config.targetAppId,
-              organization_id: organization?.id,
-              item_uid: itemUid,
-              data: newRecordData,
-              created_by: user?.id || null,
-              updated_by: user?.id || null
-            });
-            if (!insertError) window.dispatchEvent(new CustomEvent('miniapp_records_updated'));
+            const { data: insertedRecs, error: insertError } = await supabase.schema('app_private')
+              .from('mini_app_records')
+              .insert({
+                mini_app_id: step.config.targetAppId,
+                organization_id: organization.id,
+                item_uid: itemUid,
+                data: newRecordData,
+                created_by: user?.id || null,
+                updated_by: user?.id || null
+              })
+              .select('id');
+
+            if (!insertError && insertedRecs?.[0]) {
+              window.dispatchEvent(new CustomEvent('miniapp_records_updated'));
+              // Also sync newly created workflow item to Podio if target MiniApp is linked to Podio!
+              supabase.functions.invoke('sync-to-podio', {
+                body: {
+                  action: 'create',
+                  miniAppId: step.config.targetAppId,
+                  recordId: insertedRecs[0].id,
+                  recordData: newRecordData,
+                  userId
+                }
+              }).catch(() => {});
+            }
           }
-          
+
           else if (step.type === 'update_record') {
             const updates: any = {};
-            Object.entries(step.config.fieldUpdates || {}).forEach(([fieldId, newValue]) => {
-              const parsedValue = parseDynamicTokens(newValue as string, recordData, schemaFields);
+            Object.entries(step.config?.fieldUpdates || {}).forEach(([fieldId, newValue]) => {
+              const parsedValue = parseDynamicTokens(String(newValue ?? ''), workingRecordData, schemaFields);
               updates[fieldId] = parsedValue;
-              const targetFieldDef = schemaFields.find((f: any) => f.id === fieldId);
-              if (targetFieldDef && targetFieldDef.name) updates[targetFieldDef.name] = parsedValue; 
+              const targetFieldDef = schemaFields.find((f: any) => f.id === fieldId || f.name === fieldId);
+              if (targetFieldDef?.name) updates[targetFieldDef.name] = parsedValue;
+              if (targetFieldDef?.id) updates[targetFieldDef.id] = parsedValue;
             });
 
-            await supabase.schema('app_private').from('mini_app_records')
-              .update({ data: { ...recordData, ...updates }, updated_at: new Date().toISOString() })
-              .eq('id', recordId);
+            workingRecordData = { ...workingRecordData, ...updates };
+            let updateQuery = supabase.schema('app_private').from('mini_app_records')
+              .update({ data: workingRecordData, updated_at: new Date().toISOString() });
+
+            if (recordDbId) {
+              updateQuery = updateQuery.eq('id', recordDbId);
+            } else {
+              updateQuery = updateQuery.eq('item_uid', recordUid).eq('mini_app_id', miniAppId);
+            }
+            await updateQuery;
             window.dispatchEvent(new CustomEvent('miniapp_records_updated'));
+
+            if (recordDbId) {
+              supabase.functions.invoke('sync-to-podio', {
+                body: {
+                  action: 'update',
+                  miniAppId,
+                  recordId: recordDbId,
+                  recordData: workingRecordData,
+                  podioItemId: workingRecordData._podio_item_id,
+                  userId
+                }
+              }).catch(() => {});
+            }
           }
-          
+
+          else if (step.type === 'math') {
+            const targetFieldId = step.config?.targetFieldId;
+            const fieldA = step.config?.fieldA;
+            const fieldB = step.config?.fieldB;
+            const op = step.config?.operator || 'add';
+            if (targetFieldId && fieldA) {
+              const valA = parseFloat(String(getRecordFieldVal(workingRecordData, fieldA)).replace(/[^0-9.\-]/g, '')) || 0;
+              const rawB = step.config?.constantB !== undefined && step.config?.constantB !== ''
+                ? Number(step.config.constantB)
+                : (parseFloat(String(getRecordFieldVal(workingRecordData, fieldB)).replace(/[^0-9.\-]/g, '')) || 0);
+              let computed = valA;
+              if (op === 'add') computed = valA + rawB;
+              else if (op === 'subtract') computed = valA - rawB;
+              else if (op === 'multiply') computed = valA * rawB;
+              else if (op === 'divide') computed = rawB !== 0 ? Number((valA / rawB).toFixed(2)) : 0;
+
+              const targetFieldDef = schemaFields.find((f: any) => f.id === targetFieldId || f.name === targetFieldId);
+              const updates: any = { [targetFieldId]: computed };
+              if (targetFieldDef?.name) updates[targetFieldDef.name] = computed;
+              if (targetFieldDef?.id) updates[targetFieldDef.id] = computed;
+
+              workingRecordData = { ...workingRecordData, ...updates };
+              if (recordDbId) {
+                await supabase.schema('app_private').from('mini_app_records')
+                  .update({ data: workingRecordData, updated_at: new Date().toISOString() })
+                  .eq('id', recordDbId);
+                window.dispatchEvent(new CustomEvent('miniapp_records_updated'));
+              }
+            }
+          }
+
           else if (step.type === 'send_task') {
-            const taskTitle = parseDynamicTokens(step.config.taskTitle, recordData, schemaFields);
-            await supabase.schema('app_private').from('tasks').insert({
-              title: taskTitle,
-              assignee_id: step.config.assigneeId,
-              related_record_id: recordId,
-              organization_id: organization?.id,
-              app_name: appName // ⚡ Injects the MiniApp's name as the breadcrumb source
-            });
+            const taskTitle = parseDynamicTokens(step.config?.taskTitle || 'Workflow Task', workingRecordData, schemaFields);
+            const taskDesc = step.config?.taskDescription
+              ? parseDynamicTokens(step.config.taskDescription, workingRecordData, schemaFields)
+              : null;
+            const dueDays = Number(step.config?.dueInDays || 0);
+            const dueIso = dueDays > 0 ? new Date(Date.now() + dueDays * 86400_000).toISOString() : null;
+
+            const recordTitle =
+              workingRecordData.Name ||
+              workingRecordData.name ||
+              workingRecordData.Title ||
+              (workingRecordData['First Name'] ? `${workingRecordData['First Name']} ${workingRecordData['Last Name'] || ''}`.trim() : '') ||
+              recordUid;
+
+            const { data: createdTask } = await supabase.schema('app_private')
+              .from('tasks')
+              .insert({
+                organization_id: organization.id,
+                workspace_id: workspaceId || null,
+                mini_app_id: miniAppId,
+                record_id: recordUid,
+                record_title: recordTitle,
+                app_name: appName,
+                title: taskTitle,
+                description: taskDesc,
+                status: 'pending',
+                priority: step.config?.priority || 'medium',
+                due_date: dueIso,
+                show_on_calendar: Boolean(dueIso),
+                created_by: userId,
+                assigned_to: step.config?.assigneeId || userId,
+                tags: workingRecordData._podio_item_id ? [`podio_item:${workingRecordData._podio_item_id}`] : []
+              })
+              .select('*')
+              .single();
+
+            window.dispatchEvent(new CustomEvent('refreshTasks'));
+
+            if (createdTask) {
+              supabase.functions.invoke('sync-to-podio', {
+                body: {
+                  action: 'create_task',
+                  workspaceId: workspaceId || null,
+                  miniAppId,
+                  recordId: recordUid,
+                  taskData: createdTask,
+                  userId
+                }
+              }).catch(() => {});
+            }
+          }
+
+          else if (step.type === 'add_comment') {
+            const commentText = parseDynamicTokens(step.config?.commentText || '', workingRecordData, schemaFields);
+            if (commentText.trim() && (recordDbId || recordUid)) {
+              await supabase.schema('app_private').from('mini_app_record_comments').insert({
+                record_id: recordDbId || recordUid,
+                miniapp_id: miniAppId,
+                organization_id: organization.id,
+                user_id: userId,
+                user_name: `${userName} (Workflow)`,
+                comment_text: commentText.trim(),
+              });
+            }
+          }
+
+          else if (step.type === 'delete_record') {
+            if (recordDbId) {
+              await supabase.schema('app_private').from('mini_app_records').delete().eq('id', recordDbId);
+              window.dispatchEvent(new CustomEvent('miniapp_records_updated'));
+            }
           }
 
           else if (step.type === 'webhook') {
-            const url = parseDynamicTokens(step.config.url, recordData, schemaFields);
+            const url = parseDynamicTokens(step.config?.url || '', workingRecordData, schemaFields);
             if (url) {
-                // In production, this should ideally route through an edge function
-                fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ triggerEvent, recordId, recordData })
-                }).catch(e => console.error("Webhook failed:", e));
+              fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ triggerEvent, recordId: recordUid, recordData: workingRecordData })
+              }).catch(e => console.error('Webhook failed:', e));
             }
           }
-          
-          // ⚡ NEW: GLOBAL SEND ALERT ACTION
+
           else if (step.type === 'send_alert') {
-            // We need the workspace_id for the UI badges to light up correctly
             const { data: appInfo } = await supabase.schema('app_private')
               .from('mini_apps')
               .select('workspace_id')
               .eq('id', miniAppId)
               .single();
 
-            const alertTitle = parseDynamicTokens(step.config.alertTitle, recordData, schemaFields);
-            const alertMessage = parseDynamicTokens(step.config.alertMessage, recordData, schemaFields);
+            const alertTitle = parseDynamicTokens(step.config?.alertTitle || 'Workflow Alert', workingRecordData, schemaFields);
+            const alertMessage = parseDynamicTokens(step.config?.alertMessage || '', workingRecordData, schemaFields);
 
-            // ⚡ FIX: Added .schema('app_private') so it hits the correct table!
-            const { error: alertError } = await supabase.schema('app_private').from('notifications').insert({
-              organization_id: organization?.id,
+            await supabase.schema('app_private').from('notifications').insert({
+              organization_id: organization.id,
               type: 'alert',
               category: 'system',
               title: alertTitle || 'System Alert',
@@ -3161,122 +3855,144 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
               metadata: {
                 workspace_id: appInfo?.workspace_id,
                 mini_app_id: miniAppId,
-                record_id: recordId
+                record_id: recordUid
               },
               is_read: false,
               is_dismissed: false
             });
-            
-            if (alertError) console.error("Failed to send alert:", alertError);
           }
         } catch (err: any) {
-          console.error(`[Workflow Step Error]:`, err);
+          console.error('[Workflow Step Error]:', err);
         }
       }
     }
   };
 
   const handleCreateRecord = async () => {
-  if (!miniAppId) { alert('Error: No MiniApp ID found!'); return; }
-  setIsSaving(true);
-  
-  try {
-    let targetMiniAppId = miniAppId;
+    if (!miniAppId) { alert('Error: No MiniApp ID found!'); return; }
+    setIsSaving(true);
+    
+    try {
+      let targetMiniAppId = miniAppId;
 
-    // ⚡ JIT CLONING CHECK
-    // Determine if the active app is a Preset
-    const { data: currentApp } = await supabase.schema('app_private')
-      .from('mini_apps')
-      .select('is_preset, schema_definition, app_settings, item_id_settings, icon')
-      .eq('id', miniAppId)
-      .single();
-
-    if (currentApp?.is_preset) {
-      // Find the correct workspace ID for this org
-      const { data: targetWs } = await supabase.schema('app_private')
-        .from('workspaces')
-        .select('id')
-        .eq('organization_id', organization?.id)
-        .eq('slug', workspaceSlug.toLowerCase()) // Match the active view
-        .single();
-
-      if (!targetWs) throw new Error("Could not resolve workspace ID for cloning.");
-
-      // ⚡ FIX: Safely parse app_settings to inject parent_preset_id
-      const parsedSettings = typeof currentApp.app_settings === 'string' 
-        ? JSON.parse(currentApp.app_settings) 
-        : (currentApp.app_settings || {});
-
-      // Clone the Preset to the User's Workspace
-      const { data: newApp, error: cloneError } = await supabase.schema('app_private')
+      const { data: currentApp } = await supabase.schema('app_private')
         .from('mini_apps')
-        .insert({
-          organization_id: organization?.id,
-          workspace_id: targetWs.id,
-          name: appName,
-          slug: appName.toLowerCase().replace(/\s+/g, '-'),
-          icon: currentApp.icon,
-          schema_definition: currentApp.schema_definition,
-          item_id_settings: currentApp.item_id_settings,
-          is_preset: false, // Strip the preset flag!
-          // ⚡ Inject the parent ID INSIDE the settings JSON!
-          app_settings: {
-            ...parsedSettings,
-            parent_preset_id: miniAppId 
-          }
-        })
-        .select('id')
+        .select('is_preset, schema_definition, app_settings, item_id_settings, icon')
+        .eq('id', miniAppId)
         .single();
 
-      if (cloneError) throw cloneError;
+      if (currentApp?.is_preset) {
+        const { data: targetWs } = await supabase.schema('app_private')
+          .from('workspaces')
+          .select('id')
+          .eq('organization_id', organization?.id)
+          .eq('slug', workspaceSlug.toLowerCase())
+          .single();
+
+        if (!targetWs) throw new Error("Could not resolve workspace ID for cloning.");
+
+        const parsedSettings = typeof currentApp.app_settings === 'string' 
+          ? JSON.parse(currentApp.app_settings) 
+          : (currentApp.app_settings || {});
+
+        const { data: newApp, error: cloneError } = await supabase.schema('app_private')
+          .from('mini_apps')
+          .insert({
+            organization_id: organization?.id,
+            workspace_id: targetWs.id,
+            name: appName,
+            slug: appName.toLowerCase().replace(/\s+/g, '-'),
+            icon: currentApp.icon,
+            schema_definition: currentApp.schema_definition,
+            item_id_settings: currentApp.item_id_settings,
+            is_preset: false,
+            app_settings: {
+              ...parsedSettings,
+              parent_preset_id: miniAppId 
+            }
+          })
+          .select('id')
+          .single();
+
+        if (cloneError) throw cloneError;
+        targetMiniAppId = newApp.id;
+        setMiniAppId(newApp.id);
+      }
+
+      const itemUid = `${appName.substring(0, 3).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
+      const payload = { 
+        mini_app_id: targetMiniAppId, 
+        organization_id: organization?.id, 
+        item_uid: itemUid, 
+        data: { ...newRecordFields }, 
+        created_by: user?.id || null, 
+        updated_by: user?.id || null 
+      };
       
-      targetMiniAppId = newApp.id;
-      setMiniAppId(newApp.id); // Update React state to the newly cloned app
-    }
+      const { data, error } = await supabase.schema('app_private').from('mini_app_records').insert(payload).select();
+      if (error) throw error;
+      
+      if (data && data.length > 0) {
+        await executeWorkflows('record_created', { ...newRecordFields }, data[0].item_uid || data[0].id, data[0].id);
 
-    // Now insert the record mapped to the correct App and Org ID
-    const itemUid = `${appName.substring(0, 3).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
-    const payload = { 
-      mini_app_id: targetMiniAppId, 
-      organization_id: organization?.id, 
-      item_uid: itemUid, 
-      data: { ...newRecordFields }, 
-      created_by: user?.id || null, 
-      updated_by: user?.id || null 
-    };
-    
-    const { data, error } = await supabase.schema('app_private').from('mini_app_records').insert(payload).select();
-    if (error) throw error;
-    
-    // TRIGGER WORKFLOWS
-    if (data && data.length > 0) {
-      await executeWorkflows('record_created', { ...newRecordFields }, data[0].item_uid || data[0].id);
-    }
+        supabase.functions.invoke('sync-to-podio', {
+          body: {
+            action: 'create',
+            miniAppId: targetMiniAppId,
+            recordId: data[0].id,
+            recordData: { ...newRecordFields },
+            userId
+          }
+        }).then(({ data: syncRes }) => {
+          if (syncRes?.podio_item_id) {
+            loadRecords();
+          } else if (syncRes?.error) {
+            console.warn('[Podio Sync] Create error:', syncRes.error);
+          }
+        }).catch(err => console.warn('[Podio Sync] Create invoke error:', err));
+      }
 
-    handleCloseAddModal();
-    await loadRecords(); // Refresh using the new ID logic
-    window.dispatchEvent(new CustomEvent('miniapp_records_updated'));
-    logActivity({ workspace_slug: workspaceSlug, user_id: userId, user_name: userName, action_type: 'created', entity_type: 'record', entity_name: appName, target: appName, action: 'created a new record in' });
-  } catch (err: any) { 
-    console.error("[Create Record Error]:", err); // ⚡ Now it won't fail silently
-    setDbError(err.message || 'Failed to create record'); 
-  } finally { 
-    setIsSaving(false); 
-  }
-};
+      handleCloseAddModal();
+      await loadRecords();
+      window.dispatchEvent(new CustomEvent('miniapp_records_updated'));
+      logActivity({ workspace_slug: workspaceSlug, user_id: userId, user_name: userName, action_type: 'created', entity_type: 'record', entity_name: appName, target: appName, action: 'created a new record in' });
+    } catch (err: any) { 
+      console.error("[Create Record Error]:", err);
+      setDbError(err.message || 'Failed to create record'); 
+    } finally { 
+      setIsSaving(false); 
+    }
+  };
 
   const handleUpdateRecord = async () => {
     if (!editingRecord?._db_id) return;
     setIsSaving(true);
     try {
+      const previousData = selectedRecord ? { ...selectedRecord } : {};
       const { _db_id, _item_uid, _created_at, _updated_at, id, ...dataFields } = editingRecord;
       const { error } = await supabase.schema('app_private').from('mini_app_records').update({ data: dataFields, updated_by: user?.id || null, updated_at: new Date().toISOString() }).eq('id', _db_id);
       if (error) throw error;
 
-      // ⚡ TRIGGER WORKFLOWS
-      await executeWorkflows('record_updated', dataFields, _item_uid || id);
+      // ⚡ TRIGGER WORKFLOWS (Pass _db_id and previousData so `field_changed` and `update_record` work!)
+      await executeWorkflows('record_updated', dataFields, _item_uid || id, _db_id, previousData);
+
+      if (miniAppId) {
+        supabase.functions.invoke('sync-to-podio', {
+          body: {
+            action: 'update',
+            miniAppId,
+            recordId: _db_id,
+            recordData: dataFields,
+            podioItemId: dataFields._podio_item_id || selectedRecord?._podio_item_id,
+            userId
+          }
+        }).then(({ data: syncRes }) => {
+          if (syncRes?.error) console.warn('[Podio Sync] Update error:', syncRes.error);
+        }).catch(err => console.warn('[Podio Sync] Update invoke error:', err));
+      }
 
       handleCloseRecord(); await loadRecords();
+      window.dispatchEvent(new CustomEvent('miniapp_records_updated'));
       logActivity({ workspace_slug: workspaceSlug, user_id: userId, user_name: userName, action_type: 'updated', entity_type: 'record', entity_name: appName, target: appName, action: 'updated a record in' });
     } catch (err: any) { setDbError(err.message || 'Failed to update record'); } finally { setIsSaving(false); }
   };
@@ -3285,14 +4001,109 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
     if (!record._db_id) return;
     if (!confirm('Delete this record permanently?')) return;
     try {
+      const { _db_id, _item_uid, id, ...dataFields } = record;
+      await executeWorkflows('record_deleted', dataFields, _item_uid || id, _db_id);
+
       const { error } = await supabase.schema('app_private').from('mini_app_records').delete().eq('id', record._db_id);
       if (error) throw error;
+
+      if (miniAppId && record._podio_item_id) {
+        supabase.functions.invoke('sync-to-podio', {
+          body: {
+            action: 'delete',
+            miniAppId,
+            recordId: record._db_id,
+            podioItemId: record._podio_item_id,
+            userId
+          }
+        }).catch(err => console.warn('[Podio Sync] Delete invoke error:', err));
+      }
+
       if (selectedRecord?._db_id === record._db_id) handleCloseRecord();
       await loadRecords();
       window.dispatchEvent(new CustomEvent('miniapp_records_updated'));
       logActivity({ workspace_slug: workspaceSlug, user_id: userId, user_name: userName, action_type: 'deleted', entity_type: 'record', entity_name: appName, target: appName, action: 'deleted a record from' });
     } catch (err: any) { setDbError(err.message || 'Failed to delete record'); }
   };
+
+  // ⚡ BI-DIRECTIONAL FAVORITE / PODIO LIKE TOGGLE
+  const handleToggleFavoriteRecord = async (record: Record<string, any>, e?: React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    if (!record?._db_id) return;
+
+    const nextLiked = !Boolean(record._is_liked);
+    const { _db_id, _item_uid, _created_at, _updated_at, id, ...dataFields } = record;
+    const updatedData = { ...dataFields, _is_liked: nextLiked };
+
+    // Optimistic UI update in table, selectedRecord, and editingRecord
+    setDbRecords(prev => prev.map(r => r._db_id === _db_id ? { ...r, _is_liked: nextLiked } : r));
+    if (selectedRecord?._db_id === _db_id) {
+      setSelectedRecord(prev => prev ? { ...prev, _is_liked: nextLiked } : prev);
+    }
+    if (editingRecord?._db_id === _db_id) {
+      setEditingRecord(prev => prev ? { ...prev, _is_liked: nextLiked } : prev);
+    }
+
+    try {
+      const { error } = await supabase
+        .schema('app_private')
+        .from('mini_app_records')
+        .update({ data: updatedData, updated_at: new Date().toISOString() })
+        .eq('id', _db_id);
+      if (error) throw error;
+
+      window.dispatchEvent(new CustomEvent('favoritesUpdated'));
+      window.dispatchEvent(new CustomEvent('miniapp_records_updated'));
+
+      // Outbound sync to Podio Like API if linked to Podio
+      if (record._podio_item_id || appSettings?.podio_sync_config?.podio_app_id) {
+        supabase.functions.invoke('sync-to-podio', {
+          body: {
+            action: 'toggle_like',
+            miniAppId,
+            recordId: _db_id,
+            podioItemId: record._podio_item_id,
+            isLiked: nextLiked,
+            userId
+          }
+        }).catch(err => console.warn('[Podio Like Sync] Warning:', err));
+      }
+    } catch (err: any) {
+      console.error('Error toggling favorite:', err);
+      loadRecords();
+    }
+  };
+
+  // ⚡ Auto-open a specific record when navigated from the Favorites Side Panel
+  useEffect(() => {
+    if (dbRecords.length === 0) return;
+    const pendingRecId = sessionStorage.getItem('acore_open_record_id');
+    if (pendingRecId) {
+      const found = dbRecords.find(r => r._db_id === pendingRecId || r._item_uid === pendingRecId || r.id === pendingRecId);
+      if (found) {
+        sessionStorage.removeItem('acore_open_record_id');
+        setSelectedRecord(found);
+        setEditingRecord(null);
+      }
+    }
+  }, [dbRecords]);
+
+  useEffect(() => {
+    const handleFocusRecord = (e: any) => {
+      const recId = e.detail?.recordId;
+      if (!recId || dbRecords.length === 0) return;
+      const found = dbRecords.find(r => r._db_id === recId || r._item_uid === recId || r.id === recId);
+      if (found) {
+        setSelectedRecord(found);
+        setEditingRecord(null);
+      }
+    };
+    window.addEventListener('focusMiniAppRecord', handleFocusRecord);
+    return () => window.removeEventListener('focusMiniAppRecord', handleFocusRecord);
+  }, [dbRecords]);
 
   const openExportModal = (target: 'all' | 'selected') => {
     setExportTarget(target);
@@ -3359,8 +4170,870 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
     } catch (err: any) { setDbError(err.message || 'Import failed'); } finally { setIsImporting(false); }
   };
 
-  const fetchDepSchema = async (depId: number) => {
+  // ⚡ Helper to reliably detect if a Podio field is a Relationship ('app') field
+  const isPodioRelationshipField = (pf: any, hasAppDependencies: boolean = false) => {
+    if (!pf) return false;
+    if (pf.type === 'app' || pf.type === 'relationship') return true;
+    if (Array.isArray(pf.config?.settings?.referenced_apps) && pf.config.settings.referenced_apps.length > 0) return true;
+    if (Array.isArray(pf.referenced_apps) && pf.referenced_apps.length > 0) return true;
+    // Fallback if edge function stripped `type` on relationship fields
+    if (!pf.type && hasAppDependencies && (pf.label?.toLowerCase().includes('relationship') || pf.external_id?.toLowerCase().includes('relationship'))) {
+      return true;
+    }
+    return false;
+  };
+
+  // ⚡ Helper to build smart auto-mapping between Podio fields and A-CORE schema fields
+  const computeSmartPodioMapping = (pFields: any[], targetSchemaFields: any[], hasDeps: boolean) => {
+    const autoMapping: Record<string, string> = {};
+    const validTargetFields = targetSchemaFields.filter(
+      (f: any) => f.name && !['split_separator', 'tabs', 'submenu', 'visualizer_field'].includes(f.type)
+    );
+    const acoreConnFields = validTargetFields.filter((f: any) => f.type === 'connection_field' || f.type === 'connection');
+    const acoreNonConnFields = validTargetFields.filter((f: any) => f.type !== 'connection_field' && f.type !== 'connection');
+    const podioRelFields = pFields.filter((pf: any) => isPodioRelationshipField(pf, hasDeps));
+
+    pFields.forEach((pf: any) => {
+      const isRel = isPodioRelationshipField(pf, hasDeps);
+      if (isRel) {
+        // 1. Try matching against an A-CORE Connection field by name
+        const connNameMatch = acoreConnFields.find(
+          (f: any) => f.name.toLowerCase() === pf.label?.toLowerCase() || f.name.toLowerCase() === pf.external_id?.toLowerCase()
+        );
+        if (connNameMatch) {
+          autoMapping[pf.external_id] = connNameMatch.name;
+        } else if (acoreConnFields.length === 1 && podioRelFields.length === 1) {
+          // 2. If there's 1 Podio Relationship and 1 A-CORE Connection field, pair them!
+          autoMapping[pf.external_id] = acoreConnFields[0].name;
+        } else if (acoreConnFields.length > 0) {
+          // 3. Otherwise pair with the first unused A-CORE Connection field
+          const usedNames = new Set(Object.values(autoMapping));
+          const unusedConn = acoreConnFields.find((f: any) => !usedNames.has(f.name)) || acoreConnFields[0];
+          autoMapping[pf.external_id] = unusedConn.name;
+        }
+      } else {
+        // Non-relationship Podio field: match ONLY against non-connection A-CORE fields first
+        const nonConnMatch = acoreNonConnFields.find(
+          (f: any) => f.name.toLowerCase() === pf.label?.toLowerCase() || f.name.toLowerCase() === pf.external_id?.toLowerCase()
+        );
+        if (nonConnMatch) {
+          autoMapping[pf.external_id] = nonConnMatch.name;
+        } else if (
+          (pf.external_id === 'title' || pf.label?.toLowerCase() === 'title') &&
+          acoreNonConnFields.length === 1
+        ) {
+          // Helpful fallback when a simple dependency app has a single text field (e.g. "Title" -> "Text")
+          autoMapping[pf.external_id] = acoreNonConnFields[0].name;
+        }
+      }
+    });
+
+    return autoMapping;
+  };
+
+  // ⚡ Map Podio field types to A-CORE BuildingBlock types
+  const mapPodioTypeToAcoreType = (pf: any, hasDeps: boolean = false): string => {
+    if (isPodioRelationshipField(pf, hasDeps)) return 'connection_field';
+    const t = (pf.type || '').toLowerCase();
+    switch (t) {
+      case 'text': return 'text_field';
+      case 'number':
+      case 'money':
+      case 'progress': return 'number_field';
+      case 'date': return 'date_field';
+      case 'phone': return 'phone_number_field';
+      case 'email': return 'email_address_field';
+      case 'category':
+      case 'question': return 'category_field';
+      case 'contact':
+      case 'member': return 'user_field';
+      case 'image': return 'image_field';
+      case 'embed':
+      case 'link': return 'hyperlink_field';
+      case 'location': return 'location_field';
+      case 'duration': return 'duration_field';
+      case 'calculation': return 'calculation_field';
+      default: return 'text_field';
+    }
+  };
+
+  // ⚡ Build a complete A-CORE field definition from a Podio field
+  const buildAcoreFieldFromPodio = (
+    pf: any,
+    rowIdx: number,
+    hasDeps: boolean = false,
+    podioToAcoreAppMap: Record<number, string> = {}
+  ) => {
+    const acoreType = mapPodioTypeToAcoreType(pf, hasDeps);
+    const palette = ['#ef4444', '#f97316', '#f59e0b', '#eab308', '#84cc16', '#22c55e', '#10b981', '#14b8a6', '#06b6d4', '#0ea5e9', '#3b82f6', '#6366f1', '#8b5cf6', '#a855f7', '#d946ef', '#ec4899'];
+    const settings: any = {};
+
+    if (acoreType === 'text_field') {
+            const labelLower = (pf.label || '').toLowerCase();
+            const isShortNameField = ['first name', 'last name', 'name', 'full name', 'title', 'company', 'city', 'state', 'zip'].includes(labelLower);
+            settings.multiline = !isShortNameField && (pf.config?.settings?.size === 'large' || false);
+    } else if (acoreType === 'number_field') {
+      settings.decimals = pf.config?.settings?.decimals ?? (pf.type === 'money' ? 2 : 0);
+      settings.isDynamicSimulation = false;
+      settings.dynamicSimMin = 0;
+      settings.dynamicSimMax = 100;
+    } else if (acoreType === 'category_field') {
+      const rawOpts = pf.config?.settings?.options || pf.options || [];
+      settings.categoryOptions = rawOpts
+        .filter((o: any) => o.status !== 'deleted')
+        .map((o: any, i: number) => ({
+          id: `opt_${o.id || Date.now()}_${i}`,
+          label: o.text || o.label || `Option ${i + 1}`,
+          color: o.color && String(o.color).startsWith('#') ? o.color : palette[i % palette.length]
+        }));
+    } else if (acoreType === 'duration_field') {
+      settings.durationUnits = { hours: true, minutes: true, seconds: true };
+    } else if (acoreType === 'connection_field') {
+      let refAppIds: number[] =
+        pf.config?.settings?.referenced_apps?.map((a: any) => a.app_id) ||
+        pf.referenced_apps?.map((a: any) => a.app_id || a) ||
+        [];
+      if (refAppIds.length === 0 && podioDependencies.length > 0) {
+        refAppIds = podioDependencies.map(d => d.app_id);
+      }
+      const connectedMiniAppIds = refAppIds
+        .map((id: number) => podioToAcoreAppMap[id] || depStates[id]?.targetAppId)
+        .filter(Boolean);
+      settings.connectedMiniAppIds = connectedMiniAppIds;
+      settings.allowMultipleConnections = pf.config?.settings?.multiple !== false;
+      settings.connectionLayoutMode = 'dropdown';
+      settings.connectionDropdownSearchable = true;
+    } else if (['phone_number_field', 'email_address_field', 'image_field', 'hyperlink_field'].includes(acoreType)) {
+      settings.allowMultiple = pf.config?.settings?.multiple || false;
+    }
+
+    return {
+      id: `field_podio_${pf.field_id || pf.external_id || rowIdx}`,
+      name: pf.label || pf.external_id || `Field ${rowIdx + 1}`,
+      type: acoreType,
+      required: Boolean(pf.config?.required),
+      column: 1,
+      columnSpan: 2,
+      colSpan: 60,
+      rowSpan: 1,
+      row: rowIdx,
+      order: rowIdx,
+      settings
+    };
+  };
+
+  // ⚡ Helper to persist updated fields to an A-CORE MiniApp in DB
+  const saveUpdatedAppSchemaToDb = async (targetMiniAppId: string, updatedFields: any[]) => {
+    const { data: currentApp } = await supabase.schema('app_private')
+      .from('mini_apps')
+      .select('schema_definition')
+      .eq('id', targetMiniAppId)
+      .single();
+
+    const schemaDef = currentApp?.schema_definition
+      ? (typeof currentApp.schema_definition === 'string' ? JSON.parse(currentApp.schema_definition) : currentApp.schema_definition)
+      : { fields: [] };
+
+    if (schemaDef.custom_fields) {
+      schemaDef.custom_fields = updatedFields.filter((f: any) => !f.is_base);
+    }
+    schemaDef.fields = updatedFields;
+
+    await supabase.schema('app_private')
+      .from('mini_apps')
+      .update({ schema_definition: schemaDef, updated_at: new Date().toISOString() })
+      .eq('id', targetMiniAppId);
+
+    setAvailableMiniApps(prev =>
+      prev.map(a => a.id === targetMiniAppId ? { ...a, schema_definition: schemaDef } as any : a)
+    );
+    if (targetMiniAppId === miniAppId) {
+      setSchemaFields(updatedFields);
+    }
+    window.dispatchEvent(new CustomEvent('miniapp_schema_updated'));
+  };
+
+  // ⚡ Auto-create a single A-CORE field from a Podio field (or all unmapped fields) on a target MiniApp
+  const handleAutoCreateFieldsForApp = async (
+    targetMiniAppId: string,
+    podioFieldsToCreate: any[],
+    hasDeps: boolean,
+    podioToAcoreAppMap: Record<number, string> = {}
+  ): Promise<{ updatedFields: any[]; createdMap: Record<string, string> }> => {
+    const { data: currentApp } = await supabase.schema('app_private')
+      .from('mini_apps')
+      .select('schema_definition')
+      .eq('id', targetMiniAppId)
+      .single();
+
+    const schemaDef = currentApp?.schema_definition
+      ? (typeof currentApp.schema_definition === 'string' ? JSON.parse(currentApp.schema_definition) : currentApp.schema_definition)
+      : { fields: [] };
+
+    let existingFields: any[] = [];
+    if (schemaDef.base_fields || schemaDef.custom_fields) {
+      existingFields = [...(schemaDef.base_fields || []), ...(schemaDef.custom_fields || [])];
+    } else if (schemaDef.fields) {
+      existingFields = [...schemaDef.fields];
+    }
+
+    const createdMap: Record<string, string> = {};
+    let nextRow = existingFields.length > 0 ? Math.max(...existingFields.map((f: any) => f.row || 0)) + 1 : 0;
+
+    for (const pf of podioFieldsToCreate) {
+      // Check if a field with the same name and compatible type already exists
+      const desiredType = mapPodioTypeToAcoreType(pf, hasDeps);
+      let existingMatch = existingFields.find(
+        (f: any) =>
+          (f.name?.toLowerCase() === pf.label?.toLowerCase() || f.name?.toLowerCase() === pf.external_id?.toLowerCase()) &&
+          ((desiredType === 'connection_field' && (f.type === 'connection_field' || f.type === 'connection')) ||
+           (desiredType !== 'connection_field' && f.type !== 'connection_field' && f.type !== 'connection'))
+      );
+
+      if (existingMatch) {
+        if (desiredType === 'connection_field') {
+          let refAppIds: number[] =
+            pf.config?.settings?.referenced_apps?.map((a: any) => a.app_id) ||
+            pf.referenced_apps?.map((a: any) => a.app_id || a) ||
+            [];
+          if (refAppIds.length === 0 && podioDependencies.length > 0) {
+            refAppIds = podioDependencies.map(d => d.app_id);
+          }
+          const targetIds = refAppIds.map(id => podioToAcoreAppMap[id] || depStates[id]?.targetAppId).filter(Boolean);
+          if (targetIds.length > 0) {
+            existingMatch.settings = {
+              ...existingMatch.settings,
+              connectedMiniAppIds: Array.from(new Set([...(existingMatch.settings?.connectedMiniAppIds || []), ...targetIds]))
+            };
+          }
+        }
+        createdMap[pf.external_id] = existingMatch.name;
+      } else {
+        let newField = buildAcoreFieldFromPodio(pf, nextRow++, hasDeps, podioToAcoreAppMap);
+        // Avoid duplicate field names if a field of another type already uses the name
+        if (existingFields.some((f: any) => f.name?.toLowerCase() === newField.name.toLowerCase())) {
+          newField.name = `${newField.name} (${desiredType === 'connection_field' ? 'Connection' : pf.external_id})`;
+        }
+        existingFields.push(newField);
+        createdMap[pf.external_id] = newField.name;
+      }
+    }
+
+    await saveUpdatedAppSchemaToDb(targetMiniAppId, existingFields);
+    return { updatedFields: existingFields, createdMap };
+  };
+
+  // ⚡ Auto-create a brand new A-CORE Workspace matching a Podio Workspace name
+  const handleAutoCreateWorkspace = async (rawWsName: string): Promise<{ id: string; name: string } | null> => {
+    if (!organization?.id) return null;
+    const cleanName = (rawWsName || 'Podio Workspace').replace(/^[\s\-–—]+/, '').trim() || 'Podio Workspace';
+    const baseSlug = cleanName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'workspace';
+
+    // Check database directly so multiple workspaces created in a loop don't miss each other or get hidden in Lite mode
+    const { data: dbWsList } = await supabase.schema('app_private')
+      .from('workspaces')
+      .select('id, name, slug, settings')
+      .eq('organization_id', organization.id);
+
+    const existing = (dbWsList || allWorkspaces).find((w: any) =>
+      (w.name || '').replace(/^[\s\-–—]+/, '').trim().toLowerCase() === cleanName.toLowerCase() ||
+      (w.slug || '').toLowerCase() === baseSlug
+    );
+
+    if (existing) {
+      const existingSettings = typeof (existing as any).settings === 'string'
+        ? JSON.parse((existing as any).settings || '{}')
+        : ((existing as any).settings || {});
+      if (!existingSettings.is_custom_lite) {
+        const updatedSettings = { ...existingSettings, is_custom_lite: true };
+        await supabase.schema('app_private')
+          .from('workspaces')
+          .update({ settings: updatedSettings })
+          .eq('id', existing.id);
+      }
+      setAllWorkspaces(prev => prev.some(w => w.id === existing.id) ? prev : [...prev, { id: existing.id, name: existing.name }]);
+      return { id: existing.id, name: existing.name };
+    }
+
+    let createdWs: any = null;
+
+    const { data, error } = await supabase.schema('app_private')
+      .from('workspaces')
+      .insert({
+        organization_id: organization.id,
+        name: cleanName,
+        slug: baseSlug,
+        icon: 'database',
+        settings: { is_custom_lite: true, accent_color: 'cyan', tab_order: [] }
+      })
+      .select('id, name')
+      .single();
+
+    if (error) {
+      // Retry with unique suffix if slug already exists
+      const { data: retryData, error: retryErr } = await supabase.schema('app_private')
+        .from('workspaces')
+        .insert({
+          organization_id: organization.id,
+          name: cleanName,
+          slug: `${baseSlug}-${Date.now().toString(36).slice(-4)}`,
+          icon: 'database',
+          settings: { is_custom_lite: true, accent_color: 'cyan', tab_order: [] }
+        })
+        .select('id, name')
+        .single();
+      if (retryErr) throw retryErr;
+      createdWs = retryData;
+    } else {
+      createdWs = data;
+    }
+
+    if (createdWs) {
+      setAllWorkspaces(prev => prev.some(w => w.id === createdWs.id) ? prev : [...prev, createdWs]);
+      window.dispatchEvent(new CustomEvent('miniapp_schema_updated'));
+      window.dispatchEvent(new CustomEvent('workspacesUpdated'));
+    }
+    return createdWs;
+  };
+
+  // ⚡ Auto-create a brand new A-CORE MiniApp from a Podio App ID (with all matching fields & types)
+  const handleAutoCreateMiniAppFromPodio = async (
+    podioTargetAppId: number | string,
+    appTitle: string,
+    targetWsId: string,
+    preloadedPodioFields?: any[],
+    hasDeps: boolean = false,
+    podioToAcoreAppMap: Record<number, string> = {},
+    primaryWsIdToClean?: string
+  ): Promise<{ app: any; fields: any[]; mapping: Record<string, string>; podioFields: any[] }> => {
+    if (!organization?.id || !targetWsId) throw new Error('Missing Organization or Target Workspace.');
+
+    let pFields = preloadedPodioFields;
+    let depHasSubDeps = hasDeps;
+    if (!pFields) {
+      const { data, error } = await supabase.functions.invoke('fetch-podio-schema', {
+        body: { podioAppId: podioTargetAppId.toString(), userId }
+      });
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
+      depHasSubDeps = Array.isArray(data.dependencies) && data.dependencies.length > 0;
+      pFields = (data.fields || []).map((pf: any) =>
+        isPodioRelationshipField(pf, depHasSubDeps) ? { ...pf, type: 'app' } : pf
+      );
+    }
+
+    const generatedFields = (pFields || []).map((pf: any, idx: number) =>
+      buildAcoreFieldFromPodio(pf, idx, depHasSubDeps, podioToAcoreAppMap)
+    );
+
+    const mapping: Record<string, string> = {};
+    (pFields || []).forEach((pf: any, idx: number) => {
+      if (generatedFields[idx]) {
+        mapping[pf.external_id] = generatedFields[idx].name;
+      }
+    });
+
+    const cleanTitle = (appTitle || 'Imported App').trim();
+    const prefix = cleanTitle.replace(/[^a-zA-Z0-9]/g, '').substring(0, 3).toUpperCase() || 'APP';
+    const slug = `${cleanTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString(36).slice(-4)}`;
+
+    const schemaDefinition = {
+      name: cleanTitle,
+      description: `Imported from Podio (${cleanTitle})`,
+      icon: 'database',
+      base_fields: [],
+      custom_fields: generatedFields,
+      fields: generatedFields,
+      version: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    const appSettingsPayload = {
+      layouts: ['table', 'card'],
+      defaultLayout: 'table',
+      recordsPerPage: 25,
+      allowExport: true,
+      allowImport: true,
+      enableComments: true,
+      enableAttachments: true,
+      itemName: cleanTitle.endsWith('s') && !cleanTitle.endsWith('ss') ? cleanTitle.slice(0, -1) : cleanTitle,
+      podio_sync_config: {
+        podio_app_id: Number(podioTargetAppId),
+        field_mapping: mapping,
+        last_synced_at: new Date().toISOString()
+      }
+    };
+
+    const itemIdSettingsPayload = {
+      prefix,
+      minDigits: 4,
+      showItemId: true,
+      showQrCode: true,
+      showBarcode: false,
+      barcodeSymbology: 'code128'
+    };
+
+    // Check if this MiniApp already exists in the target workspace (or was misplaced in primaryWsIdToClean)
+    const { data: existingOrgApps } = await supabase.schema('app_private')
+      .from('mini_apps')
+      .select('id, name, slug, workspace_id, schema_definition, app_settings')
+      .eq('organization_id', organization.id);
+
+    const parseSettings = (a: any) =>
+      typeof a?.app_settings === 'string' ? JSON.parse(a.app_settings || '{}') : (a?.app_settings || {});
+
+    let existingApp = (existingOrgApps || []).find(
+      (a: any) =>
+        a.workspace_id === targetWsId &&
+        (Number(parseSettings(a)?.podio_sync_config?.podio_app_id) === Number(podioTargetAppId) ||
+          (a.name || '').trim().toLowerCase() === cleanTitle.toLowerCase())
+    );
+
+    let movedFromPrimary = false;
+    if (!existingApp && primaryWsIdToClean && primaryWsIdToClean !== targetWsId) {
+      const misplacedInPrimary = (existingOrgApps || []).find(
+        (a: any) =>
+          a.workspace_id === primaryWsIdToClean &&
+          (Number(parseSettings(a)?.podio_sync_config?.podio_app_id) === Number(podioTargetAppId) ||
+            (a.name || '').trim().toLowerCase() === cleanTitle.toLowerCase())
+      );
+      if (misplacedInPrimary) {
+        existingApp = misplacedInPrimary;
+        movedFromPrimary = true;
+      }
+    }
+
+    let resultApp: any = null;
+    if (existingApp) {
+      const existingAppSettings = parseSettings(existingApp);
+      const { data: updatedApp, error: updateErr } = await supabase.schema('app_private')
+        .from('mini_apps')
+        .update({
+          workspace_id: targetWsId,
+          schema_definition: schemaDefinition,
+          app_settings: {
+            ...existingAppSettings,
+            ...appSettingsPayload
+          },
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', existingApp.id)
+        .select('id, name, slug, workspace_id, schema_definition')
+        .single();
+      if (updateErr) throw updateErr;
+      resultApp = updatedApp || { ...existingApp, workspace_id: targetWsId, schema_definition: schemaDefinition };
+
+      if (movedFromPrimary && primaryWsIdToClean) {
+        try {
+          const { data: primWs } = await supabase.schema('app_private')
+            .from('workspaces')
+            .select('settings')
+            .eq('id', primaryWsIdToClean)
+            .single();
+          if (primWs) {
+            const primSettings = typeof primWs.settings === 'string' ? JSON.parse(primWs.settings || '{}') : (primWs.settings || {});
+            if (Array.isArray(primSettings.tab_order)) {
+              primSettings.tab_order = primSettings.tab_order.filter(
+                (t: string) => String(t || '').trim().toLowerCase() !== cleanTitle.toLowerCase()
+              );
+              await supabase.schema('app_private').from('workspaces').update({ settings: primSettings }).eq('id', primaryWsIdToClean);
+            }
+          }
+        } catch (e) {
+          console.warn('Could not clean primary workspace tab_order:', e);
+        }
+      }
+    } else {
+      const { data: newApp, error: insertError } = await supabase.schema('app_private')
+        .from('mini_apps')
+        .insert({
+          workspace_id: targetWsId,
+          organization_id: organization.id,
+          name: cleanTitle,
+          slug,
+          description: `Imported from Podio (${cleanTitle})`,
+          icon: 'database',
+          schema_definition: schemaDefinition,
+          app_settings: appSettingsPayload,
+          item_id_settings: itemIdSettingsPayload,
+          is_preset: false,
+          created_by: user?.id || null,
+          updated_at: new Date().toISOString()
+        })
+        .select('id, name, slug, workspace_id, schema_definition')
+        .single();
+
+      if (insertError) throw insertError;
+      resultApp = newApp;
+    }
+
+    // Append to workspace tab_order so it immediately appears in the top bar
+    try {
+      const { data: wsData } = await supabase.schema('app_private')
+        .from('workspaces')
+        .select('settings')
+        .eq('id', targetWsId)
+        .single();
+      if (wsData) {
+        const wsSettings = typeof wsData.settings === 'string' ? JSON.parse(wsData.settings) : (wsData.settings || {});
+        const tabOrder: string[] = Array.isArray(wsSettings.tab_order) ? wsSettings.tab_order : [];
+        wsSettings.is_custom_lite = true;
+        if (!tabOrder.includes(cleanTitle)) {
+          tabOrder.push(cleanTitle);
+          wsSettings.tab_order = tabOrder;
+        }
+        await supabase.schema('app_private').from('workspaces').update({ settings: wsSettings }).eq('id', targetWsId);
+      }
+    } catch (e) {
+      console.warn('Could not update workspace tab_order:', e);
+    }
+
+    setAvailableMiniApps(prev => {
+      const filtered = prev.filter(a => a.id !== resultApp.id);
+      return [...filtered, resultApp as any];
+    });
+    window.dispatchEvent(new CustomEvent('miniapp_schema_updated'));
+    window.dispatchEvent(new CustomEvent('workspacesUpdated'));
+
+    return { app: resultApp, fields: generatedFields, mapping, podioFields: pFields || [] };
+  };
+
+  // ⚡ 1-Click Auto-Create & Import ALL Dependencies in topological order
+  const handleAutoCreateAndImportAllDependencies = async () => {
+    if (!organization?.id || podioDependencies.length === 0) return;
+    setIsImportingPodio(true);
+    setDbError(null);
+    try {
+      // Determine fallback workspace if a dependency has no distinct Podio workspace name
+      let defaultWsId = workspaceId || '';
+      if (!defaultWsId && podioWorkspaceName) {
+        const createdWs = await handleAutoCreateWorkspace(podioWorkspaceName);
+        if (createdWs) defaultWsId = createdWs.id;
+      }
+      if (!defaultWsId && allWorkspaces.length > 0) {
+        defaultWsId = allWorkspaces[0].id;
+      }
+
+      const localPodioToAcoreMap: Record<number, string> = {};
+      podioDependencies.forEach(d => {
+        if (depStates[d.app_id]?.targetAppId) {
+          localPodioToAcoreMap[d.app_id] = depStates[d.app_id].targetAppId;
+        }
+      });
+
+      for (const dep of podioDependencies) {
+        const existingState = depStates[dep.app_id];
+        if (existingState?.isCompleted && existingState?.targetAppId) {
+          localPodioToAcoreMap[dep.app_id] = existingState.targetAppId;
+          continue;
+        }
+
+        // Resolve the dependency app's own Podio Workspace name so cross-workspace dependencies get their own workspace!
+        let wsIdToUse = existingState?.targetWorkspaceId || '';
+        if (!wsIdToUse) {
+          const listMatch = podioAppsList.find(a => Number(a.app_id) === Number(dep.app_id));
+          const depSpaceName = dep.space_name || listMatch?.space_name;
+          if (depSpaceName && depSpaceName !== 'Unknown Workspace') {
+            const depWs = await handleAutoCreateWorkspace(depSpaceName);
+            if (depWs) wsIdToUse = depWs.id;
+          }
+        }
+        if (!wsIdToUse) wsIdToUse = defaultWsId;
+
+        const { app: createdApp, fields: createdFields, mapping: createdMapping, podioFields: depPFields } =
+          await handleAutoCreateMiniAppFromPodio(
+            dep.app_id,
+            dep.name,
+            wsIdToUse,
+            undefined,
+            false,
+            localPodioToAcoreMap,
+            wsIdToUse !== defaultWsId ? defaultWsId : undefined
+          );
+
+        localPodioToAcoreMap[dep.app_id] = createdApp.id;
+
+        const importBody = {
+          podioAppId: dep.app_id.toString(),
+          targetMiniAppId: createdApp.id,
+          organizationId: organization.id,
+          fieldMapping: createdMapping,
+          schemaFields: createdFields,
+          userId,
+          skipSpaceSync: true
+        };
+
+        let { data: impData, error: impErr } = await supabase.functions.invoke('import-podio-data', {
+          body: importBody
+        });
+        if (impErr) {
+          await new Promise(res => setTimeout(res, 1500));
+          const retryRes = await supabase.functions.invoke('import-podio-data', { body: importBody });
+          impData = retryRes.data;
+          impErr = retryRes.error;
+        }
+        if (impErr) console.warn(`[Podio Dependency Import] Non-fatal warning on ${dep.name}:`, impErr);
+        if (impData?.error) console.warn(`[Podio Dependency Import] Non-fatal data warning on ${dep.name}:`, impData.error);
+
+        setDepStates(prev => ({
+          ...prev,
+          [dep.app_id]: {
+            targetWorkspaceId: wsIdToUse,
+            targetAppId: createdApp.id,
+            step: 'mapping',
+            fields: depPFields,
+            mapping: createdMapping,
+            isImporting: false,
+            isCompleted: true,
+            error: null
+          }
+        }));
+      }
+
+      window.dispatchEvent(new CustomEvent('miniapp_records_updated'));
+    } catch (err: any) {
+      setDbError(err.message || 'Failed to auto-create and import dependencies');
+    } finally {
+      setIsImportingPodio(false);
+    }
+  };
+
+  // ⚡ 1-Click Full Podio Workspace Import (Workspace -> All Apps -> All Fields -> All Connections -> All Data)
+  const handleFullWorkspaceImport = async () => {
+    if (!podioWorkspaceName || !organization?.id) return;
+    setIsImportingPodio(true);
+    setDbError(null);
+    try {
+      const normalizeWsName = (s: string) =>
+        (s || 'Podio Workspace').replace(/^[\s\-–—]+/, '').trim() || 'Podio Workspace';
+      const primaryCleanWsName = normalizeWsName(podioWorkspaceName);
+
+      // 1. Resolve or Auto-Create Primary Target Workspace
+      let targetWsId = fullWsTargetId;
+      if (!targetWsId || targetWsId === '__auto_create__') {
+        setFullWsImportStatus(`Creating Workspace "${primaryCleanWsName}"...`);
+        const ws = await handleAutoCreateWorkspace(podioWorkspaceName);
+        if (!ws) throw new Error('Could not create target workspace');
+        targetWsId = ws.id;
+      }
+
+      // 2. Gather all apps in the selected Podio Workspace & discover their schemas/dependencies
+      const workspaceApps = podioAppsList.filter(a => a.space_name === podioWorkspaceName);
+      if (workspaceApps.length === 0) throw new Error('No apps found in this Podio workspace.');
+
+      const primarySpaceAppIds = new Set<number>(workspaceApps.map(a => Number(a.app_id)));
+      const appSpaceMap = new Map<number, { space_name: string; space_id?: number | string }>();
+      podioAppsList.forEach(a => {
+        const idNum = Number(a.app_id);
+        if (idNum && a.space_name && a.space_name !== 'Unknown Workspace') {
+          appSpaceMap.set(idNum, { space_name: a.space_name, space_id: a.space_id });
+        }
+      });
+
+      const schemaCache = new Map<number, { name: string; space_name: string; fields: any[]; dependencies: any[] }>();
+      const queue: { app_id: number; name: string; space_name?: string }[] = workspaceApps.map(a => ({
+        app_id: Number(a.app_id),
+        name: a.name,
+        space_name: a.space_name
+      }));
+
+      while (queue.length > 0) {
+        const curr = queue.shift()!;
+        const currId = Number(curr.app_id);
+        if (schemaCache.has(currId)) continue;
+        setFullWsImportStatus(`Analyzing schema for "${curr.name}"...`);
+
+        const { data, error } = await supabase.functions.invoke('fetch-podio-schema', {
+          body: { podioAppId: currId.toString(), userId }
+        });
+        if (error) throw error;
+        if (data?.error) throw new Error(data.error);
+
+        // Harvest workspace metadata from referenced_apps and dependencies
+        (data.fields || []).forEach((pf: any) => {
+          const refApps = pf.config?.settings?.referenced_apps || pf.referenced_apps || [];
+          refApps.forEach((ra: any) => {
+            const raId = Number(ra?.app_id || ra?.app?.app_id);
+            const raSpaceName =
+              ra?.space?.name || ra?.app?.space?.name || ra?.space_name || ra?.app?.space_name;
+            const raSpaceId =
+              ra?.space_id || ra?.space?.space_id || ra?.app?.space_id || ra?.app?.space?.space_id;
+            if (raId && raSpaceName && !appSpaceMap.has(raId)) {
+              appSpaceMap.set(raId, { space_name: raSpaceName, space_id: raSpaceId });
+            }
+          });
+        });
+
+        const deps = data.dependencies || [];
+        deps.forEach((d: any) => {
+          const dId = Number(d?.app_id);
+          const dSpaceName = d?.space?.name || d?.space_name || d?.app?.space?.name;
+          const dSpaceId = d?.space_id || d?.space?.space_id;
+          if (dId && dSpaceName && !appSpaceMap.has(dId)) {
+            appSpaceMap.set(dId, { space_name: dSpaceName, space_id: dSpaceId });
+          }
+        });
+
+        const hasDeps = deps.length > 0;
+        const normFields = (data.fields || []).map((pf: any) =>
+          isPodioRelationshipField(pf, hasDeps) ? { ...pf, type: 'app' } : pf
+        );
+
+        const isPrimarySpaceApp = primarySpaceAppIds.has(currId);
+        const listMatch = podioAppsList.find(a => Number(a.app_id) === currId);
+        const resolvedAppName =
+          data.app_name || data.name || data.config?.name || listMatch?.name || curr.name || `App ${currId}`;
+
+        let resolvedSpaceName: string;
+        if (isPrimarySpaceApp) {
+          resolvedSpaceName = podioWorkspaceName;
+        } else {
+          const candidateSpace =
+            appSpaceMap.get(currId)?.space_name ||
+            data.space?.name ||
+            data.space_name ||
+            data.app?.space?.name ||
+            (listMatch?.space_name && listMatch.space_name !== 'Unknown Workspace' ? listMatch.space_name : '') ||
+            (curr.space_name && curr.space_name !== 'Unknown Workspace' ? curr.space_name : '');
+
+          if (candidateSpace && normalizeWsName(candidateSpace).toLowerCase() !== primaryCleanWsName.toLowerCase()) {
+            resolvedSpaceName = candidateSpace;
+          } else {
+            const cleanAppName = resolvedAppName.replace(/^[\s\-–—]+/, '').trim();
+            resolvedSpaceName = `${cleanAppName} Workspace`;
+          }
+        }
+
+        schemaCache.set(currId, {
+          name: resolvedAppName,
+          space_name: resolvedSpaceName,
+          fields: normFields,
+          dependencies: deps
+        });
+
+        deps.forEach((d: any) => {
+          const depAppId = Number(d.app_id);
+          if (!schemaCache.has(depAppId)) {
+            const depInList = podioAppsList.find(a => Number(a.app_id) === depAppId);
+            const depSpace =
+              appSpaceMap.get(depAppId)?.space_name ||
+              d.space_name ||
+              d.space?.name ||
+              depInList?.space_name;
+            queue.push({
+              app_id: depAppId,
+              name: d.name || depInList?.name || `App ${depAppId}`,
+              space_name: depSpace
+            });
+          }
+        });
+      }
+
+      // 3. Topological sort so baseline apps are created & imported before apps that reference them
+      const sortedAppIds: number[] = [];
+      const visited = new Set<number>();
+      const visiting = new Set<number>();
+
+      const visit = (id: number) => {
+        const numId = Number(id);
+        if (visited.has(numId) || visiting.has(numId)) return;
+        visiting.add(numId);
+        const node = schemaCache.get(numId);
+        if (node) {
+          node.dependencies.forEach((d: any) => visit(Number(d.app_id)));
+          sortedAppIds.push(numId);
+        }
+        visiting.delete(numId);
+        visited.add(numId);
+      };
+      Array.from(schemaCache.keys()).forEach(id => visit(id));
+
+      // 4. Create or update each MiniApp in its respective A-CORE Workspace and import its records in topological order
+      const podioToAcoreAppMap: Record<number, string> = {};
+      const resolvedWsCache = new Map<string, string>();
+      resolvedWsCache.set(primaryCleanWsName.toLowerCase(), targetWsId);
+
+      for (let i = 0; i < sortedAppIds.length; i++) {
+        const pAppId = sortedAppIds[i];
+        const meta = schemaCache.get(pAppId)!;
+        const isPrimaryApp = primarySpaceAppIds.has(pAppId);
+
+        let appTargetWsId = targetWsId;
+        if (!isPrimaryApp) {
+          const depWsCleanName = normalizeWsName(meta.space_name);
+          const cachedWsId = resolvedWsCache.get(depWsCleanName.toLowerCase());
+          if (cachedWsId) {
+            appTargetWsId = cachedWsId;
+          } else {
+            setFullWsImportStatus(`Creating dependency Workspace "${depWsCleanName}"...`);
+            const depWs = await handleAutoCreateWorkspace(depWsCleanName);
+            if (depWs) {
+              appTargetWsId = depWs.id;
+              resolvedWsCache.set(depWsCleanName.toLowerCase(), depWs.id);
+            }
+          }
+        }
+
+        setFullWsImportStatus(
+          `(${i + 1}/${sortedAppIds.length}) Creating & importing "${meta.name}"${!isPrimaryApp ? ` in "${normalizeWsName(meta.space_name)}"` : ''}...`
+        );
+
+        const { app: createdApp, fields: createdFields, mapping: createdMapping } =
+          await handleAutoCreateMiniAppFromPodio(
+            pAppId,
+            meta.name,
+            appTargetWsId,
+            meta.fields,
+            meta.dependencies.length > 0,
+            podioToAcoreAppMap,
+            !isPrimaryApp ? targetWsId : undefined
+          );
+
+        podioToAcoreAppMap[pAppId] = createdApp.id;
+
+        const importBody = {
+          podioAppId: pAppId.toString(),
+          targetMiniAppId: createdApp.id,
+          organizationId: organization.id,
+          fieldMapping: createdMapping,
+          schemaFields: createdFields,
+          userId,
+          skipSpaceSync: true
+        };
+
+        let { data: impData, error: impErr } = await supabase.functions.invoke('import-podio-data', {
+          body: importBody
+        });
+        if (impErr) {
+          // Brief pause and 1 retry if Edge Function hit a transient 546 worker limit
+          await new Promise(res => setTimeout(res, 1500));
+          const retryRes = await supabase.functions.invoke('import-podio-data', { body: importBody });
+          impData = retryRes.data;
+          impErr = retryRes.error;
+        }
+        if (impErr) console.warn(`[Podio Workspace Import] Non-fatal warning on ${meta.name}:`, impErr);
+        if (impData?.error) console.warn(`[Podio Workspace Import] Non-fatal data warning on ${meta.name}:`, impData.error);
+      }
+
+      setFullWsImportStatus('');
+      setShowPodioModal(false);
+      setPodioStep('credentials');
+      await loadRecords();
+      window.dispatchEvent(new CustomEvent('miniapp_schema_updated'));
+      window.dispatchEvent(new CustomEvent('workspacesUpdated'));
+      window.dispatchEvent(new CustomEvent('miniapp_records_updated'));
+    } catch (err: any) {
+      setDbError(err.message || 'Full workspace import failed');
+    } finally {
+      setFullWsImportStatus('');
+      setIsImportingPodio(false);
+    }
+  };
+
+  const fetchDepSchema = async (depId: number, overrideTargetAppId?: string) => {
     const state = depStates[depId];
+    const effectiveTargetAppId = overrideTargetAppId ?? state?.targetAppId;
     updateDepState(depId, { isImporting: true, error: null });
     try {
       // ⚡ Pass userId so the Edge Function can grab the token
@@ -3370,27 +5043,25 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
       if (error) throw error;
       if (data?.error) throw new Error(data.error);
       
-      // ⚡ WE REMOVED THE RECURSIVE QUEUE-JUMPING LOGIC HERE!
-      // Because we now recursively resolve the entire tree upfront.
-      
-      const targetApp = availableMiniApps.find(a => a.id === state.targetAppId);
-      const targetSchemaDef = targetApp?.schema_definition;
+      const targetApp = availableMiniApps.find(a => a.id === effectiveTargetAppId);
+      const targetSchemaDef = (targetApp as any)?.schema_definition;
       const parsedSchema = typeof targetSchemaDef === 'string' ? JSON.parse(targetSchemaDef) : targetSchemaDef;
       
-      let targetCols: string[] = [];
+      let targetSchemaFields: any[] = [];
       if (parsedSchema?.fields) {
-         targetCols = parsedSchema.fields.map((f:any) => f.name);
+         targetSchemaFields = parsedSchema.fields;
       } else if (parsedSchema?.base_fields || parsedSchema?.custom_fields) {
-         targetCols = [...(parsedSchema.base_fields || []), ...(parsedSchema.custom_fields || [])].map((f:any) => f.name);
+         targetSchemaFields = [...(parsedSchema.base_fields || []), ...(parsedSchema.custom_fields || [])];
       }
-      
-      const autoMapping: Record<string, string> = {};
-      (data.fields || []).forEach((pf: any) => {
-        const match = targetCols.find(c => c?.toLowerCase() === pf.label.toLowerCase() || c?.toLowerCase() === pf.external_id.toLowerCase());
-        if (match) autoMapping[pf.external_id] = match;
-      });
 
-      updateDepState(depId, { fields: data.fields || [], mapping: autoMapping, step: 'mapping' });
+      const depHasSubDeps = Array.isArray(data.dependencies) && data.dependencies.length > 0;
+      const normalizedDepFields = (data.fields || []).map((pf: any) =>
+        isPodioRelationshipField(pf, depHasSubDeps) ? { ...pf, type: 'app' } : pf
+      );
+      
+      const autoMapping = computeSmartPodioMapping(normalizedDepFields, targetSchemaFields, depHasSubDeps);
+
+      updateDepState(depId, { fields: normalizedDepFields, mapping: autoMapping, step: 'mapping' });
     } catch (err: any) {
       updateDepState(depId, { error: err.message || 'Failed to fetch schema' });
     } finally {
@@ -3400,11 +5071,11 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
 
   const handleDepImport = async (depId: number) => {
     const state = depStates[depId];
-    if (!state?.targetAppId || !organization?.id) return; // Removed token check
+    if (!state?.targetAppId || !organization?.id) return;
     updateDepState(depId, { isImporting: true, error: null });
     try {
       const targetApp = availableMiniApps.find(a => a.id === state.targetAppId);
-      const targetSchemaDef = targetApp?.schema_definition;
+      const targetSchemaDef = (targetApp as any)?.schema_definition;
       const parsedSchema = typeof targetSchemaDef === 'string' ? JSON.parse(targetSchemaDef) : targetSchemaDef;
       
       let targetSchemaFields = [];
@@ -3414,17 +5085,26 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
          targetSchemaFields = [...(parsedSchema.base_fields || []), ...(parsedSchema.custom_fields || [])];
       }
 
+      const importBody = { 
+        podioAppId: depId.toString(), 
+        targetMiniAppId: state.targetAppId, 
+        organizationId: organization.id,
+        fieldMapping: state.mapping,
+        schemaFields: targetSchemaFields,
+        userId,
+        skipSpaceSync: true
+      };
+
       // ⚡ Pass userId so the Edge Function can grab the token
-      const { data, error } = await supabase.functions.invoke('import-podio-data', {
-        body: { 
-          podioAppId: depId.toString(), 
-          targetMiniAppId: state.targetAppId, 
-          organizationId: organization.id,
-          fieldMapping: state.mapping,
-          schemaFields: targetSchemaFields,
-          userId
-        }
+      let { data, error } = await supabase.functions.invoke('import-podio-data', {
+        body: importBody
       });
+      if (error) {
+        await new Promise(res => setTimeout(res, 1500));
+        const retryRes = await supabase.functions.invoke('import-podio-data', { body: importBody });
+        data = retryRes.data;
+        error = retryRes.error;
+      }
       if (error) throw error;
       if (data?.error) throw new Error(data.error);
       
@@ -3455,22 +5135,36 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
       
       while(queue.length > 0) {
         const currentDep = queue.shift();
-        // Prevent circular dependencies and redundant lookups
-        if (allDepsMap.has(currentDep.app_id) || currentDep.app_id.toString() === podioAppId) continue;
+        const currDepId = Number(currentDep.app_id);
+        if (allDepsMap.has(currDepId) || currDepId.toString() === podioAppId) continue;
         
-        // Fetch this dependency's schema to see if IT has dependencies
         const { data: depData, error: depErr } = await supabase.functions.invoke('fetch-podio-schema', {
-          body: { podioAppId: currentDep.app_id.toString(), userId }
+          body: { podioAppId: currDepId.toString(), userId }
         });
         
         if (depData?.error) throw new Error(depData.error);
         
         if (!depErr && depData) {
           const children = depData.dependencies || [];
-          allDepsMap.set(currentDep.app_id, { ...currentDep, children: children.map((c: any) => c.app_id) });
+          const listMatch = podioAppsList.find(a => Number(a.app_id) === currDepId);
+          const resolvedSpaceName =
+            depData.space?.name ||
+            depData.space_name ||
+            currentDep.space?.name ||
+            currentDep.space_name ||
+            listMatch?.space_name;
+
+          allDepsMap.set(currDepId, {
+            ...currentDep,
+            app_id: currDepId,
+            name: depData.app_name || depData.name || currentDep.name || listMatch?.name || `App ${currDepId}`,
+            space_name: resolvedSpaceName,
+            children: children.map((c: any) => Number(c.app_id))
+          });
           
           children.forEach((c: any) => {
-             if (!allDepsMap.has(c.app_id) && c.app_id.toString() !== podioAppId) {
+             const childId = Number(c.app_id);
+             if (!allDepsMap.has(childId) && childId.toString() !== podioAppId) {
                 queue.push(c);
              }
           });
@@ -3484,31 +5178,29 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
       
       const dfs = (id: number) => {
         if (visited.has(id) || visiting.has(id)) return;
-        visiting.add(id); // Track to prevent infinite loops on crazy Podio setups
+        visiting.add(id);
         
         const node = allDepsMap.get(id);
         if (node) {
            node.children.forEach((childId: number) => dfs(childId));
-           sortedDeps.push({ app_id: node.app_id, name: node.name }); // Push AFTER children
+           sortedDeps.push({ app_id: node.app_id, name: node.name, space_name: node.space_name });
         }
         
         visiting.delete(id);
         visited.add(id);
       };
       
-      // Run the sort on everything we found
       Array.from(allDepsMap.keys()).forEach(id => dfs(id));
       
-      setPodioFields(mainData.fields || []);
+      const hasDeps = sortedDeps.length > 0;
+      const normalizedMainFields = (mainData.fields || []).map((pf: any) =>
+        isPodioRelationshipField(pf, hasDeps) ? { ...pf, type: 'app' } : pf
+      );
+
+      setPodioFields(normalizedMainFields);
       setPodioDependencies(sortedDeps);
       
-      // Attempt to auto-map fields with matching names
-      const autoMapping: Record<string, string> = {};
-      (mainData.fields || []).forEach((pf: any) => {
-        const match = columns.find(c => c.toLowerCase() === pf.label.toLowerCase() || c.toLowerCase() === pf.external_id.toLowerCase());
-        if (match) autoMapping[pf.external_id] = match;
-      });
-      
+      const autoMapping = computeSmartPodioMapping(normalizedMainFields, schemaFields, hasDeps);
       setPodioMapping(autoMapping);
       
       // Route to dependencies warning screen if relationships are detected
@@ -3528,17 +5220,25 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
     if (!podioAppId || !miniAppId || !organization?.id) return;
     setIsImportingPodio(true);
     try {
+      const importBody = { 
+        podioAppId, 
+        targetMiniAppId: miniAppId, 
+        organizationId: organization.id,
+        fieldMapping: podioMapping,
+        schemaFields,
+        userId 
+      };
+
       // ⚡ Trigger secure backend Edge Function passing the userId
-      const { data, error } = await supabase.functions.invoke('import-podio-data', {
-        body: { 
-          podioAppId, 
-          targetMiniAppId: miniAppId, 
-          organizationId: organization.id,
-          fieldMapping: podioMapping,
-          schemaFields,
-          userId 
-        }
+      let { data, error } = await supabase.functions.invoke('import-podio-data', {
+        body: importBody
       });
+      if (error) {
+        await new Promise(res => setTimeout(res, 1500));
+        const retryRes = await supabase.functions.invoke('import-podio-data', { body: importBody });
+        data = retryRes.data;
+        error = retryRes.error;
+      }
       
       if (error) throw error;
       if (data?.error) throw new Error(data.error);
@@ -3684,11 +5384,19 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
       label: 'Edit', 
       action: () => { 
         setShowGearMenu(false); 
-        if (onEditTemplate && miniAppId) onEditTemplate(appName, miniAppId); 
+        if (onEditTemplate && miniAppId) onEditTemplate(appName, miniAppId, 'template'); 
       }, 
       adminOnly: true 
     },
-    { icon: WorkflowIcon, label: 'Workflows', action: () => { setShowGearMenu(false); }, adminOnly: true },
+    { 
+      icon: WorkflowIcon, 
+      label: 'Workflows', 
+      action: () => { 
+        setShowGearMenu(false); 
+        if (onEditTemplate && miniAppId) onEditTemplate(appName, miniAppId, 'workflows'); 
+      }, 
+      adminOnly: true 
+    },
     { icon: EyeOffIcon, label: 'Hide', action: () => { setShowGearMenu(false); }, adminOnly: true },
     { icon: LinkIcon, label: 'Integrations', action: () => { setShowGearMenu(false); }, adminOnly: true },
     { divider: true },
@@ -3707,7 +5415,7 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
   const goToNextRecord = () => { if (canGoNext) { setSelectedRecord(filteredData[selectedRecordIndex + 1]); setEditingRecord(null); } };
 
   const renderTableRows = (items: typeof filteredData) => items.map(item => {
-    const connections = getConnectedItems(item);
+    const connections = getConnectedItems(item, schemaFields);
     const hasConnections = connections.length > 0;
     const isExpanded = expandedConnections[item.id];
     const itemKey = item._db_id || item.id;
@@ -3733,8 +5441,24 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
               </button>
             </td>
           )}
-          {columns.map(col => (
-            <td key={col} className="p-4 text-gray-300 font-mono text-sm truncate" style={{ maxWidth: columnWidths[col] || 'auto' }}>{schemaFields.length > 0 ? renderSchemaCell(col, item[col]) : renderCellContent(col, item[col])}</td>
+          {columns.map((col, colIdx) => (
+            <td key={col} className="p-4 text-gray-300 font-mono text-sm truncate" style={{ maxWidth: columnWidths[col] || 'auto' }}>
+              <div className="flex items-center gap-2 truncate">
+                {colIdx === 0 && (
+                  <button
+                    type="button"
+                    onClick={(e) => handleToggleFavoriteRecord(item, e)}
+                    title={item._is_liked ? 'Unfavorite record (Synced with Podio Likes)' : 'Favorite record (Synced with Podio Likes)'}
+                    className={`flex-shrink-0 transition-transform hover:scale-125 ${
+                      item._is_liked ? 'text-amber-400 opacity-100' : 'text-gray-600 opacity-40 hover:opacity-100 hover:text-amber-300'
+                    }`}
+                  >
+                    <LucideIcons.Star size={14} fill={item._is_liked ? 'currentColor' : 'none'} />
+                  </button>
+                )}
+                <span className="truncate">{schemaFields.length > 0 ? renderSchemaCell(col, item[col]) : renderCellContent(col, item[col])}</span>
+              </div>
+            </td>
           ))}
           <td className="p-4 text-center">
             {hasConnections ? (
@@ -3849,8 +5573,18 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
 
           return (
             <div key={item.id} id={`record-card-${item.id}`} className="scroll-my-8 bg-black/80 rounded-xl p-4 transition-all cursor-pointer group relative overflow-hidden flex flex-col hover:-translate-y-0.5 hover:shadow-lg" style={{ border: `1px solid rgba(${wc.rgb}, 0.3)` }} onClick={(e) => { setClickOrigin({ x: e.clientX, y: e.clientY }); setSelectedRecord(item); }}>
-              <div className="flex items-start justify-between mb-3">
+              <div className="flex items-start justify-between gap-2 mb-3">
                 <h3 className="text-white font-mono font-medium truncate flex-1 transition-colors group-hover:opacity-80">{item[primaryCol] ?? item.name ?? 'Untitled'}</h3>
+                <button
+                  type="button"
+                  onClick={(e) => handleToggleFavoriteRecord(item, e)}
+                  title={item._is_liked ? 'Unfavorite (Synced with Podio)' : 'Favorite (Synced with Podio)'}
+                  className={`p-1 rounded transition-all flex-shrink-0 ${
+                    item._is_liked ? 'text-amber-400' : 'text-gray-600 opacity-0 group-hover:opacity-100 hover:text-amber-300'
+                  }`}
+                >
+                  <LucideIcons.Star size={15} fill={item._is_liked ? 'currentColor' : 'none'} />
+                </button>
               </div>
               
               <div className="space-y-2 text-sm flex-1">
@@ -4905,12 +6639,13 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setShowViewsDropdown(false)} />
                   {/* Positioned center-aligned below the icon */}
-                  <div className="absolute top-full mt-2 left-1/2 -translate-x-1/2 z-50 bg-black border rounded-lg p-1 min-w-[140px]" style={{ borderColor: `rgba(${wc.rgb}, 0.3)`, boxShadow: `0 0 20px rgba(${wc.rgb}, 0.15)` }}>
-                    {availableLayouts.map(layout => {
-                      const Icon = LAYOUT_ICONS[layout];
+                  <div className="absolute top-full mt-2 left-1/2 -translate-x-1/2 z-50 bg-black/95 backdrop-blur-xl border rounded-lg p-1 min-w-[160px]" style={{ borderColor: `rgba(${wc.rgb}, 0.3)`, boxShadow: `0 0 20px rgba(${wc.rgb}, 0.15)` }}>
+                    {(Array.from(new Set([...(appSettings?.availableLayouts || availableLayouts), 'facility', 'map'])) as LayoutType[]).map(layout => {
+                      const Icon = LAYOUT_ICONS[layout] || TableIcon;
+                      const label = layout === 'facility' ? 'Facility' : layout === 'map' ? 'Map' : layout.charAt(0).toUpperCase() + layout.slice(1);
                       return (
-                        <button key={layout} onClick={() => { setCurrentLayout(layout); setShowViewsDropdown(false); }} className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm font-mono transition-all" style={{ color: currentLayout === layout ? wc.primary : '#9ca3af', background: currentLayout === layout ? `rgba(${wc.rgb}, 0.15)` : 'transparent' }}>
-                          <Icon size={16} />{layout.charAt(0).toUpperCase() + layout.slice(1)}
+                        <button key={layout} onClick={() => { setCurrentLayout(layout); setShowViewsDropdown(false); }} className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm font-mono transition-all hover:bg-white/5" style={{ color: currentLayout === layout ? wc.primary : '#9ca3af', background: currentLayout === layout ? `rgba(${wc.rgb}, 0.15)` : 'transparent' }}>
+                          <Icon size={16} />{label}
                         </button>
                       );
                     })}
@@ -5023,10 +6758,69 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
               {currentLayout === 'card' && renderCardLayout()}
               {currentLayout === 'badge' && renderBadgeLayout()}
               {currentLayout === 'calendar' && renderCalendarLayout()}
+              {currentLayout === 'facility' && (
+                <FacilityLayoutView
+                  appName={appName}
+                  records={filteredData.map((item: any) => ({
+                    id: String(item._db_id || item.id),
+                    miniAppId: miniAppId || appName,
+                    data: item,
+                    createdBy: String(item.created_by || userId),
+                    createdAt: String(item._created_at || item.created_at || new Date().toISOString()),
+                    updatedAt: String(item._updated_at || item.updated_at || new Date().toISOString()),
+                  }))}
+                  fields={schemaFields.map((f: any, idx: number) => ({
+                    id: String(f.id || f.name || idx),
+                    name: String(f.name || ''),
+                    type: f.type || 'text_field',
+                    required: Boolean(f.required),
+                    order: typeof f.order === 'number' ? f.order : idx,
+                    settings: f.settings,
+                  }))}
+                  facilityTemplate={appSettings?.facilityTemplate}
+                  wsColor={{ primary: wc.primary, rgb: wc.rgb }}
+                  onSelectRecord={(rec) => {
+                    setSelectedRecord(rec.data);
+                    setEditingRecord(null);
+                  }}
+                  onOpenTemplateBuilder={
+                    isAdmin && onEditTemplate
+                      ? () => onEditTemplate(appName, miniAppId || undefined, 'settings')
+                      : undefined
+                  }
+                />
+              )}
+              {currentLayout === 'map' && (
+                <MapLayoutView
+                  appName={appName}
+                  records={filteredData.map((item: any) => ({
+                    id: String(item._db_id || item.id),
+                    miniAppId: miniAppId || appName,
+                    data: item,
+                    createdBy: String(item.created_by || userId),
+                    createdAt: String(item._created_at || item.created_at || new Date().toISOString()),
+                    updatedAt: String(item._updated_at || item.updated_at || new Date().toISOString()),
+                  }))}
+                  fields={schemaFields.map((f: any, idx: number) => ({
+                    id: String(f.id || f.name || idx),
+                    name: String(f.name || ''),
+                    type: f.type || 'text_field',
+                    required: Boolean(f.required),
+                    order: typeof f.order === 'number' ? f.order : idx,
+                    settings: f.settings,
+                  }))}
+                  mapConfig={appSettings?.mapConfig}
+                  wsColor={{ primary: wc.primary, rgb: wc.rgb }}
+                  onSelectRecord={(rec) => {
+                    setSelectedRecord(rec.data);
+                    setEditingRecord(null);
+                  }}
+                />
+              )}
             </>
           )}
           
-          {!isLoading && filteredData.length === 0 && (
+          {!isLoading && filteredData.length === 0 && currentLayout !== 'facility' && currentLayout !== 'map' && (
             <div className="p-12 text-center bg-black/80 rounded-xl mt-4" style={{ border: `1px solid rgba(${wc.rgb}, 0.3)`, boxShadow: `0 0 30px rgba(${wc.rgb}, 0.05)` }}>
               <div className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4" 
                 style={{ 
@@ -5500,6 +7294,15 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
                   
                   <div className="w-px h-5 mx-1" style={{ backgroundColor: `rgba(${wc.rgb}, 0.2)` }} />
 
+                  <button
+                    onClick={(e) => handleToggleFavoriteRecord(selectedRecord, e)}
+                    className={`p-1.5 rounded-lg transition-all hover:bg-white/5 flex-shrink-0 ${
+                      selectedRecord._is_liked ? 'text-amber-400 bg-amber-500/10' : 'text-gray-400 hover:text-amber-300'
+                    }`}
+                    title={selectedRecord._is_liked ? 'Favorited (Liked in Podio) — Click to remove' : 'Favorite Record (Likes item in Podio)'}
+                  >
+                    <LucideIcons.Star size={16} fill={selectedRecord._is_liked ? 'currentColor' : 'none'} />
+                  </button>
                   <button onClick={() => setShowShareMenu(true)} className="p-1.5 rounded-lg transition-all hover:bg-white/5 flex-shrink-0" style={{ color: wc.primary }} title="Share"><Share2Icon size={16} /></button>
                   <button onClick={() => handleDeleteRecord(selectedRecord)} className="p-1.5 text-gray-600 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all flex-shrink-0" title="Delete"><TrashIcon size={16} /></button>
                   <button onClick={handleCloseRecord} className="p-1.5 text-gray-400 hover:text-white hover:bg-red-500/20 hover:text-red-400 rounded-lg transition-all flex-shrink-0" title="Close"><CloseIcon size={20} /></button>
@@ -5539,23 +7342,17 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
                 )}
 
                 {/* TASKS TAB */}
-                {recordDetailTab === 'tasks' && (
-                  <div className="flex items-center justify-center p-12 h-full min-h-[300px]">
-                    <div className="text-center">
-                      <CheckSquareIcon size={32} className="mx-auto mb-3 text-gray-700" />
-                      <h3 className="text-lg font-mono font-medium text-white mb-2">Linked Tasks</h3>
-                      <p className="text-xs text-gray-500 font-mono max-w-sm mx-auto mb-6">
-                        Create and track tasks specifically related to this record.
-                      </p>
-                      <button 
-                        onClick={() => setActiveLeftPanel('tasks')}
-                        className="px-6 py-2 rounded-lg transition-all font-mono text-sm font-medium hover:scale-105"
-                        style={{ background: wc.primary, color: '#000', boxShadow: `0 0 20px rgba(${wc.rgb}, 0.3)` }}
-                      >
-                        Open Tasks Panel
-                      </button>
-                    </div>
-                  </div>
+                {recordDetailTab === 'tasks' && selectedRecord && organization?.id && (
+                  <RecordTasksTab
+                    record={selectedRecord}
+                    organizationId={organization.id}
+                    workspaceId={workspaceId}
+                    miniAppId={miniAppId}
+                    appName={appName}
+                    userId={userId}
+                    wsColor={wc}
+                    onOpenSlidePanel={() => setActiveLeftPanel('tasks')}
+                  />
                 )}
 
                 {/* CONNECTIONS TAB */}
@@ -6004,7 +7801,7 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
                               </div>
 
                               <div>
-                                <label className="block text-[10px] font-mono font-medium text-gray-500 mb-1.5 uppercase tracking-wider">2. Select App</label>
+                                <label className="block text-[10px] font-mono font-medium text-gray-500 mb-1.5 uppercase tracking-wider">2. Select App (Single App Import)</label>
                                 <select 
                                   value={podioAppId} 
                                   onChange={(e) => setPodioAppId(e.target.value)}
@@ -6017,6 +7814,51 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
                                   ))}
                                 </select>
                               </div>
+
+                              {/* ⚡ FULL WORKSPACE AUTO-IMPORT OPTION */}
+                              {podioWorkspaceName && (
+                                <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 space-y-3 animate-in fade-in duration-200">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[11px] font-mono font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
+                                      <LucideIcons.Sparkles size={14} /> Full Workspace Migration
+                                    </span>
+                                    <span className="text-[10px] font-mono text-emerald-300/80">
+                                      {podioAppsList.filter(app => app.space_name === podioWorkspaceName).length} Apps Detected
+                                    </span>
+                                  </div>
+                                  <p className="text-[10px] text-gray-400 font-mono leading-relaxed">
+                                    Automatically create all MiniApps, match every field & type, wire up all Relationships as Connections, and import all records from <strong>{podioWorkspaceName.replace(/^[\s\-–—]+/, '').trim()}</strong>.
+                                  </p>
+                                  <div>
+                                    <label className="block text-[9px] font-mono text-gray-400 uppercase tracking-wider mb-1">Destination A-CORE Workspace</label>
+                                    <select
+                                      value={fullWsTargetId}
+                                      onChange={e => setFullWsTargetId(e.target.value)}
+                                      className="w-full bg-black/70 border border-emerald-500/40 rounded-lg px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-emerald-400"
+                                    >
+                                      <option value="__auto_create__">✨ + Auto-Create New Workspace ("{podioWorkspaceName.replace(/^[\s\-–—]+/, '').trim()}")</option>
+                                      {allWorkspaces.map(ws => (
+                                        <option key={ws.id} value={ws.id}>Existing Workspace: {ws.name}</option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                  {fullWsImportStatus && (
+                                    <div className="text-[11px] font-mono text-emerald-300 bg-black/50 px-3 py-2 rounded border border-emerald-500/30 flex items-center gap-2">
+                                      <div className="w-3.5 h-3.5 border-2 border-emerald-400/20 border-t-emerald-400 rounded-full animate-spin flex-shrink-0" />
+                                      <span className="truncate">{fullWsImportStatus}</span>
+                                    </div>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={handleFullWorkspaceImport}
+                                    disabled={isImportingPodio}
+                                    className="w-full py-2.5 rounded-lg font-mono text-xs font-bold transition-all text-black bg-emerald-400 hover:bg-emerald-300 disabled:opacity-50 flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(16,185,129,0.25)]"
+                                  >
+                                    <LucideIcons.Sparkles size={14} />
+                                    {isImportingPodio && fullWsImportStatus ? 'Migrating Entire Workspace...' : `Auto-Create & Import All ${podioAppsList.filter(app => app.space_name === podioWorkspaceName).length} Apps`}
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
@@ -6028,14 +7870,13 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
                       disabled={!podioAppId || isImportingPodio || isLoadingPodioApps}
                       className="w-full py-3 rounded-lg font-mono text-sm font-bold transition-all text-black disabled:opacity-50 hover:scale-105 active:scale-95 bg-emerald-400 hover:bg-emerald-300 shadow-[0_0_20px_rgba(16,185,129,0.3)] flex justify-center items-center gap-2"
                     >
-                      {isImportingPodio ? <div className="w-4 h-4 border-2 border-black/20 border-t-black rounded-full animate-spin" /> : <LucideIcons.Database size={16} />}
-                      {isImportingPodio ? 'Analyzing Dependency Tree...' : 'Fetch Schema & Continue'}
+                      {isImportingPodio && !fullWsImportStatus ? <div className="w-4 h-4 border-2 border-black/20 border-t-black rounded-full animate-spin" /> : <LucideIcons.Database size={16} />}
+                      {isImportingPodio && !fullWsImportStatus ? 'Analyzing Dependency Tree...' : 'Fetch Single App Schema & Continue'}
                     </button>
 
                     <div className="flex justify-center mt-6">
                       <button 
                         onClick={async () => { 
-                          // ⚡ Force delete the expired token from the DB so the next OAuth flow does a clean insert!
                           await supabase.schema('app_private')
                             .from('user_integrations')
                             .delete()
@@ -6070,23 +7911,19 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
                     <button 
                       onClick={() => {
                         setIsAwaitingAuth(true);
-                        // ⚡ Paste the EXACT Client ID of your new "A-CORE Dev" key here!
                         const clientId = 'a-core-dev'; 
                         const redirectUri = encodeURIComponent('https://rghtxlzzpuazvacupere.supabase.co/functions/v1/podio-oauth');
                         
-                        // Safely pack the user ID and current URL using Base64 to prevent URL parsing errors
                         const statePayload = btoa(JSON.stringify({ userId, returnUrl: window.location.href }));
                         const authUrl = `https://podio.com/oauth/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&state=${statePayload}`;
                         
-                        // Open a centered popup window instead of redirecting the main tab
-                        const width = 680; // Increased width to prevent horizontal scrolling
+                        const width = 680;
                         const height = 500;
                         const left = window.screenX + (window.outerWidth - width) / 2;
                         const top = window.screenY + (window.outerHeight - height) / 2;
                         
                         const popup = window.open(authUrl, 'PodioAuth', `width=${width},height=${height},left=${left},top=${top},toolbar=0,scrollbars=1,status=1,resizable=1,location=1,menuBar=0`);
                         
-                        // Fallback to reset loading state if user manually closes the popup before finishing
                         const checkClosed = setInterval(() => {
                           if (popup?.closed) {
                             clearInterval(checkClosed);
@@ -6105,7 +7942,6 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
                     <button onClick={() => setShowPodioModal(false)} className="flex-1 py-2 border border-gray-700 text-gray-400 rounded-lg hover:bg-gray-900 font-mono text-sm transition-all">Cancel</button>
                     <button 
                       onClick={() => {
-                        // Temporary bypass to allow you to test the rest of the flow before the backend is hooked up
                         setPodioAppId('demo-app-id');
                         setPodioAppToken('demo-token');
                         fetchPodioSchema();
@@ -6121,13 +7957,26 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
           ) : podioStep === 'dependencies' ? (
             <>
               {!expandedDepId && (
-                <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-lg mb-4 flex-shrink-0 animate-in fade-in slide-in-from-top-2">
-                  <h4 className="text-sm font-mono font-bold text-amber-400 mb-1.5 flex items-center gap-2">
-                    <GitBranchIcon size={16} /> Relationship Fields Detected
-                  </h4>
-                  <p className="text-xs text-amber-500/80 font-mono leading-relaxed">
-                    This Podio App contains relationship fields linked to other apps. To ensure your A-CORE connections wire up properly, complete the imports for these parent applications in <strong>strict sequential order</strong> before finalizing the main import.
-                  </p>
+                <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-lg mb-4 flex-shrink-0 animate-in fade-in slide-in-from-top-2 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div>
+                    <h4 className="text-sm font-mono font-bold text-amber-400 mb-1.5 flex items-center gap-2">
+                      <GitBranchIcon size={16} /> Relationship Fields Detected
+                    </h4>
+                    <p className="text-xs text-amber-500/80 font-mono leading-relaxed">
+                      This Podio App links to other apps. Configure each dependency below, or click <strong>Auto-Create & Import All</strong> to automatically build matching MiniApps, fields, and records in sequential order.
+                    </p>
+                  </div>
+                  {podioDependencies.some(d => !depStates[d.app_id]?.isCompleted) && (
+                    <button
+                      type="button"
+                      onClick={handleAutoCreateAndImportAllDependencies}
+                      disabled={isImportingPodio}
+                      className="px-4 py-2.5 rounded-lg font-mono text-xs font-bold text-black bg-emerald-400 hover:bg-emerald-300 transition-all flex items-center gap-2 whitespace-nowrap flex-shrink-0 shadow-[0_0_15px_rgba(16,185,129,0.3)] disabled:opacity-50"
+                    >
+                      {isImportingPodio ? <div className="w-3.5 h-3.5 border-2 border-black/20 border-t-black rounded-full animate-spin" /> : <LucideIcons.Sparkles size={14} />}
+                      {isImportingPodio ? 'Auto-Building...' : '⚡ Auto-Create & Import All'}
+                    </button>
+                  )}
                 </div>
               )}
               
@@ -6165,10 +8014,29 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
                             <label className="block text-[10px] font-mono font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Target Workspace</label>
                             <select 
                               value={state.targetWorkspaceId || ''} 
-                              onChange={e => updateDepState(dep.app_id, { targetWorkspaceId: e.target.value, targetAppId: '' })}
+                              onChange={async (e) => {
+                                const val = e.target.value;
+                                if (val === '__auto_create_ws__') {
+                                  try {
+                                    updateDepState(dep.app_id, { isImporting: true, error: null });
+                                    const depSpace = dep.space_name || podioAppsList.find(a => Number(a.app_id) === Number(dep.app_id))?.space_name || podioWorkspaceName || dep.name;
+                                    const createdWs = await handleAutoCreateWorkspace(depSpace);
+                                    if (createdWs) {
+                                      updateDepState(dep.app_id, { targetWorkspaceId: createdWs.id, targetAppId: '', isImporting: false });
+                                    }
+                                  } catch (err: any) {
+                                    updateDepState(dep.app_id, { error: err.message || 'Failed to auto-create workspace', isImporting: false });
+                                  }
+                                } else {
+                                  updateDepState(dep.app_id, { targetWorkspaceId: val, targetAppId: '' });
+                                }
+                              }}
                               className="w-full bg-black/50 border border-gray-700 rounded-lg px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-sky-500 transition-colors"
                             >
                               <option value="">Select Workspace...</option>
+                              <option value="__auto_create_ws__" className="text-emerald-400 font-bold">
+                                ✨ + Auto-Create Workspace ("{(dep.space_name || podioAppsList.find(a => Number(a.app_id) === Number(dep.app_id))?.space_name || podioWorkspaceName || dep.name).replace(/^[\s\-–—]+/, '').trim()}")
+                              </option>
                               {allWorkspaces.map(ws => <option key={ws.id} value={ws.id}>{ws.name}</option>)}
                             </select>
                           </div>
@@ -6176,18 +8044,37 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
                             <label className="block text-[10px] font-mono font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Target A-CORE App</label>
                             <select 
                               value={state.targetAppId} 
-                              onChange={e => {
+                              onChange={async (e) => {
                                 const newAppId = e.target.value;
-                                updateDepState(dep.app_id, { targetAppId: newAppId });
-                                // ⚡ Auto-fetch the schema instantly when the app is selected!
-                                if (newAppId && state.fields.length === 0) {
-                                  fetchDepSchema(dep.app_id);
+                                if (newAppId === '__auto_create_app__') {
+                                  try {
+                                    updateDepState(dep.app_id, { isImporting: true, error: null });
+                                    const { app: createdApp, mapping: createdMapping, podioFields: depPFields } =
+                                      await handleAutoCreateMiniAppFromPodio(dep.app_id, dep.name, state.targetWorkspaceId);
+                                    updateDepState(dep.app_id, {
+                                      targetAppId: createdApp.id,
+                                      fields: depPFields,
+                                      mapping: createdMapping,
+                                      step: 'mapping',
+                                      isImporting: false
+                                    });
+                                  } catch (err: any) {
+                                    updateDepState(dep.app_id, { error: err.message || 'Failed to auto-create MiniApp', isImporting: false });
+                                  }
+                                } else {
+                                  updateDepState(dep.app_id, { targetAppId: newAppId });
+                                  if (newAppId) {
+                                    fetchDepSchema(dep.app_id, newAppId);
+                                  }
                                 }
                               }}
                               disabled={!state.targetWorkspaceId}
                               className="w-full bg-black/50 border border-gray-700 rounded-lg px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-sky-500 transition-colors disabled:opacity-50"
                             >
                               <option value="">Select Target App...</option>
+                              <option value="__auto_create_app__" className="text-emerald-400 font-bold">
+                                ✨ + Auto-Create MiniApp ("{dep.name}") with Matching Fields
+                              </option>
                               {availableMiniApps.filter(a => a.workspace_id === state.targetWorkspaceId).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                             </select>
                           </div>
@@ -6196,43 +8083,118 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
                         {state.isImporting && state.fields.length === 0 ? (
                            <div className="py-8 flex flex-col items-center justify-center gap-3 border border-dashed border-gray-700 rounded-lg">
                              <div className="w-6 h-6 border-2 border-sky-500/20 border-t-sky-500 rounded-full animate-spin" />
-                             <span className="text-xs text-gray-500 font-mono">Extracting fields from Podio...</span>
+                             <span className="text-xs text-gray-500 font-mono">Building schema & extracting fields from Podio...</span>
                            </div>
                         ) : state.fields.length > 0 ? (
                            <div className="space-y-2 overflow-y-auto darkwave-scrollbar max-h-[35vh] mb-4 bg-black/30 p-3 rounded-lg border border-gray-800/50">
-                             {state.fields.map(field => {
+                             {/* ⚡ 1-CLICK AUTO-CREATE ALL UNMAPPED FIELDS FOR DEPENDENCY APP */}
+                             {state.fields.some((f: any) => !state.mapping[f.external_id]) && (
+                               <div className="flex items-center justify-between pb-2 mb-2 border-b border-gray-800">
+                                 <span className="text-[10px] font-mono text-amber-400">
+                                   {state.fields.filter((f: any) => !state.mapping[f.external_id]).length} unmapped Podio field(s)
+                                 </span>
+                                 <button
+                                   type="button"
+                                   onClick={async () => {
+                                     const unmapped = state.fields.filter((f: any) => !state.mapping[f.external_id]);
+                                     if (unmapped.length === 0 || !state.targetAppId) return;
+                                     updateDepState(dep.app_id, { isImporting: true });
+                                     try {
+                                       const { createdMap } = await handleAutoCreateFieldsForApp(state.targetAppId, unmapped, false);
+                                       updateDepState(dep.app_id, {
+                                         mapping: { ...state.mapping, ...createdMap },
+                                         isImporting: false
+                                       });
+                                     } catch (err: any) {
+                                       updateDepState(dep.app_id, { error: err.message || 'Failed to auto-create fields', isImporting: false });
+                                     }
+                                   }}
+                                   className="px-2.5 py-1 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-[10px] font-mono font-bold transition-all flex items-center gap-1"
+                                 >
+                                   <LucideIcons.Sparkles size={11} /> ✨ Auto-Create All Unmapped Fields
+                                 </button>
+                               </div>
+                             )}
+
+                             {state.fields.map((field: any) => {
                                 const targetApp = availableMiniApps.find(a => a.id === state.targetAppId);
-                                const targetSchemaDef = targetApp?.schema_definition as any;
+                                const targetSchemaDef = (targetApp as any)?.schema_definition as any;
                                 const parsedSchema = typeof targetSchemaDef === 'string' ? JSON.parse(targetSchemaDef) : targetSchemaDef;
-                                let targetCols: string[] = [];
+                                let targetSchemaFields: any[] = [];
                                 if (parsedSchema?.fields) {
-                                   targetCols = parsedSchema.fields.map((f:any) => f.name);
+                                   targetSchemaFields = parsedSchema.fields;
                                 } else if (parsedSchema?.base_fields || parsedSchema?.custom_fields) {
-                                   targetCols = [...(parsedSchema.base_fields || []), ...(parsedSchema.custom_fields || [])].map((f:any) => f.name);
+                                   targetSchemaFields = [...(parsedSchema.base_fields || []), ...(parsedSchema.custom_fields || [])];
                                 }
+                                const validTargetFields = targetSchemaFields.filter(
+                                  (f: any) => f.name && !['split_separator', 'tabs', 'submenu', 'visualizer_field'].includes(f.type)
+                                );
+                                const isRel = isPodioRelationshipField(field);
+                                const selectedAcoreField = validTargetFields.find((f: any) => f.name === state.mapping[field.external_id]);
+                                const isTargetConn = selectedAcoreField?.type === 'connection_field' || selectedAcoreField?.type === 'connection';
 
                                 return (
-                                  <div key={field.external_id} className="flex items-center gap-3 p-1">
-                                    <span className="text-[11px] text-gray-400 font-mono w-1/3 truncate" title={field.label}>{field.label}</span>
-                                    <ChevronRightIcon size={14} className="text-gray-600 flex-shrink-0" />
-                                    <select 
-                                      value={state.mapping[field.external_id] || ''} 
-                                      onChange={e => {
-                                        const newMapping = { ...state.mapping, [field.external_id]: e.target.value };
-                                        updateDepState(dep.app_id, { mapping: newMapping });
-                                      }} 
-                                      className="flex-1 bg-black/60 border border-gray-700 rounded px-3 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-emerald-500 transition-colors"
-                                    >
-                                      <option value="">Skip</option>
-                                      {targetCols.map(col => <option key={col} value={col}>{col}</option>)}
-                                    </select>
+                                  <div key={field.external_id} className="flex items-center gap-3 p-1.5 rounded-lg" style={isRel ? { background: 'rgba(16, 185, 129, 0.06)', border: '1px solid rgba(16, 185, 129, 0.2)' } : {}}>
+                                    <div className="w-1/3 flex flex-col gap-0.5 min-w-0">
+                                      <span className="text-[11px] text-gray-200 font-mono truncate flex items-center gap-1.5" title={field.label}>
+                                        {isRel && <GitBranchIcon size={12} className="text-emerald-400 flex-shrink-0" />}
+                                        {field.label}
+                                      </span>
+                                      <div className="flex items-center gap-1.5">
+                                        {isRel ? (
+                                          <span className="text-[8px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 px-1.5 py-0.5 rounded uppercase tracking-wider font-bold">
+                                            🔗 Podio Relationship
+                                          </span>
+                                        ) : (
+                                          <span className="text-[8px] bg-slate-800 text-slate-400 border border-slate-700 px-1.5 py-0.5 rounded uppercase tracking-wider">
+                                            {(field.type || 'field').replace('_', ' ')}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                    <ChevronRightIcon size={14} className={isRel ? 'text-emerald-400 flex-shrink-0' : 'text-gray-600 flex-shrink-0'} />
+                                    <div className="flex-1 flex items-center gap-2">
+                                      <select 
+                                        value={state.mapping[field.external_id] || ''} 
+                                        onChange={async (e) => {
+                                          const val = e.target.value;
+                                          if (val === '__auto_create_field__') {
+                                            if (!state.targetAppId) return;
+                                            const { createdMap } = await handleAutoCreateFieldsForApp(state.targetAppId, [field], false);
+                                            updateDepState(dep.app_id, { mapping: { ...state.mapping, ...createdMap } });
+                                          } else {
+                                            const newMapping = { ...state.mapping, [field.external_id]: val };
+                                            updateDepState(dep.app_id, { mapping: newMapping });
+                                          }
+                                        }} 
+                                        className={`flex-1 bg-black/60 border rounded px-3 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-emerald-500 transition-colors ${isRel || isTargetConn ? 'border-emerald-500/50 text-emerald-300' : 'border-gray-700'}`}
+                                      >
+                                        <option value="">Skip</option>
+                                        <option value="__auto_create_field__" className="text-emerald-400 font-bold">
+                                          ✨ + Auto-Create New Field ("{field.label}" • {mapPodioTypeToAcoreType(field).replace('_field', '')})
+                                        </option>
+                                        {validTargetFields.map((f: any) => {
+                                          const isConn = f.type === 'connection_field' || f.type === 'connection';
+                                          return (
+                                            <option key={f.name} value={f.name}>
+                                              {isConn ? `🔗 ${f.name} (A-CORE Connection)` : f.name}
+                                            </option>
+                                          );
+                                        })}
+                                      </select>
+                                      {isTargetConn && (
+                                        <span className="text-[9px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 px-2 py-1 rounded font-mono font-bold whitespace-nowrap flex items-center gap-1">
+                                          <GitBranchIcon size={10} /> Connection
+                                        </span>
+                                      )}
+                                    </div>
                                   </div>
                                 )
                              })}
                            </div>
                         ) : (
                            <div className="py-8 flex flex-col items-center justify-center gap-3 border border-dashed border-gray-700 rounded-lg">
-                             <span className="text-xs text-gray-500 font-mono">Select a target app to fetch schema</span>
+                             <span className="text-xs text-gray-500 font-mono">Select or Auto-Create a target app to fetch schema</span>
                            </div>
                         )}
                         
@@ -6277,85 +8239,77 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
                       try {
                         let updatedSchemaFields = [...schemaFields];
                         let schemaChanged = false;
-                        const newMapping = { ...podioMapping };
+                        const hasDeps = podioDependencies.length > 0;
 
                         // ⚡ 1. Scan for Podio Relationship Fields
                         for (const pf of podioFields) {
-                          if (pf.type === 'app') {
-                            const refAppIds = pf.config?.settings?.referenced_apps?.map((a: any) => a.app_id) || [];
-                            
-                            if (refAppIds.length > 0) {
-                              // Translate Podio App IDs to A-CORE App IDs
-                              const targetAcoreAppIds = refAppIds
-                                .map((id: number) => depStates[id]?.targetAppId)
-                                .filter(Boolean);
+                          if (isPodioRelationshipField(pf, hasDeps)) {
+                            let refAppIds: number[] =
+                              pf.config?.settings?.referenced_apps?.map((a: any) => a.app_id) ||
+                              pf.referenced_apps?.map((a: any) => a.app_id || a) ||
+                              [];
 
-                              if (targetAcoreAppIds.length > 0) {
-                                // ⚡ 2. Search A-CORE schema for an existing Connection Field
-                                let matchingField = updatedSchemaFields.find(f => 
-                                  f.type === 'connection_field' &&
-                                  targetAcoreAppIds.some(targetId => f.settings?.connectedMiniAppIds?.includes(targetId))
-                                );
+                            if (refAppIds.length === 0 && podioDependencies.length > 0) {
+                              refAppIds = podioDependencies.map(d => d.app_id);
+                            }
 
-                                if (matchingField) {
-                                  newMapping[pf.external_id] = matchingField.name;
-                                } else {
-                                  // ⚡ 3. Auto-Create a new Connection Field if missing!
-                                  const newFieldId = `field_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-                                  const newField = {
-                                    id: newFieldId,
-                                    name: pf.label || 'Linked Item',
-                                    type: 'connection_field',
-                                    required: false,
-                                    column: 1,
-                                    colSpan: 60,
-                                    rowSpan: 1,
-                                    row: updatedSchemaFields.length > 0 ? Math.max(...updatedSchemaFields.map(f => f.row || 0)) + 1 : 0,
-                                    settings: {
-                                      connectedMiniAppIds: targetAcoreAppIds,
-                                      allowMultipleConnections: pf.config?.settings?.multiple !== false,
-                                      connectionLayoutMode: 'dropdown',
-                                      connectionDropdownSearchable: true
-                                    }
-                                  };
-                                  updatedSchemaFields.push(newField);
-                                  newMapping[pf.external_id] = newField.name;
+                            const targetAcoreAppIds = refAppIds
+                              .map((id: number) => depStates[id]?.targetAppId)
+                              .filter(Boolean);
+
+                            // ⚡ 2. Search A-CORE schema for an existing Connection Field
+                            let matchingField = updatedSchemaFields.find(f => 
+                              (f.type === 'connection_field' || f.type === 'connection') &&
+                              targetAcoreAppIds.some(targetId => f.settings?.connectedMiniAppIds?.includes(targetId))
+                            );
+
+                            if (!matchingField) {
+                              const allConnFields = updatedSchemaFields.filter(f => f.type === 'connection_field' || f.type === 'connection');
+                              matchingField = allConnFields.find(
+                                f => f.name?.toLowerCase() === pf.label?.toLowerCase() || f.name?.toLowerCase() === pf.external_id?.toLowerCase()
+                              ) || (allConnFields.length === 1 ? allConnFields[0] : undefined);
+
+                              if (matchingField && targetAcoreAppIds.length > 0) {
+                                const existingIds = matchingField.settings?.connectedMiniAppIds || [];
+                                const mergedIds = Array.from(new Set([...existingIds, ...targetAcoreAppIds]));
+                                if (mergedIds.length !== existingIds.length) {
+                                  matchingField.settings = { ...matchingField.settings, connectedMiniAppIds: mergedIds };
                                   schemaChanged = true;
                                 }
                               }
+                            }
+
+                            if (!matchingField && targetAcoreAppIds.length > 0) {
+                              const newFieldId = `field_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+                              const newField = {
+                                id: newFieldId,
+                                name: pf.label || 'Linked Item',
+                                type: 'connection_field',
+                                required: false,
+                                column: 1,
+                                colSpan: 60,
+                                rowSpan: 1,
+                                row: updatedSchemaFields.length > 0 ? Math.max(...updatedSchemaFields.map(f => f.row || 0)) + 1 : 0,
+                                settings: {
+                                  connectedMiniAppIds: targetAcoreAppIds,
+                                  allowMultipleConnections: pf.config?.settings?.multiple !== false,
+                                  connectionLayoutMode: 'dropdown',
+                                  connectionDropdownSearchable: true
+                                }
+                              };
+                              updatedSchemaFields.push(newField);
+                              schemaChanged = true;
                             }
                           }
                         }
 
                         // ⚡ 4. Save the modified schema to the database instantly
                         if (schemaChanged && miniAppId) {
-                          const { data: currentApp } = await supabase.schema('app_private')
-                            .from('mini_apps')
-                            .select('schema_definition')
-                            .eq('id', miniAppId)
-                            .single();
-                            
-                          if (currentApp) {
-                            const schemaDef = typeof currentApp.schema_definition === 'string' 
-                              ? JSON.parse(currentApp.schema_definition) 
-                              : currentApp.schema_definition;
-                              
-                            if (schemaDef.custom_fields) {
-                              schemaDef.custom_fields = updatedSchemaFields.filter(f => !f.is_base);
-                            } else {
-                              schemaDef.fields = updatedSchemaFields;
-                            }
-                            
-                            await supabase.schema('app_private')
-                              .from('mini_apps')
-                              .update({ schema_definition: schemaDef, updated_at: new Date().toISOString() })
-                              .eq('id', miniAppId);
-                              
-                            setSchemaFields(updatedSchemaFields);
-                          }
+                          await saveUpdatedAppSchemaToDb(miniAppId, updatedSchemaFields);
                         }
                         
-                        setPodioMapping(newMapping);
+                        const smartMapping = computeSmartPodioMapping(podioFields, updatedSchemaFields, hasDeps);
+                        setPodioMapping(smartMapping);
                         setPodioStep('mapping');
                       } catch (err) {
                         console.error("Failed to auto-map relationship fields", err);
@@ -6376,25 +8330,115 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
             </>
           ) : (
             <>
-              <p className="text-xs text-gray-500 font-mono mb-4 flex-shrink-0">
-                Map your Podio App fields to the columns in this A-CORE MiniApp.
-              </p>
+              <div className="flex items-center justify-between gap-2 mb-4 flex-shrink-0 flex-wrap">
+                <p className="text-xs text-gray-500 font-mono">
+                  Map your Podio App fields to the columns in this A-CORE MiniApp.
+                </p>
+                {podioFields.some(f => !podioMapping[f.external_id]) && miniAppId && (
+                  <button
+                    type="button"
+                    disabled={isImportingPodio}
+                    onClick={async () => {
+                      const unmapped = podioFields.filter(f => !podioMapping[f.external_id]);
+                      if (unmapped.length === 0 || !miniAppId) return;
+                      setIsImportingPodio(true);
+                      try {
+                        const { createdMap } = await handleAutoCreateFieldsForApp(
+                          miniAppId,
+                          unmapped,
+                          podioDependencies.length > 0
+                        );
+                        setPodioMapping(prev => ({ ...prev, ...createdMap }));
+                      } catch (err: any) {
+                        setDbError(err.message || 'Failed to auto-create fields');
+                      } finally {
+                        setIsImportingPodio(false);
+                      }
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-xs font-mono font-bold transition-all flex items-center gap-1.5"
+                  >
+                    <LucideIcons.Sparkles size={13} /> ✨ Auto-Create All Unmapped Fields ({podioFields.filter(f => !podioMapping[f.external_id]).length})
+                  </button>
+                )}
+              </div>
               
               <div className="space-y-3 overflow-y-auto darkwave-scrollbar flex-1 min-h-0 pr-2">
-                {podioFields.map(field => (
-                  <div key={field.external_id} className="flex items-center gap-3">
-                    <span className="text-xs text-gray-400 font-mono w-40 truncate" title={field.label}>{field.label} <span className="text-[9px] text-gray-600 block">{field.external_id}</span></span>
-                    <ChevronRightIcon size={14} className="text-gray-600 flex-shrink-0" />
-                    <select 
-                      value={podioMapping[field.external_id] || ''} 
-                      onChange={e => setPodioMapping(prev => ({ ...prev, [field.external_id]: e.target.value }))} 
-                      className="flex-1 bg-gray-900/80 border border-gray-800 rounded-lg px-3 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-emerald-500 transition-colors"
+                {podioFields.map(field => {
+                  const hasDeps = podioDependencies.length > 0;
+                  const isRel = isPodioRelationshipField(field, hasDeps);
+                  const validAcoreFields = schemaFields.filter(
+                    f => f.name && !['split_separator', 'tabs', 'submenu', 'visualizer_field'].includes(f.type)
+                  );
+                  const selectedAcoreField = validAcoreFields.find(f => f.name === podioMapping[field.external_id]);
+                  const isTargetConn = selectedAcoreField?.type === 'connection_field' || selectedAcoreField?.type === 'connection';
+
+                  return (
+                    <div
+                      key={field.external_id}
+                      className="flex items-center gap-3 p-2 rounded-lg transition-all"
+                      style={isRel ? { background: 'rgba(16, 185, 129, 0.06)', border: '1px solid rgba(16, 185, 129, 0.25)' } : {}}
                     >
-                      <option value="">Skip</option>
-                      {columns.map(col => <option key={col} value={col}>{col}</option>)}
-                    </select>
-                  </div>
-                ))}
+                      <div className="w-44 flex flex-col gap-1 flex-shrink-0">
+                        <span className="text-xs text-gray-200 font-mono truncate flex items-center gap-1.5" title={field.label}>
+                          {isRel && <GitBranchIcon size={12} className="text-emerald-400 flex-shrink-0" />}
+                          {field.label}
+                        </span>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-[9px] text-gray-500 font-mono truncate max-w-[80px]">{field.external_id}</span>
+                          {isRel ? (
+                            <span className="text-[8px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 px-1.5 py-0.5 rounded uppercase tracking-wider font-bold">
+                              🔗 Podio Relationship
+                            </span>
+                          ) : (
+                            <span className="text-[8px] bg-slate-800 text-slate-400 border border-slate-700 px-1.5 py-0.5 rounded uppercase tracking-wider">
+                              {(field.type || 'field').replace('_', ' ')}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <ChevronRightIcon size={14} className={isRel ? 'text-emerald-400 flex-shrink-0' : 'text-gray-600 flex-shrink-0'} />
+                      <div className="flex-1 flex items-center gap-2 min-w-0">
+                        <select 
+                          value={podioMapping[field.external_id] || ''} 
+                          onChange={async (e) => {
+                            const val = e.target.value;
+                            if (val === '__auto_create_field__') {
+                              if (!miniAppId) return;
+                              setIsImportingPodio(true);
+                              try {
+                                const { createdMap } = await handleAutoCreateFieldsForApp(miniAppId, [field], hasDeps);
+                                setPodioMapping(prev => ({ ...prev, ...createdMap }));
+                              } finally {
+                                setIsImportingPodio(false);
+                              }
+                            } else {
+                              setPodioMapping(prev => ({ ...prev, [field.external_id]: val }));
+                            }
+                          }} 
+                          className={`flex-1 bg-gray-900/80 border rounded-lg px-3 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-emerald-500 transition-colors ${isRel || isTargetConn ? 'border-emerald-500/50 text-emerald-300' : 'border-gray-800'}`}
+                        >
+                          <option value="">Skip</option>
+                          <option value="__auto_create_field__" className="text-emerald-400 font-bold">
+                            ✨ + Auto-Create New Field ("{field.label}" • {mapPodioTypeToAcoreType(field, hasDeps).replace('_field', '')})
+                          </option>
+                          {validAcoreFields.map(f => {
+                            const isConn = f.type === 'connection_field' || f.type === 'connection';
+                            return (
+                              <option key={f.name} value={f.name}>
+                                {isConn ? `🔗 ${f.name} (A-CORE Connection)` : f.name}
+                              </option>
+                            );
+                          })}
+                        </select>
+                        {isTargetConn && (
+                          <span className="text-[9px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 px-2 py-1 rounded font-mono font-bold whitespace-nowrap flex items-center gap-1 flex-shrink-0">
+                            <GitBranchIcon size={10} /> Connection
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
 
               <div className="flex gap-3 mt-4 pt-4 border-t border-gray-800 flex-shrink-0 bg-black">
@@ -6929,8 +8973,23 @@ const MiniAppView: React.FC<MiniAppViewProps> = ({
       contextAppId={miniAppId || undefined}
       contextAppName={appName}
       contextRecordId={selectedRecord?._item_uid || selectedRecord?.id || undefined}
-      contextRecordTitle={selectedRecord?.name || selectedRecord?.Name || selectedRecord?.title || selectedRecord?.Title || undefined}
+      contextRecordTitle={
+        selectedRecord?.name ||
+        selectedRecord?.Name ||
+        selectedRecord?.title ||
+        selectedRecord?.Title ||
+        (selectedRecord?.['First Name'] ? `${selectedRecord['First Name']} ${selectedRecord['Last Name'] || ''}`.trim() : undefined) ||
+        selectedRecord?._item_uid ||
+        undefined
+      }
     />
+
+      {showReportsOverlay && (
+        <ReportBuilderPanel
+          onClose={() => setShowReportsOverlay(false)}
+          initialReport={miniAppId ? { source_app_id: miniAppId, pinned_dashboard: `ws_${workspaceSlug}` } : undefined}
+        />
+      )}
 
   </>
   );

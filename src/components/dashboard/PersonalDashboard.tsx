@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
 import {
@@ -50,6 +51,7 @@ import LocalNetworkPanel from '@/components/security/LocalNetworkPanel';
 import type { CatalogWidget, LayoutTemplate } from '@/lib/widgetCatalog';
 import CustomWidgetWizard, { type CustomWidgetDefinition } from '@/components/dashboard/CustomWidgetWizard';
 import PinnedReportsStrip from '@/components/toolbar/PinnedReportsStrip';
+import { FEATURES } from '@/config/features';
 
 
 
@@ -64,9 +66,22 @@ interface StatCardProps {
   changeType?: 'positive' | 'negative' | 'neutral';
   icon: React.FC<{ className?: string; size?: number }>;
   glowColor: 'theme-primary' | 'magenta' | 'green' | 'theme-accent' | 'orange';
+  isExpanded?: boolean;
+  onToggleExpand?: () => void;
+  expandedContent?: React.ReactNode;
 }
 
-const StatCard: React.FC<StatCardProps> = ({ title, value, change, changeType, icon: Icon, glowColor }) => {
+const StatCard: React.FC<StatCardProps> = ({
+  title,
+  value,
+  change,
+  changeType,
+  icon: Icon,
+  glowColor,
+  isExpanded = false,
+  onToggleExpand,
+  expandedContent,
+}) => {
   const glowClasses: Record<string, string> = {
     'theme-primary': 'border-theme-primary-500/30 bg-gradient-to-br from-theme-primary-950/30 to-black hover:border-theme-primary-500/50',
     magenta: 'border-fuchsia-500/30 bg-gradient-to-br from-fuchsia-950/30 to-black hover:border-fuchsia-500/50',
@@ -85,21 +100,57 @@ const StatCard: React.FC<StatCardProps> = ({ title, value, change, changeType, i
     'theme-primary': 'text-theme-primary-400', magenta: 'text-fuchsia-400', green: 'text-green-400', 'theme-accent': 'text-theme-accent-400', orange: 'text-orange-400',
   };
   return (
-    <div className={`relative rounded-xl border p-4 transition-all ${glowClasses[glowColor]}`}>
-      <div className="flex items-start justify-between">
-        <div>
-          <p className="text-gray-500 text-sm font-mono uppercase tracking-wider">{title}</p>
+    <div
+      className={`relative rounded-xl border transition-all duration-200 ${glowClasses[glowColor]} ${
+        isExpanded ? 'ring-1 ring-white/15 shadow-lg' : ''
+      }`}
+    >
+      <div
+        onClick={onToggleExpand}
+        className="p-4 cursor-pointer select-none flex items-start justify-between group"
+        title={isExpanded ? 'Click to collapse details' : 'Click to expand details'}
+      >
+        <div className="min-w-0 flex-1 pr-2">
+          <div className="flex items-center gap-1.5">
+            <p className="text-gray-400 group-hover:text-gray-200 text-xs sm:text-sm font-mono uppercase tracking-wider truncate transition-colors">
+              {title}
+            </p>
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className={`text-gray-500 group-hover:text-white transition-transform duration-200 flex-shrink-0 ${
+                isExpanded ? 'rotate-180 text-white' : ''
+              }`}
+            >
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </div>
           <p className={`text-2xl font-bold font-mono mt-1 ${textClasses[glowColor]}`}>{value}</p>
           {change && (
-            <p className={`text-xs mt-1 font-mono ${changeType === 'positive' ? 'text-green-400' : changeType === 'negative' ? 'text-red-400' : 'text-gray-500'}`}>
+            <p className={`text-xs mt-1 font-mono truncate ${changeType === 'positive' ? 'text-green-400' : changeType === 'negative' ? 'text-red-400' : 'text-gray-500'}`}>
               {change}
             </p>
           )}
         </div>
-        <div className={`w-10 h-10 rounded-lg border flex items-center justify-center ${iconClasses[glowColor]}`}>
+        <div className={`w-10 h-10 rounded-lg border flex items-center justify-center flex-shrink-0 transition-transform group-hover:scale-105 ${iconClasses[glowColor]}`}>
           <Icon size={20} />
         </div>
       </div>
+
+      {isExpanded && expandedContent && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="px-4 pb-4 pt-3 border-t border-gray-800/80 bg-black/60 rounded-b-xl animate-in fade-in slide-in-from-top-1 duration-200"
+        >
+          {expandedContent}
+        </div>
+      )}
     </div>
   );
 };
@@ -145,20 +196,29 @@ interface WidgetDefinition {
 // WIDGET DEFINITIONS
 // ============================================
 
-const AVAILABLE_WIDGETS: WidgetDefinition[] = [
-  { id: 'tasks', name: 'My Tasks', description: 'View and manage your tasks', icon: TaskIcon, glowColor: 'theme-primary', minWidth: 300, minHeight: 200, defaultWidth: 500, defaultHeight: 280 },
+const LITE_AVAILABLE_WIDGETS: WidgetDefinition[] = [
+  { id: 'tasks', name: 'Upcoming Tasks', description: 'View and complete your live tasks', icon: TaskIcon, glowColor: 'theme-primary', minWidth: 280, minHeight: 200, defaultWidth: 400, defaultHeight: 340 },
+  { id: 'calendar-preview', name: 'Upcoming Events', description: 'Live calendar events and scheduled deadlines', icon: CalendarIcon, glowColor: 'theme-accent', minWidth: 260, minHeight: 180, defaultWidth: 400, defaultHeight: 340 },
+  { id: 'activity', name: 'Recent Activity', description: 'Live stream of record updates and Podio syncs', icon: ActivityIcon, glowColor: 'green', minWidth: 260, minHeight: 180, defaultWidth: 400, defaultHeight: 340 },
+  { id: 'recent-records', name: 'Recent Records', description: 'Latest records synced or updated across your MiniApps', icon: TrendingUpIcon, glowColor: 'green', minWidth: 280, minHeight: 200, defaultWidth: 420, defaultHeight: 340 },
+  { id: 'workspaces-overview', name: 'Workspaces & MiniApps', description: 'Quick-launch directory of your active Workspaces and MiniApps', icon: ServerIcon, glowColor: 'theme-primary', minWidth: 280, minHeight: 200, defaultWidth: 420, defaultHeight: 340 },
+  { id: 'reports', name: 'Task & Record Summary', description: 'Live completion metrics and record counts', icon: TrendingUpIcon, glowColor: 'magenta', minWidth: 280, minHeight: 200, defaultWidth: 400, defaultHeight: 300 },
+  { id: 'team-management', name: 'Organization Members', description: 'Live members in your organization', icon: UsersIcon, glowColor: 'orange', minWidth: 280, minHeight: 200, defaultWidth: 400, defaultHeight: 300 },
+  { id: 'notes-widget', name: 'Quick Notes', description: 'Persistent personal notes and reminders', icon: MessageIcon, glowColor: 'orange', minWidth: 260, minHeight: 180, defaultWidth: 380, defaultHeight: 300 },
+];
+
+const FULL_AVAILABLE_WIDGETS: WidgetDefinition[] = [
+  ...LITE_AVAILABLE_WIDGETS,
   { id: 'quick-actions', name: 'Quick Actions', description: 'Common actions at your fingertips', icon: ActivityIcon, glowColor: 'magenta', minWidth: 200, minHeight: 150, defaultWidth: 300, defaultHeight: 220 },
-  { id: 'activity', name: 'Activity Feed', description: 'Recent activity and updates', icon: TrendingUpIcon, glowColor: 'green', minWidth: 250, minHeight: 150, defaultWidth: 300, defaultHeight: 200 },
-  { id: 'calendar-preview', name: 'Upcoming Events', description: 'Calendar events preview', icon: CalendarIcon, glowColor: 'theme-accent', minWidth: 250, minHeight: 150, defaultWidth: 350, defaultHeight: 180 },
   { id: 'messages-preview', name: 'Recent Messages', description: 'Latest messages and notifications', icon: MessageIcon, glowColor: 'orange', minWidth: 250, minHeight: 150, defaultWidth: 350, defaultHeight: 180 },
   { id: 'system-health', name: 'System Health', description: 'Server uptime, CPU, memory, disk usage', icon: ServerIcon, glowColor: 'theme-primary', minWidth: 350, minHeight: 250, defaultWidth: 500, defaultHeight: 300, requiresAdmin: true },
   { id: 'security-overview', name: 'Security Overview', description: 'Threat alerts, firewall status, recent incidents', icon: ActivityIcon, glowColor: 'red', minWidth: 350, minHeight: 250, defaultWidth: 500, defaultHeight: 300, requiresAdmin: true },
   { id: 'user-stats', name: 'User Statistics', description: 'Active users, signups, session analytics', icon: UsersIcon, glowColor: 'theme-accent', minWidth: 300, minHeight: 200, defaultWidth: 450, defaultHeight: 280, requiresAdmin: true },
-  { id: 'team-management', name: 'Team Management', description: 'Team members, roles, and permissions overview', icon: UsersIcon, glowColor: 'theme-primary', minWidth: 350, minHeight: 250, defaultWidth: 500, defaultHeight: 300 },
-  { id: 'reports', name: 'Reports', description: 'Weekly summaries and performance metrics', icon: TrendingUpIcon, glowColor: 'green', minWidth: 300, minHeight: 200, defaultWidth: 450, defaultHeight: 280 },
   { id: 'quantum-visualization', name: 'Quantum Visualization', description: 'Qiskit Runtime Bloch Sphere', icon: ActivityIcon, glowColor: 'theme-accent', minWidth: 400, minHeight: 400, defaultWidth: 700, defaultHeight: 500, requiresAdmin: true },
   { id: 'news-feed', name: 'Live News Feed', description: 'Real-time news articles', icon: ExternalLinkIcon, glowColor: 'theme-primary', minWidth: 400, minHeight: 350, defaultWidth: 550, defaultHeight: 450, requiresAdmin: true },
 ];
+
+const AVAILABLE_WIDGETS: WidgetDefinition[] = !FEATURES.ENABLE_ADVANCED_DASHBOARD_WIDGETS ? LITE_AVAILABLE_WIDGETS : FULL_AVAILABLE_WIDGETS;
 
 // ============================================
 // ROLE-BASED DEFAULT TILE CONFIGURATIONS
@@ -170,76 +230,40 @@ type UserRoleCategory = 'platform_owner' | 'platform_tech_admin' | 'platform_sup
 
 const getRoleDefaultTiles = (roleCategory: UserRoleCategory, containerWidth: number = 1248): TileConfig[] => {
   const GAP = 10;
-  
-  // Dynamically calculate our fractions based on the actual screen/container width
-  const w2 = Math.floor((containerWidth - GAP) / 2); // Half width
-  const w3 = Math.floor((containerWidth - GAP * 2) / 3); // Third width
+  const w2 = Math.floor((containerWidth - GAP) / 2);
+  const w3 = Math.floor((containerWidth - GAP * 2) / 3);
 
+  // ⚡ BASIC TIER: Clean 3-tile real-data layout (Upcoming Tasks, Upcoming Events, Recent Activity)
+  if (!FEATURES.ENABLE_ADVANCED_DASHBOARD_WIDGETS) {
+    return [
+      { id: 'tasks-1', widgetId: 'tasks', title: 'Upcoming Tasks', position: { x: 0, y: 0 }, size: { width: w3, height: 340 }, zIndex: 1, glowColor: 'theme-primary' },
+      { id: 'calendar-preview-1', widgetId: 'calendar-preview', title: 'Upcoming Events', position: { x: w3 + GAP, y: 0 }, size: { width: w3, height: 340 }, zIndex: 2, glowColor: 'theme-accent' },
+      { id: 'activity-1', widgetId: 'activity', title: 'Recent Activity', position: { x: (w3 * 2) + (GAP * 2), y: 0 }, size: { width: containerWidth - (w3 * 2) - (GAP * 2), height: 340 }, zIndex: 3, glowColor: 'green' },
+    ];
+  }
+
+  // ⚡ FULL MODE: Preserve all role-based default tile layouts
   switch (roleCategory) {
     case 'platform_owner':
       return [
-        // Top Row: 2 Tiles (1/2 width each). The second tile takes up whatever pixels remain.
         { id: 'sys-health-1', widgetId: 'system-health', title: 'System Health', position: { x: 0, y: 0 }, size: { width: w2, height: 300 }, zIndex: 1, glowColor: 'theme-primary' },
         { id: 'security-1', widgetId: 'security-overview', title: 'Security Overview', position: { x: w2 + GAP, y: 0 }, size: { width: containerWidth - w2 - GAP, height: 300 }, zIndex: 2, glowColor: 'red' },
-        
-        // Bottom Row: 3 Tiles (1/3 width each). The last tile takes up whatever pixels remain.
         { id: 'user-stats-1', widgetId: 'user-stats', title: 'User Statistics', position: { x: 0, y: 310 }, size: { width: w3, height: 280 }, zIndex: 3, glowColor: 'theme-accent' },
         { id: 'activity-1', widgetId: 'activity', title: 'Activity', position: { x: w3 + GAP, y: 310 }, size: { width: w3, height: 280 }, zIndex: 4, glowColor: 'green' },
         { id: 'quick-actions-1', widgetId: 'quick-actions', title: 'Quick Actions', position: { x: (w3 * 2) + (GAP * 2), y: 310 }, size: { width: containerWidth - (w3 * 2) - (GAP * 2), height: 280 }, zIndex: 5, glowColor: 'magenta' },
       ];
     case 'platform_tech_admin':
       return [
-        { id: 'sys-health-1', widgetId: 'system-health', title: 'System Health', position: { x: 0, y: 0 }, size: { width: 500, height: 300 }, zIndex: 1, glowColor: 'theme-primary' },
-        { id: 'security-1', widgetId: 'security-overview', title: 'Security Overview', position: { x: 540, y: 0 }, size: { width: 500, height: 300 }, zIndex: 2, glowColor: 'red' },
-        { id: 'activity-1', widgetId: 'activity', title: 'Activity', position: { x: 0, y: 320 }, size: { width: 300, height: 200 }, zIndex: 3, glowColor: 'green' },
-        { id: 'tasks-1', widgetId: 'tasks', title: 'My Tasks', position: { x: 340, y: 320 }, size: { width: 500, height: 280 }, zIndex: 4, glowColor: 'theme-primary' },
-      ];
-    case 'platform_support_admin':
-    case 'platform_sales_admin':
-      return [
-        { id: 'user-stats-1', widgetId: 'user-stats', title: 'User Statistics', position: { x: 0, y: 0 }, size: { width: 450, height: 280 }, zIndex: 1, glowColor: 'theme-accent' },
-        { id: 'tasks-1', widgetId: 'tasks', title: 'My Tasks', position: { x: 490, y: 0 }, size: { width: 500, height: 280 }, zIndex: 2, glowColor: 'theme-primary' },
-        { id: 'activity-1', widgetId: 'activity', title: 'Activity', position: { x: 0, y: 300 }, size: { width: 300, height: 200 }, zIndex: 3, glowColor: 'green' },
-        { id: 'messages-preview-1', widgetId: 'messages-preview', title: 'Recent Messages', position: { x: 340, y: 300 }, size: { width: 350, height: 180 }, zIndex: 4, glowColor: 'orange' },
-      ];
-    case 'platform_tech_manager':
-    case 'platform_support_manager':
-    case 'platform_sales_manager':
-      return [
-        { id: 'tasks-1', widgetId: 'tasks', title: 'My Tasks', position: { x: 0, y: 0 }, size: { width: 500, height: 280 }, zIndex: 1, glowColor: 'theme-primary' },
-        { id: 'team-mgmt-1', widgetId: 'team-management', title: 'Team Management', position: { x: 540, y: 0 }, size: { width: 500, height: 300 }, zIndex: 2, glowColor: 'theme-primary' },
-        { id: 'activity-1', widgetId: 'activity', title: 'Activity', position: { x: 0, y: 300 }, size: { width: 300, height: 200 }, zIndex: 3, glowColor: 'green' },
-        { id: 'messages-preview-1', widgetId: 'messages-preview', title: 'Recent Messages', position: { x: 340, y: 300 }, size: { width: 350, height: 180 }, zIndex: 4, glowColor: 'orange' },
-      ];
-    case 'org_admin':
-      return [
-        { id: 'team-mgmt-1', widgetId: 'team-management', title: 'Team Management', position: { x: 0, y: 0 }, size: { width: 500, height: 300 }, zIndex: 1, glowColor: 'theme-primary' },
-        { id: 'activity-1', widgetId: 'activity', title: 'Activity', position: { x: 540, y: 0 }, size: { width: 300, height: 200 }, zIndex: 2, glowColor: 'green' },
-        { id: 'reports-1', widgetId: 'reports', title: 'Reports', position: { x: 540, y: 220 }, size: { width: 450, height: 280 }, zIndex: 3, glowColor: 'green' },
-        { id: 'tasks-1', widgetId: 'tasks', title: 'My Tasks', position: { x: 0, y: 320 }, size: { width: 500, height: 280 }, zIndex: 4, glowColor: 'theme-primary' },
-        { id: 'messages-preview-1', widgetId: 'messages-preview', title: 'Recent Messages', position: { x: 0, y: 620 }, size: { width: 350, height: 180 }, zIndex: 5, glowColor: 'orange' },
-      ];
-    case 'org_manager':
-      return [
-        { id: 'tasks-1', widgetId: 'tasks', title: 'My Tasks', position: { x: 0, y: 0 }, size: { width: 500, height: 280 }, zIndex: 1, glowColor: 'theme-primary' },
-        { id: 'team-mgmt-1', widgetId: 'team-management', title: 'Team Management', position: { x: 540, y: 0 }, size: { width: 500, height: 300 }, zIndex: 2, glowColor: 'theme-primary' },
-        { id: 'activity-1', widgetId: 'activity', title: 'Activity', position: { x: 0, y: 300 }, size: { width: 300, height: 200 }, zIndex: 3, glowColor: 'green' },
-        { id: 'calendar-preview-1', widgetId: 'calendar-preview', title: 'Upcoming Events', position: { x: 340, y: 300 }, size: { width: 350, height: 180 }, zIndex: 4, glowColor: 'theme-accent' },
-      ];
-    case 'org_user':
-      return [
-        { id: 'tasks-1', widgetId: 'tasks', title: 'My Tasks', position: { x: 0, y: 0 }, size: { width: 500, height: 280 }, zIndex: 1, glowColor: 'theme-primary' },
-        { id: 'calendar-preview-1', widgetId: 'calendar-preview', title: 'Upcoming Events', position: { x: 540, y: 0 }, size: { width: 350, height: 180 }, zIndex: 2, glowColor: 'theme-accent' },
-        { id: 'messages-preview-1', widgetId: 'messages-preview', title: 'Recent Messages', position: { x: 540, y: 200 }, size: { width: 350, height: 180 }, zIndex: 3, glowColor: 'orange' },
-        { id: 'quick-actions-1', widgetId: 'quick-actions', title: 'Quick Actions', position: { x: 0, y: 300 }, size: { width: 300, height: 220 }, zIndex: 4, glowColor: 'magenta' },
+        { id: 'sys-health-1', widgetId: 'system-health', title: 'System Health', position: { x: 0, y: 0 }, size: { width: w2, height: 300 }, zIndex: 1, glowColor: 'theme-primary' },
+        { id: 'security-1', widgetId: 'security-overview', title: 'Security Overview', position: { x: w2 + GAP, y: 0 }, size: { width: containerWidth - w2 - GAP, height: 300 }, zIndex: 2, glowColor: 'red' },
+        { id: 'activity-1', widgetId: 'activity', title: 'Activity', position: { x: 0, y: 310 }, size: { width: w2, height: 280 }, zIndex: 3, glowColor: 'green' },
+        { id: 'tasks-1', widgetId: 'tasks', title: 'Upcoming Tasks', position: { x: w2 + GAP, y: 310 }, size: { width: containerWidth - w2 - GAP, height: 280 }, zIndex: 4, glowColor: 'theme-primary' },
       ];
     default:
       return [
-        { id: 'tasks-1', widgetId: 'tasks', title: 'My Tasks', position: { x: 0, y: 0 }, size: { width: 500, height: 280 }, zIndex: 1, glowColor: 'theme-primary' },
-        { id: 'quick-actions-1', widgetId: 'quick-actions', title: 'Quick Actions', position: { x: 540, y: 0 }, size: { width: 300, height: 220 }, zIndex: 2, glowColor: 'magenta' },
-        { id: 'activity-1', widgetId: 'activity', title: 'Activity', position: { x: 540, y: 240 }, size: { width: 300, height: 200 }, zIndex: 3, glowColor: 'green' },
-        { id: 'calendar-preview-1', widgetId: 'calendar-preview', title: 'Upcoming Events', position: { x: 0, y: 300 }, size: { width: 340, height: 180 }, zIndex: 4, glowColor: 'theme-accent' },
-        { id: 'messages-preview-1', widgetId: 'messages-preview', title: 'Recent Messages', position: { x: 380, y: 300 }, size: { width: 340, height: 180 }, zIndex: 5, glowColor: 'orange' },
+        { id: 'tasks-1', widgetId: 'tasks', title: 'Upcoming Tasks', position: { x: 0, y: 0 }, size: { width: w3, height: 340 }, zIndex: 1, glowColor: 'theme-primary' },
+        { id: 'calendar-preview-1', widgetId: 'calendar-preview', title: 'Upcoming Events', position: { x: w3 + GAP, y: 0 }, size: { width: w3, height: 340 }, zIndex: 2, glowColor: 'theme-accent' },
+        { id: 'activity-1', widgetId: 'activity', title: 'Recent Activity', position: { x: (w3 * 2) + (GAP * 2), y: 0 }, size: { width: containerWidth - (w3 * 2) - (GAP * 2), height: 340 }, zIndex: 3, glowColor: 'green' },
       ];
   }
 };
@@ -248,7 +272,7 @@ const getRoleDefaultTiles = (roleCategory: UserRoleCategory, containerWidth: num
 // LOCALSTORAGE CACHE HELPERS
 // ============================================
 
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v4_basic_real_data_slate';
 let CURRENT_ORG_ID: string | null = null;
 
 const getCacheKey = (userId: string, tabId: string): string =>
@@ -348,41 +372,109 @@ const serializeTile = (tile: TileConfig): object => ({
 
 
 // ============================================
-// CUSTOM WIDGET RENDERERS
+// CUSTOM WIDGET RENDERERS (100% REAL LIVE DATA)
 // ============================================
 
-const CustomCounterWidget: React.FC<{ widget: CustomWidgetDefinition }> = ({ widget }) => {
-  const [count, setCount] = useState(0);
-  useEffect(() => {
-    // Simulate data
-    const val = widget.dataSource === 'tasks' ? 42 : widget.dataSource === 'messages' ? 18 : widget.dataSource === 'calendar' ? 7 : 156;
-    setCount(val);
-  }, [widget.dataSource]);
-  const colorMap: Record<string, string> = { 'theme-primary': 'text-theme-primary-400', magenta: 'text-fuchsia-400', green: 'text-green-400', 'theme-accent': 'text-theme-accent-400', orange: 'text-orange-400' };
+interface LiveCustomWidgetData {
+  tasks: any[];
+  events: any[];
+  records: any[];
+  activities: any[];
+  totalRecordsCount: number;
+  activeTaskCount: number;
+}
+
+const CustomCounterWidget: React.FC<{ widget: CustomWidgetDefinition; liveData: LiveCustomWidgetData }> = ({ widget, liveData }) => {
+  const count = useMemo(() => {
+    if (widget.dataSource === 'tasks') return liveData.activeTaskCount;
+    if (widget.dataSource === 'calendar') return liveData.events.length;
+    if (widget.dataSource === 'miniapp') return liveData.totalRecordsCount;
+    return liveData.activities.length;
+  }, [widget.dataSource, liveData]);
+
+  const colorMap: Record<string, string> = {
+    'theme-primary': 'text-theme-primary-400',
+    cyan: 'text-cyan-400',
+    magenta: 'text-fuchsia-400',
+    green: 'text-green-400',
+    'theme-accent': 'text-theme-accent-400',
+    purple: 'text-purple-400',
+    orange: 'text-orange-400',
+  };
   return (
-    <div className="flex flex-col items-center justify-center h-full">
-      <p className="text-gray-500 text-xs font-mono uppercase tracking-wider mb-2">{widget.name}</p>
+    <div className="flex flex-col items-center justify-center h-full py-6">
+      <p className="text-gray-400 text-xs font-mono uppercase tracking-wider mb-2">{widget.name}</p>
       <p className={`text-5xl font-bold font-mono ${colorMap[widget.glowColor] || 'text-theme-primary-400'}`}>{count}</p>
-      <p className="text-gray-600 text-[10px] font-mono mt-2">Source: {widget.dataSource}</p>
+      <p className="text-gray-600 text-[10px] font-mono mt-2 uppercase">Live Source: {widget.dataSource}</p>
     </div>
   );
 };
 
-const CustomListWidget: React.FC<{ widget: CustomWidgetDefinition }> = ({ widget }) => {
+const CustomListWidget: React.FC<{ widget: CustomWidgetDefinition; liveData: LiveCustomWidgetData }> = ({ widget, liveData }) => {
   const items = useMemo(() => {
-    if (widget.dataSource === 'tasks') return ['Review Q4 budget', 'Update handbook', 'Client meeting prep', 'Deploy v2.1', 'Security audit'];
-    if (widget.dataSource === 'messages') return ['Sarah: Project update', 'Mike: Meeting notes', 'Team: Sprint review', 'Alex: Bug report'];
-    if (widget.dataSource === 'calendar') return ['Team Standup 10:00', 'Client Review 2:00', 'Sprint Planning 4:00'];
-    return ['Item 1', 'Item 2', 'Item 3', 'Item 4', 'Item 5'];
-  }, [widget.dataSource]);
+    if (widget.dataSource === 'tasks') return liveData.tasks.slice(0, 6).map(t => t.title);
+    if (widget.dataSource === 'calendar') return liveData.events.slice(0, 6).map(e => e.title);
+    if (widget.dataSource === 'miniapp') {
+      return liveData.records.slice(0, 6).map(r => {
+        const d = typeof r.data === 'string' ? JSON.parse(r.data) : (r.data || {});
+        return d['First Name'] ? `${d['First Name']} ${d['Last Name'] || ''}`.trim() : (d.Name || d.name || d.Title || r.item_uid);
+      });
+    }
+    return liveData.activities.slice(0, 6).map(a => a.label);
+  }, [widget.dataSource, liveData]);
+
   return (
     <div>
       <h3 className="text-sm font-semibold text-white mb-3 font-mono">{widget.name}</h3>
-      <div className="space-y-2">
-        {items.map((item, i) => (
-          <div key={i} className="flex items-center gap-3 p-2 bg-gray-900/50 border border-gray-800 rounded-lg">
-            <div className={`w-1.5 h-1.5 rounded-full bg-${widget.glowColor === 'magenta' ? 'fuchsia' : widget.glowColor}-400`} />
-            <span className="text-xs text-gray-300 font-mono">{item}</span>
+      {items.length === 0 ? (
+        <p className="text-xs text-gray-500 font-mono py-4 text-center">No live items in {widget.dataSource} yet.</p>
+      ) : (
+        <div className="space-y-2">
+          {items.map((item, i) => (
+            <div key={i} className="flex items-center gap-3 p-2 bg-gray-900/50 border border-gray-800 rounded-lg">
+              <div className="w-1.5 h-1.5 rounded-full bg-theme-primary-400 flex-shrink-0" />
+              <span className="text-xs text-gray-300 font-mono truncate">{item}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const CustomChartWidget: React.FC<{ widget: CustomWidgetDefinition; liveData: LiveCustomWidgetData }> = ({ widget, liveData }) => {
+  const series = useMemo(() => {
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const counts = [0, 0, 0, 0, 0, 0, 0];
+    const sourceArr =
+      widget.dataSource === 'tasks'
+        ? liveData.tasks
+        : widget.dataSource === 'calendar'
+        ? liveData.events
+        : widget.dataSource === 'miniapp'
+        ? liveData.records
+        : liveData.activities;
+
+    sourceArr.forEach((item: any) => {
+      const rawDate = item.due_date || item.start_time || item.updated_at || item.created_at;
+      if (rawDate) {
+        const d = new Date(rawDate);
+        if (!isNaN(d.getTime())) counts[d.getDay()] += 1;
+      }
+    });
+    const max = Math.max(...counts, 1);
+    return days.map((label, idx) => ({ label, count: counts[idx], pct: Math.max(12, Math.round((counts[idx] / max) * 100)) }));
+  }, [widget.dataSource, liveData]);
+
+  return (
+    <div>
+      <h3 className="text-sm font-semibold text-white mb-3 font-mono">{widget.name}</h3>
+      <div className="flex items-end gap-2 h-32 pt-4">
+        {series.map((bar, i) => (
+          <div key={i} className="flex-1 flex flex-col items-center gap-1 h-full justify-end">
+            <span className="text-[9px] text-gray-400 font-mono">{bar.count}</span>
+            <div className="w-full rounded-t bg-theme-primary-500/70 transition-all" style={{ height: `${bar.pct}%` }} />
+            <span className="text-[8px] text-gray-500 font-mono">{bar.label}</span>
           </div>
         ))}
       </div>
@@ -390,31 +482,30 @@ const CustomListWidget: React.FC<{ widget: CustomWidgetDefinition }> = ({ widget
   );
 };
 
-const CustomChartWidget: React.FC<{ widget: CustomWidgetDefinition }> = ({ widget }) => {
-  const bars = useMemo(() => [65, 80, 45, 90, 55, 70, 85], []);
-  const colorMap: Record<string, string> = { 'theme-primary': 'bg-theme-primary-500', magenta: 'bg-fuchsia-500', green: 'bg-green-500', 'theme-accent': 'bg-theme-accent-500', orange: 'bg-orange-500' };
-  const barColor = colorMap[widget.glowColor] || 'bg-theme-primary-500';
-  return (
-    <div>
-      <h3 className="text-sm font-semibold text-white mb-3 font-mono">{widget.name}</h3>
-      <div className="flex items-end gap-2 h-32">
-        {bars.map((h, i) => (
-          <div key={i} className="flex-1 flex flex-col items-center gap-1">
-            <div className={`w-full rounded-t ${barColor}/70`} style={{ height: `${h}%` }} />
-            <span className="text-[8px] text-gray-600 font-mono">{['M','T','W','T','F','S','S'][i]}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-};
-
-const CustomTableWidget: React.FC<{ widget: CustomWidgetDefinition }> = ({ widget }) => {
+const CustomTableWidget: React.FC<{ widget: CustomWidgetDefinition; liveData: LiveCustomWidgetData }> = ({ widget, liveData }) => {
   const rows = useMemo(() => {
-    if (widget.dataSource === 'tasks') return [['Review budget','High','Today'],['Update docs','Medium','Tomorrow'],['Deploy v2','Urgent','Jan 30']];
-    if (widget.dataSource === 'messages') return [['Sarah Chen','Project Update','10m ago'],['Mike J.','Meeting Notes','1h ago']];
-    return [['Row 1','Col A','Col B'],['Row 2','Col A','Col B'],['Row 3','Col A','Col B']];
-  }, [widget.dataSource]);
+    if (widget.dataSource === 'tasks') {
+      return liveData.tasks.slice(0, 5).map(t => [
+        t.title,
+        t.priority || 'medium',
+        t.due_date ? new Date(t.due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'No date',
+      ]);
+    }
+    if (widget.dataSource === 'calendar') {
+      return liveData.events.slice(0, 5).map(e => [
+        e.title,
+        e.isTask ? 'Task' : 'Event',
+        new Date(e.start_time).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      ]);
+    }
+    return liveData.records.slice(0, 5).map(r => {
+      const d = typeof r.data === 'string' ? JSON.parse(r.data) : (r.data || {});
+      const title = d['First Name'] ? `${d['First Name']} ${d['Last Name'] || ''}`.trim() : (d.Name || d.name || r.item_uid);
+      const appInfo = Array.isArray(r.mini_apps) ? r.mini_apps[0] : r.mini_apps;
+      return [title, appInfo?.name || 'Record', r.item_uid || ''];
+    });
+  }, [widget.dataSource, liveData]);
+
   return (
     <div>
       <h3 className="text-sm font-semibold text-white mb-3 font-mono">{widget.name}</h3>
@@ -422,19 +513,25 @@ const CustomTableWidget: React.FC<{ widget: CustomWidgetDefinition }> = ({ widge
         <table className="w-full text-xs font-mono">
           <thead>
             <tr className="bg-gray-900/80 border-b border-gray-800">
-              <th className="text-left px-3 py-2 text-gray-500">Name</th>
-              <th className="text-left px-3 py-2 text-gray-500">Status</th>
-              <th className="text-left px-3 py-2 text-gray-500">Date</th>
+              <th className="text-left px-3 py-2 text-gray-500">Item</th>
+              <th className="text-left px-3 py-2 text-gray-500">Type / Priority</th>
+              <th className="text-left px-3 py-2 text-gray-500">Ref / Date</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((row, i) => (
-              <tr key={i} className="border-b border-gray-800/50 hover:bg-gray-900/30">
-                {row.map((cell, j) => (
-                  <td key={j} className="px-3 py-2 text-gray-300">{cell}</td>
-                ))}
+            {rows.length === 0 ? (
+              <tr>
+                <td colSpan={3} className="px-3 py-4 text-center text-gray-500">No live records found</td>
               </tr>
-            ))}
+            ) : (
+              rows.map((row, i) => (
+                <tr key={i} className="border-b border-gray-800/50 hover:bg-gray-900/30">
+                  {row.map((cell, j) => (
+                    <td key={j} className="px-3 py-2 text-gray-300 truncate max-w-[140px]">{cell}</td>
+                  ))}
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
       </div>
@@ -447,6 +544,7 @@ const CustomTableWidget: React.FC<{ widget: CustomWidgetDefinition }> = ({ widge
 // ============================================
 
 const PersonalDashboard: React.FC = () => {
+  const navigate = useNavigate();
   const { user, userType, organization, isPlatformOwner, isPlatformUser, isOrganizationAdmin, isOrganizationManager, isPlatformTechAdmin, isPlatformSupportAdmin, isPlatformSalesAdmin, isPlatformManager, getUserRole } = useAuth();
   const isOrgUser = userType === 'organization';
   
@@ -860,9 +958,44 @@ const PersonalDashboard: React.FC = () => {
         // ⚡ FIX: Removed the auto-scale logic here that was permanently overwriting user layouts.
 
         if (!loadedTabs.some(tab => tab.id === 'main')) loadedTabs.unshift(DEFAULT_TABS[0]);
+
+        // ⚡ BASIC TIER CLEAN SLATE RESET: Ensure Basic Tier only renders 100% real-data widgets while keeping Pro+ intact
+        const cleanSlateKey = `dashboard_clean_slate_v4_${userId}_${organization?.id || 'platform'}`;
+        const hasRunCleanSlate = localStorage.getItem(cleanSlateKey) === 'true';
+        const validRealWidgetIds = new Set(
+          !FEATURES.ENABLE_ADVANCED_DASHBOARD_WIDGETS
+            ? ['tasks', 'calendar-preview', 'activity', 'team-activity', 'recent-records', 'workspaces-overview', 'team-management', 'reports', 'notes-widget', 'quick-notes']
+            : [...FULL_AVAILABLE_WIDGETS.map(w => w.id), 'notes-widget', 'team-activity', 'system-uptime', 'active-users', 'response-time', 'error-rate', 'revenue-chart', 'announcements', 'threat-heatmap', 'live-ip-feed', 'access-log', 'time-tracker']
+        );
+
+        if (!hasRunCleanSlate) {
+          const freshTiles = getRoleDefaultTiles('default', containerRef.current?.clientWidth || 1248);
+          loadedTabs = [{ id: 'main', name: 'Main Dashboard', isDefault: true, tiles: freshTiles, accentColor: 'theme-primary' }];
+          localStorage.setItem(cleanSlateKey, 'true');
+
+          // Also overwrite the DB row immediately so the old mock layout never comes back!
+          supabase.schema('app_private')
+            .from('dashboard_configs')
+            .delete()
+            .eq('user_id', String(userId))
+            .not('tab_id', 'ilike', 'ws-%')
+            .then(() => {
+              saveDashboardConfigs();
+            });
+        } else {
+          // Strip out any legacy mock widgets that no longer exist
+          loadedTabs = loadedTabs.map(tab => {
+            const validTiles = tab.tiles.filter((t: any) => validRealWidgetIds.has(t.widgetId) || customWidgets.some(cw => cw.id === t.widgetId));
+            if (tab.id === 'main' && validTiles.length === 0) {
+              return {
+                ...tab,
+                tiles: getRoleDefaultTiles('default', containerRef.current?.clientWidth || 1248)
+              };
+            }
+            return { ...tab, tiles: validTiles };
+          });
+        }
         
-        // ⚡ FIX: Always use the server as the ultimate source of truth when a successful response is received. 
-        // Comparing timestamps fails when rows are manually deleted from the database.
         setDashboardTabs(loadedTabs);
         const activeConfig = configs.find((c: any) => c.is_active);
         if (activeConfig) setActiveTabId(activeConfig.tab_id);
@@ -1173,41 +1306,419 @@ const attemptSave = async (attempt: number): Promise<boolean> => {
   const getUserName = () => user ? (user as OrganizationUser | PlatformUser).full_name?.split(' ')[0] || 'User' : 'User';
   const getGreeting = () => { const h = new Date().getHours(); return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'; };
   const canAddAdminWidgets = () => isPlatformOwner() || (isPlatformUser() && (isPlatformTechAdmin() || isPlatformSupportAdmin() || isPlatformSalesAdmin()));
-  // Platform-only widget IDs that should never appear for organization users
-  const PLATFORM_ONLY_WIDGETS = ['system-health', 'security-overview', 'user-stats', 'quantum-visualization', 'news-feed'];
-  const getAvailableWidgets = () => {
-    if (isOrgUser) {
-      // Organization users: exclude platform-only widgets entirely
-      return AVAILABLE_WIDGETS.filter(w => !PLATFORM_ONLY_WIDGETS.includes(w.id));
+  // ⚡ Track 100% real live data for Personal Dashboard widgets & top stat cards
+  const [expandedStatCard, setExpandedStatCard] = useState<string | null>(null);
+  const [quickNotes, setQuickNotes] = useState<string>(() => {
+    try { return localStorage.getItem('acore_dashboard_quick_notes') || ''; } catch { return ''; }
+  });
+  const [liveWorkspaceCount, setLiveWorkspaceCount] = useState<number>(0);
+  const [liveWorkspacesList, setLiveWorkspacesList] = useState<any[]>([]);
+  const [liveMiniAppCount, setLiveMiniAppCount] = useState<number>(0);
+  const [liveMiniAppsList, setLiveMiniAppsList] = useState<any[]>([]);
+  const [liveTotalRecordsCount, setLiveTotalRecordsCount] = useState<number>(0);
+  const [liveRecentRecordsList, setLiveRecentRecordsList] = useState<any[]>([]);
+  const [liveTeamCount, setLiveTeamCount] = useState<number>(1);
+  const [liveOrgMembers, setLiveOrgMembers] = useState<any[]>([]);
+  const [liveActiveTaskCount, setLiveActiveTaskCount] = useState<number>(0);
+  const [liveCompletedTaskCount, setLiveCompletedTaskCount] = useState<number>(0);
+  const [liveTasks, setLiveTasks] = useState<any[]>([]);
+  const [liveEvents, setLiveEvents] = useState<any[]>([]);
+  const [liveActivities, setLiveActivities] = useState<any[]>([]);
+
+  const fetchLiveDashboardData = useCallback(async () => {
+    if (!organization?.id) return;
+    try {
+      const nowIso = new Date().toISOString();
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+
+      // 1. Fetch Workspaces (including id and name) so we can scope MiniApps & Records strictly to active/visible Workspaces!
+      const { data: wsRows } = await supabase
+        .schema('app_private')
+        .from('workspaces')
+        .select('id, name, slug, settings')
+        .eq('organization_id', organization.id)
+        .order('display_order', { ascending: true });
+
+      const SYSTEM_PRESET_SLUGS = ['admin', 'accounting', 'personnel', 'main', 'data', 'security'];
+      const filteredWs = !FEATURES.ENABLE_PRESET_WORKSPACES_AND_APPS
+        ? (wsRows || []).filter((w: any) => {
+            if (!SYSTEM_PRESET_SLUGS.includes(w.slug)) return true;
+            const s = typeof w.settings === 'string' ? JSON.parse(w.settings || '{}') : (w.settings || {});
+            return Boolean(s.is_custom_lite);
+          })
+        : (wsRows || []);
+
+      const activeWsIds = filteredWs.map((w: any) => w.id);
+
+      // 2. Fetch MiniApps belonging ONLY to those visible Workspaces (excluding global presets)
+      let activeApps: { id: string; name: string; slug?: string; workspace_id: string }[] = [];
+      if (activeWsIds.length > 0) {
+        const { data: appRows } = await supabase
+          .schema('app_private')
+          .from('mini_apps')
+          .select('id, name, slug, workspace_id, is_preset')
+          .eq('organization_id', organization.id)
+          .in('workspace_id', activeWsIds)
+          .order('display_order', { ascending: true });
+        activeApps = (appRows || []).filter((a: any) => !a.is_preset);
+      }
+      const activeAppIds = activeApps.map(a => a.id);
+
+      // 3. Fetch Records, Tasks, Events, Members, and Activity scoped to your active MiniApps & Organization
+      const recordsPromise = activeAppIds.length > 0
+        ? supabase.schema('app_private').from('mini_app_records')
+            .select('id, item_uid, mini_app_id, data, created_at, updated_at, mini_apps(name, workspace_id)', { count: 'exact' })
+            .eq('organization_id', organization.id)
+            .in('mini_app_id', activeAppIds)
+            .order('updated_at', { ascending: false })
+            .limit(8)
+        : Promise.resolve({ data: [], count: 0 });
+
+      const [
+        { data: memberRows, count: memberCount },
+        { data: openTasks, count: openTasksCount },
+        { count: doneTasksCount },
+        { data: calRows },
+        { data: actRows },
+        { data: recentRecs, count: totalRecsCount }
+      ] = await Promise.all([
+        supabase.schema('app_private').from('organization_users').select('id, full_name, email, role', { count: 'exact' }).eq('organization_id', organization.id).limit(20),
+        supabase.schema('app_private').from('tasks')
+          .select('*', { count: 'exact' })
+          .eq('organization_id', organization.id)
+          .neq('status', 'completed')
+          .order('due_date', { ascending: true, nullsFirst: false })
+          .order('created_at', { ascending: false })
+          .limit(8),
+        supabase.schema('app_private').from('tasks')
+          .select('*', { count: 'exact', head: true })
+          .eq('organization_id', organization.id)
+          .eq('status', 'completed'),
+        supabase.schema('app_private').from('calendar_events')
+          .select('*')
+          .eq('organization_id', organization.id)
+          .gte('start_time', startOfToday.toISOString())
+          .order('start_time', { ascending: true })
+          .limit(8),
+        supabase.schema('app_private').from('activity_log')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(8),
+        recordsPromise
+      ]);
+
+      setLiveWorkspaceCount(filteredWs.length);
+      setLiveWorkspacesList(filteredWs);
+      setLiveMiniAppCount(activeApps.length);
+      setLiveMiniAppsList(activeApps);
+      setLiveTotalRecordsCount(totalRecsCount || 0);
+      setLiveRecentRecordsList(recentRecs || []);
+      setLiveTeamCount(Math.max(1, memberCount || 1));
+      setLiveOrgMembers(memberRows || []);
+      setLiveActiveTaskCount(openTasksCount || 0);
+      setLiveCompletedTaskCount(doneTasksCount || 0);
+      setLiveTasks(openTasks || []);
+
+      // Combine calendar_events + tasks with due dates for Upcoming Events
+      const taskCalItems = (openTasks || [])
+        .filter((t: any) => t.due_date)
+        .map((t: any) => ({
+          id: `task-${t.id}`,
+          rawTaskId: t.id,
+          title: t.title,
+          start_time: t.due_date,
+          all_day: false,
+          isTask: true,
+          app_name: t.app_name || 'Task',
+          record_title: t.record_title || t.record_id || null
+        }));
+
+      const mergedEvents = [...(calRows || []), ...taskCalItems]
+        .sort((a: any, b: any) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime())
+        .slice(0, 8);
+      setLiveEvents(mergedEvents);
+
+      // Build Recent Activity from activity_log + recently updated records
+      const recordActivities = (recentRecs || []).map((r: any) => {
+        const d = typeof r.data === 'string' ? JSON.parse(r.data) : (r.data || {});
+        const title = d['First Name']
+          ? `${d['First Name']} ${d['Last Name'] || ''}`.trim()
+          : (d.Name || d.name || d.Title || d.title || r.item_uid || 'Record');
+        const appInfo = Array.isArray(r.mini_apps) ? r.mini_apps[0] : r.mini_apps;
+        return {
+          id: `rec-${r.id}`,
+          label: `${title} (${appInfo?.name || 'Record'})`,
+          action: d._last_sync_source === 'podio' ? 'Synced from Podio' : 'Updated record',
+          created_at: r.updated_at || r.created_at || nowIso,
+          color: 'theme-primary'
+        };
+      });
+
+      const loggedActivities = (actRows || []).map((a: any) => ({
+        id: a.id,
+        label: `${a.user_name || 'User'} ${a.action || 'updated'} ${a.target || ''}`.trim(),
+        action: a.workspace_slug || 'Activity',
+        created_at: a.created_at,
+        color: 'green'
+      }));
+
+      const combinedAct = [...loggedActivities, ...recordActivities]
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        .slice(0, 8);
+
+      setLiveActivities(combinedAct);
+    } catch (e) {
+      console.warn('[PersonalDashboard] Error fetching live data:', e);
     }
-    // Platform users: show all, but requiresAdmin ones only for admins
-    return AVAILABLE_WIDGETS.filter(w => !w.requiresAdmin || canAddAdminWidgets());
-  };
+  }, [organization?.id]);
 
-  // Organization-specific stats (no platform metrics)
-  const orgStats = [
-    { title: 'Team Members', value: '24', change: '+3 this month', changeType: 'positive' as const, icon: UsersIcon, glowColor: 'theme-primary' as const },
-    { title: 'Active Tasks', value: '47', change: '12 due today', changeType: 'neutral' as const, icon: TaskIcon, glowColor: 'theme-accent' as const },
-    { title: 'Completion Rate', value: '94%', change: '+5%', changeType: 'positive' as const, icon: TrendingUpIcon, glowColor: 'green' as const },
-    { title: 'Workspaces', value: '6', change: 'All active', changeType: 'neutral' as const, icon: ActivityIcon, glowColor: 'orange' as const },
-  ];
+  useEffect(() => {
+    fetchLiveDashboardData();
+    window.addEventListener('miniapp_schema_updated', fetchLiveDashboardData);
+    window.addEventListener('miniapp_records_updated', fetchLiveDashboardData);
+    window.addEventListener('workspacesUpdated', fetchLiveDashboardData);
+    window.addEventListener('refreshTasks', fetchLiveDashboardData);
+    window.addEventListener('refreshCalendar', fetchLiveDashboardData);
 
-  // Platform-level stats (system metrics)
-  const platformStats = [
-    { title: 'System Uptime', value: '99.97%', change: '+0.02%', changeType: 'positive' as const, icon: ServerIcon, glowColor: 'theme-primary' as const },
-    { title: 'Active Users', value: '2,847', change: '+127 today', changeType: 'positive' as const, icon: UsersIcon, glowColor: 'theme-accent' as const },
-    { title: 'Avg Response', value: '42ms', change: '-8ms', changeType: 'positive' as const, icon: ClockIcon, glowColor: 'magenta' as const },
-    { title: 'Error Rate', value: '0.03%', change: 'Normal', changeType: 'neutral' as const, icon: ActivityIcon, glowColor: 'green' as const },
-  ];
+    const channel = organization?.id
+      ? supabase
+          .channel(`personal-dashboard-live-${organization.id}`)
+          .on('postgres_changes', { event: '*', schema: 'app_private', table: 'tasks', filter: `organization_id=eq.${organization.id}` }, fetchLiveDashboardData)
+          .on('postgres_changes', { event: '*', schema: 'app_private', table: 'calendar_events', filter: `organization_id=eq.${organization.id}` }, fetchLiveDashboardData)
+          .on('postgres_changes', { event: '*', schema: 'app_private', table: 'mini_app_records', filter: `organization_id=eq.${organization.id}` }, fetchLiveDashboardData)
+          .subscribe()
+      : null;
 
-  // Use org stats for org users, platform stats for platform users
-  const stats = isOrgUser ? orgStats : platformStats;
+    return () => {
+      window.removeEventListener('miniapp_schema_updated', fetchLiveDashboardData);
+      window.removeEventListener('miniapp_records_updated', fetchLiveDashboardData);
+      window.removeEventListener('workspacesUpdated', fetchLiveDashboardData);
+      window.removeEventListener('refreshTasks', fetchLiveDashboardData);
+      window.removeEventListener('refreshCalendar', fetchLiveDashboardData);
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, [organization?.id, fetchLiveDashboardData]);
 
+  const getAvailableWidgets = () => AVAILABLE_WIDGETS;
 
-  const recentTasks = [
-    { title: 'Review Q4 budget proposal', workspace: 'Accounting', priority: 'urgent', dueDate: 'Today' },
-    { title: 'Update employee handbook', workspace: 'Personnel', priority: 'high', dueDate: 'Tomorrow' },
-    { title: 'Client meeting preparation', workspace: 'Main', priority: 'medium', dueDate: 'Jan 30' },
+  // ⚡ 100% REAL LIVE STATS + EXPANDABLE DETAILS & SOURCE LINKS FOR THE 4 TOP STATIC CARDS
+  const stats = [
+    {
+      id: 'workspaces',
+      title: 'Workspaces',
+      value: FEATURES.IS_LITE_MODE ? `${liveWorkspaceCount}/6` : String(liveWorkspaceCount),
+      change: `${liveMiniAppCount} MiniApp${liveMiniAppCount === 1 ? '' : 's'} active`,
+      changeType: 'positive' as const,
+      icon: ActivityIcon,
+      glowColor: 'theme-primary' as const,
+      expandedContent: (
+        <div className="space-y-2.5">
+          {liveWorkspacesList.length === 0 ? (
+            <p className="text-xs font-mono text-gray-500 py-2">No workspaces imported yet.</p>
+          ) : (
+            <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+              {liveWorkspacesList.map((ws: any) => {
+                const wsApps = liveMiniAppsList.filter((a: any) => a.workspace_id === ws.id);
+                return (
+                  <div key={ws.id} className="p-2.5 rounded-lg bg-gray-900/70 border border-gray-800 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <button
+                        onClick={() => navigate(`/workspace/${ws.slug}`)}
+                        className="text-xs font-mono font-bold text-theme-primary-400 hover:underline flex items-center gap-1.5 truncate"
+                      >
+                        <span className="truncate">{ws.name}</span>
+                        <ExternalLinkIcon size={11} />
+                      </button>
+                      <span className="text-[10px] font-mono text-gray-500 flex-shrink-0">
+                        {wsApps.length} {wsApps.length === 1 ? 'App' : 'Apps'}
+                      </span>
+                    </div>
+                    {wsApps.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {wsApps.map((app: any) => (
+                          <button
+                            key={app.id}
+                            onClick={() => navigate(`/workspace/${ws.slug}?app=${encodeURIComponent(app.name)}`)}
+                            className="px-2 py-0.5 rounded text-[10px] font-mono bg-black/60 border border-gray-700 text-gray-300 hover:text-white hover:border-theme-primary-500/50 transition-all"
+                          >
+                            {app.name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <button
+            onClick={() => window.dispatchEvent(new CustomEvent('openPodioWorkspaceImporter'))}
+            className="w-full py-1.5 px-3 rounded-lg bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25 text-[11px] font-mono font-bold transition-all flex items-center justify-center gap-1.5"
+          >
+            <PlusIcon size={12} /> Sync / Import Podio Workspace
+          </button>
+        </div>
+      )
+    },
+    {
+      id: 'records',
+      title: 'Total Records',
+      value: String(liveTotalRecordsCount),
+      change: `Across ${liveMiniAppCount} MiniApp${liveMiniAppCount === 1 ? '' : 's'}`,
+      changeType: 'positive' as const,
+      icon: TrendingUpIcon,
+      glowColor: 'green' as const,
+      expandedContent: (
+        <div className="space-y-2">
+          <p className="text-[10px] font-mono text-gray-500 uppercase tracking-wider">Latest Synced / Updated Records</p>
+          {liveRecentRecordsList.length === 0 ? (
+            <p className="text-xs font-mono text-gray-500 py-2">No records found yet.</p>
+          ) : (
+            <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+              {liveRecentRecordsList.slice(0, 6).map((r: any) => {
+                const d = typeof r.data === 'string' ? JSON.parse(r.data) : (r.data || {});
+                const recTitle = d['First Name']
+                  ? `${d['First Name']} ${d['Last Name'] || ''}`.trim()
+                  : (d.Name || d.name || d.Title || d.title || r.item_uid || 'Record');
+                const appObj = liveMiniAppsList.find((a: any) => a.id === r.mini_app_id);
+                const wsObj = liveWorkspacesList.find((w: any) => w.id === appObj?.workspace_id);
+                return (
+                  <button
+                    key={r.id}
+                    onClick={() => {
+                      if (wsObj && appObj) {
+                        navigate(`/workspace/${wsObj.slug}?app=${encodeURIComponent(appObj.name)}`);
+                      }
+                    }}
+                    className="w-full flex items-center justify-between gap-2 p-2 rounded-lg bg-gray-900/70 border border-gray-800 hover:border-green-500/40 text-left transition-all group"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-mono text-white group-hover:text-green-400 truncate transition-colors">
+                        {recTitle}
+                      </p>
+                      <p className="text-[10px] font-mono text-gray-500 truncate">
+                        {appObj?.name || 'MiniApp'} • {r.item_uid}
+                      </p>
+                    </div>
+                    <ExternalLinkIcon size={12} className="text-gray-500 group-hover:text-green-400 flex-shrink-0" />
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )
+    },
+    {
+      id: 'tasks',
+      title: 'Open Tasks',
+      value: String(liveActiveTaskCount),
+      change: `${liveCompletedTaskCount} completed`,
+      changeType: 'neutral' as const,
+      icon: TaskIcon,
+      glowColor: 'theme-accent' as const,
+      expandedContent: (
+        <div className="space-y-2">
+          <p className="text-[10px] font-mono text-gray-500 uppercase tracking-wider">Active Tasks Queue</p>
+          {liveTasks.length === 0 ? (
+            <p className="text-xs font-mono text-gray-500 py-2">All caught up! No open tasks.</p>
+          ) : (
+            <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+              {liveTasks.slice(0, 5).map((t: any) => {
+                const matchedApp = liveMiniAppsList.find((a: any) => a.id === t.mini_app_id || a.name === t.app_name);
+                const matchedWs = liveWorkspacesList.find((w: any) => w.id === (t.workspace_id || matchedApp?.workspace_id));
+                return (
+                  <div
+                    key={t.id}
+                    className="flex items-center justify-between gap-2 p-2 rounded-lg bg-gray-900/70 border border-gray-800 hover:border-theme-accent-500/40 transition-all"
+                  >
+                    <div
+                      onClick={() => {
+                        if (matchedWs && matchedApp) {
+                          navigate(`/workspace/${matchedWs.slug}?app=${encodeURIComponent(matchedApp.name)}`);
+                        } else {
+                          window.dispatchEvent(new CustomEvent('focusTask', { detail: { taskId: t.id } }));
+                        }
+                      }}
+                      className="min-w-0 flex-1 cursor-pointer group"
+                    >
+                      <p className="text-xs font-mono text-white group-hover:text-theme-accent-400 truncate transition-colors">
+                        {t.title}
+                      </p>
+                      <p className="text-[10px] font-mono text-gray-500 truncate">
+                        {[t.app_name, t.record_title || t.record_id].filter(Boolean).join(' • ') || 'General Task'}
+                      </p>
+                    </div>
+                    {matchedWs && matchedApp && (
+                      <button
+                        onClick={() => navigate(`/workspace/${matchedWs.slug}?app=${encodeURIComponent(matchedApp.name)}`)}
+                        className="p-1 text-gray-400 hover:text-white flex-shrink-0"
+                        title={`Go to ${matchedApp.name}`}
+                      >
+                        <ExternalLinkIcon size={12} />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )
+    },
+    {
+      id: 'events',
+      title: 'Upcoming Events',
+      value: String(liveEvents.length),
+      change: `${liveTeamCount} team member${liveTeamCount === 1 ? '' : 's'}`,
+      changeType: 'neutral' as const,
+      icon: CalendarIcon,
+      glowColor: 'orange' as const,
+      expandedContent: (
+        <div className="space-y-2">
+          <p className="text-[10px] font-mono text-gray-500 uppercase tracking-wider">Next on Schedule</p>
+          {liveEvents.length === 0 ? (
+            <p className="text-xs font-mono text-gray-500 py-2">No upcoming events scheduled.</p>
+          ) : (
+            <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+              {liveEvents.slice(0, 5).map((ev: any) => {
+                const d = new Date(ev.start_time);
+                const dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                const timeStr = ev.all_day ? 'All Day' : d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+                const matchedApp = liveMiniAppsList.find((a: any) => a.name === ev.app_name);
+                const matchedWs = liveWorkspacesList.find((w: any) => w.id === matchedApp?.workspace_id);
+                return (
+                  <div
+                    key={ev.id}
+                    onClick={() => {
+                      if (matchedWs && matchedApp) {
+                        navigate(`/workspace/${matchedWs.slug}?app=${encodeURIComponent(matchedApp.name)}`);
+                      } else if (ev.rawTaskId) {
+                        window.dispatchEvent(new CustomEvent('focusTask', { detail: { taskId: ev.rawTaskId } }));
+                      }
+                    }}
+                    className="flex items-center justify-between gap-2 p-2 rounded-lg bg-gray-900/70 border border-gray-800 hover:border-orange-500/40 cursor-pointer group transition-all"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-mono text-white group-hover:text-orange-400 truncate transition-colors">
+                        {ev.title}
+                      </p>
+                      <p className="text-[10px] font-mono text-gray-500 truncate">
+                        {dateStr} • {timeStr} {ev.app_name ? `• ${ev.app_name}` : ''}
+                      </p>
+                    </div>
+                    {(matchedWs || ev.rawTaskId) && (
+                      <ExternalLinkIcon size={12} className="text-gray-500 group-hover:text-orange-400 flex-shrink-0" />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )
+    },
   ];
 
   const priorityColors: Record<string, string> = {
@@ -1798,6 +2309,13 @@ const attemptSave = async (attempt: number): Promise<boolean> => {
 
   // Widget Library: Add CatalogWidget as TileConfig
   const handleAddCatalogWidget = useCallback((catalogWidget: CatalogWidget) => {
+    const validGlowColors = ['theme-primary', 'magenta', 'green', 'theme-accent', 'orange', 'red'];
+    const resolvedGlow: TileGlowColor = validGlowColors.includes(catalogWidget.glowColor as string)
+      ? (catalogWidget.glowColor as TileGlowColor)
+      : catalogWidget.glowColor === 'purple'
+      ? 'theme-accent'
+      : 'theme-primary';
+
     const newTile: TileConfig = {
       id: `${catalogWidget.id}-${Date.now()}`,
       widgetId: catalogWidget.id,
@@ -1805,7 +2323,7 @@ const attemptSave = async (attempt: number): Promise<boolean> => {
       position: { x: 0, y: getLowestTileBottomFn() },
       size: { width: catalogWidget.defaultWidth, height: catalogWidget.defaultHeight },
       zIndex: maxZIndex + 1,
-      glowColor: catalogWidget.glowColor,
+      glowColor: resolvedGlow,
     };
     setMaxZIndex(prev => prev + 1);
     setDashboardTabs(prev => prev.map(tab =>
@@ -1814,36 +2332,93 @@ const attemptSave = async (attempt: number): Promise<boolean> => {
     setLibraryAddedIds(prev => [...prev, catalogWidget.id]);
   }, [activeTabId, maxZIndex, tiles]);
 
-  // Layout Templates: Apply template to existing tiles
+  // ⚡ RESPONSIVE LAYOUT TEMPLATE APPLICATION:
+  // Scales the template's baseline coordinates to the user's exact container width,
+  // and if the template has more slots than current tiles, populates the extra slots with real widgets!
   const handleApplyTemplate = useCallback((template: LayoutTemplate) => {
+    const containerWidth = containerRef.current?.clientWidth || (window.innerWidth - 32) || 1200;
+    const templateMaxRight = Math.max(...template.positions.map(p => p.x + p.width), 880);
+    const scale = containerWidth / templateMaxRight;
+    const GAP = 10;
+
     setDashboardTabs(prev => prev.map(tab => {
       if (tab.id !== activeTabId) return tab;
-      const updatedTiles = tab.tiles.map((tile, index) => {
+
+      // Ensure we have enough tiles to fill the template slots by pulling unused real widgets if needed
+      let workingTiles = [...tab.tiles];
+      if (workingTiles.length < template.positions.length) {
+        const existingWidgetIds = new Set(workingTiles.map(t => t.widgetId));
+        const candidateWidgets = AVAILABLE_WIDGETS.filter(w => !existingWidgetIds.has(w.id));
+        let cIdx = 0;
+        while (workingTiles.length < template.positions.length && cIdx < candidateWidgets.length) {
+          const wDef = candidateWidgets[cIdx++];
+          workingTiles.push({
+            id: `${wDef.id}-${Date.now()}-${cIdx}`,
+            widgetId: wDef.id,
+            title: wDef.name,
+            position: { x: 0, y: 0 },
+            size: { width: wDef.defaultWidth, height: wDef.defaultHeight },
+            zIndex: workingTiles.length + 1,
+            glowColor: wDef.glowColor,
+          });
+        }
+      }
+
+      const updatedTiles = workingTiles.map((tile, index) => {
         if (index < template.positions.length) {
           const pos = template.positions[index];
-          return { ...tile, position: { x: pos.x, y: pos.y }, size: { width: pos.width, height: pos.height } };
+          const scaledX = Math.round(pos.x * scale);
+          const scaledW = Math.max(240, Math.round(pos.width * scale));
+          // Snap right edge cleanly to containerWidth if it's at the right edge of the template
+          const finalW = (pos.x + pos.width >= templateMaxRight - 5)
+            ? Math.max(240, containerWidth - scaledX)
+            : scaledW;
+
+          return {
+            ...tile,
+            position: { x: scaledX, y: pos.y },
+            size: { width: finalW, height: pos.height },
+          };
         }
-        const lastSlot = template.positions[template.positions.length - 1];
+        // Any extra tiles beyond the template's slots get neatly arranged in a 2-column row below
+        const maxBottom = Math.max(...template.positions.map(p => p.y + p.height), 0);
         const extraIndex = index - template.positions.length;
         const col = extraIndex % 2;
         const row = Math.floor(extraIndex / 2);
-        const baseY = lastSlot ? lastSlot.y + lastSlot.height + 20 : 0;
-        return { ...tile, position: { x: col * 450, y: baseY + row * 300 }, size: { width: 420, height: 280 } };
+        const halfW = Math.floor((containerWidth - GAP) / 2);
+        return {
+          ...tile,
+          position: { x: col * (halfW + GAP), y: maxBottom + GAP + row * 330 },
+          size: { width: col === 1 ? containerWidth - halfW - GAP : halfW, height: 320 },
+        };
       });
+
+      if (userId) {
+        saveTilesToCache(userId, prev.map(t => t.id === activeTabId ? { ...t, tiles: updatedTiles } : t), activeTabId, customWidgets, refreshInterval);
+      }
       return { ...tab, tiles: updatedTiles };
     }));
-  }, [activeTabId]);
+  }, [activeTabId, userId, customWidgets, refreshInterval]);
+
+  const liveCustomData: LiveCustomWidgetData = useMemo(() => ({
+    tasks: liveTasks,
+    events: liveEvents,
+    records: liveRecentRecordsList,
+    activities: liveActivities,
+    totalRecordsCount: liveTotalRecordsCount,
+    activeTaskCount: liveActiveTaskCount,
+  }), [liveTasks, liveEvents, liveRecentRecordsList, liveActivities, liveTotalRecordsCount, liveActiveTaskCount]);
 
   const renderTileContent = (tile: TileConfig) => {
     // Check if it's a custom widget
     const customWidget = customWidgets.find(cw => cw.id === tile.widgetId);
     if (customWidget) {
       switch (customWidget.visualization) {
-        case 'counter': return <CustomCounterWidget widget={customWidget} />;
-        case 'list': return <CustomListWidget widget={customWidget} />;
-        case 'chart': return <CustomChartWidget widget={customWidget} />;
-        case 'table': return <CustomTableWidget widget={customWidget} />;
-        default: return <CustomListWidget widget={customWidget} />;
+        case 'counter': return <CustomCounterWidget widget={customWidget} liveData={liveCustomData} />;
+        case 'list': return <CustomListWidget widget={customWidget} liveData={liveCustomData} />;
+        case 'chart': return <CustomChartWidget widget={customWidget} liveData={liveCustomData} />;
+        case 'table': return <CustomTableWidget widget={customWidget} liveData={liveCustomData} />;
+        default: return <CustomListWidget widget={customWidget} liveData={liveCustomData} />;
       }
     }
 
@@ -1853,22 +2428,344 @@ const attemptSave = async (attempt: number): Promise<boolean> => {
           <div className="space-y-2">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-semibold text-white flex items-center gap-2 font-mono">
-                <TaskIcon size={16} className="text-theme-primary-400" /> My Tasks
+                <TaskIcon size={16} className="text-theme-primary-400" /> Upcoming Tasks
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-theme-primary-500/15 text-theme-primary-400 border border-theme-primary-500/30">
+                  {liveActiveTaskCount}
+                </span>
               </h3>
-              <button className="text-xs text-theme-primary-400 hover:text-theme-primary-300 font-mono">View all</button>
             </div>
-            {recentTasks.map((task, i) => (
-              <div key={i} className="flex items-center gap-3 p-2 bg-gray-900/50 border border-gray-800 rounded-lg hover:border-theme-primary-500/30 cursor-pointer">
-                <div className={`w-2 h-2 rounded-full ${priorityColors[task.priority]}`} />
-                <div className="flex-1 min-w-0">
-                  <p className="text-white text-xs font-mono truncate">{task.title}</p>
-                  <p className="text-gray-600 text-[10px] font-mono">{task.workspace}</p>
-                </div>
-                <span className="text-[10px] text-gray-500 font-mono">{task.dueDate}</span>
+            {liveTasks.length === 0 ? (
+              <div className="py-8 text-center border border-dashed border-gray-800 rounded-lg bg-gray-950/40">
+                <p className="text-xs text-gray-400 font-mono">No open tasks right now</p>
+                <p className="text-[10px] text-gray-600 font-mono mt-1">Tasks created in A-CORE or synced from Podio will appear here.</p>
               </div>
-            ))}
+            ) : (
+              liveTasks.map((task) => {
+                const dueStr = task.due_date
+                  ? new Date(task.due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                  : 'No date';
+                const subtitle = [task.app_name, task.record_title || task.record_id].filter(Boolean).join(' • ') || 'General';
+                const matchedApp = liveMiniAppsList.find((a: any) => a.id === task.mini_app_id || a.name === task.app_name);
+                const matchedWs = liveWorkspacesList.find((w: any) => w.id === (task.workspace_id || matchedApp?.workspace_id));
+                return (
+                  <div
+                    key={task.id}
+                    className="flex items-center gap-3 p-2.5 bg-gray-900/50 border border-gray-800 rounded-lg hover:border-theme-primary-500/40 group transition-all"
+                  >
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        await supabase.schema('app_private').from('tasks').update({
+                          status: 'completed',
+                          completed_at: new Date().toISOString(),
+                          updated_at: new Date().toISOString()
+                        }).eq('id', task.id);
+                        fetchLiveDashboardData();
+                        window.dispatchEvent(new CustomEvent('refreshTasks'));
+                      }}
+                      title="Click to mark completed"
+                      className="w-4 h-4 rounded border border-gray-600 hover:border-theme-primary-400 flex items-center justify-center flex-shrink-0 transition-colors"
+                    >
+                      <div className={`w-2 h-2 rounded-full ${priorityColors[task.priority] || 'bg-theme-primary-500'}`} />
+                    </button>
+                    <div
+                      onClick={() => {
+                        if (matchedWs && matchedApp) {
+                          navigate(`/workspace/${matchedWs.slug}?app=${encodeURIComponent(matchedApp.name)}`);
+                        } else {
+                          window.dispatchEvent(new CustomEvent('focusTask', { detail: { taskId: task.id } }));
+                        }
+                      }}
+                      className="flex-1 min-w-0 cursor-pointer"
+                    >
+                      <p className="text-white text-xs font-mono truncate group-hover:text-theme-primary-400 transition-colors">{task.title}</p>
+                      <p className="text-gray-500 text-[10px] font-mono truncate">{subtitle}</p>
+                    </div>
+                    <span className="text-[10px] text-gray-400 font-mono whitespace-nowrap">{dueStr}</span>
+                  </div>
+                );
+              })
+            )}
           </div>
         );
+
+      case 'calendar-preview':
+        return (
+          <div className="space-y-2">
+            <h3 className="text-sm font-semibold text-white flex items-center gap-2 mb-3 font-mono">
+              <CalendarIcon size={16} className="text-theme-accent-400" /> Upcoming Events
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-theme-accent-500/15 text-theme-accent-400 border border-theme-accent-500/30">
+                {liveEvents.length}
+              </span>
+            </h3>
+            {liveEvents.length === 0 ? (
+              <div className="py-8 text-center border border-dashed border-gray-800 rounded-lg bg-gray-950/40">
+                <p className="text-xs text-gray-400 font-mono">No upcoming events scheduled</p>
+                <p className="text-[10px] text-gray-600 font-mono mt-1">Events & scheduled tasks from Podio or Calendar will appear here.</p>
+              </div>
+            ) : (
+              liveEvents.map((e) => {
+                const d = new Date(e.start_time);
+                const dateLabel = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                const timeLabel = e.all_day ? 'All Day' : d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+                const matchedApp = liveMiniAppsList.find((a: any) => a.name === e.app_name);
+                const matchedWs = liveWorkspacesList.find((w: any) => w.id === matchedApp?.workspace_id);
+                return (
+                  <div
+                    key={e.id}
+                    onClick={() => {
+                      if (matchedWs && matchedApp) {
+                        navigate(`/workspace/${matchedWs.slug}?app=${encodeURIComponent(matchedApp.name)}`);
+                      } else if (e.rawTaskId) {
+                        window.dispatchEvent(new CustomEvent('focusTask', { detail: { taskId: e.rawTaskId } }));
+                      }
+                    }}
+                    className="flex items-center gap-3 p-2.5 bg-gray-900/50 border border-gray-800 rounded-lg hover:border-theme-accent-500/40 cursor-pointer group transition-all"
+                  >
+                    <div className={`w-2 h-2 rounded-full flex-shrink-0 ${e.isTask ? 'bg-orange-400' : 'bg-theme-accent-400'}`} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-white text-xs font-mono truncate group-hover:text-theme-accent-400 transition-colors">{e.title}</p>
+                      <p className="text-gray-500 text-[10px] font-mono truncate">
+                        {dateLabel} • {timeLabel} {e.app_name ? `• ${e.app_name}` : ''}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        );
+
+      case 'team-activity':
+      case 'activity':
+        return (
+          <div className="space-y-2">
+            <h3 className="text-sm font-semibold text-white flex items-center gap-2 mb-3 font-mono">
+              <ActivityIcon size={16} className="text-green-400" /> Recent Activity
+            </h3>
+            {liveActivities.length === 0 ? (
+              <div className="py-8 text-center border border-dashed border-gray-800 rounded-lg bg-gray-950/40">
+                <p className="text-xs text-gray-400 font-mono">No recent activity yet</p>
+                <p className="text-[10px] text-gray-600 font-mono mt-1">Record updates & Podio syncs will stream here live.</p>
+              </div>
+            ) : (
+              liveActivities.map((a) => {
+                const diffMins = Math.max(0, Math.floor((Date.now() - new Date(a.created_at).getTime()) / 60000));
+                const timeAgo = diffMins < 1 ? 'just now' : diffMins < 60 ? `${diffMins}m ago` : diffMins < 1440 ? `${Math.floor(diffMins / 60)}h ago` : `${Math.floor(diffMins / 1440)}d ago`;
+                return (
+                  <div key={a.id} className="flex items-center gap-2.5 p-2 bg-gray-900/40 border border-gray-800/70 rounded-lg">
+                    <div className="w-2 h-2 rounded-full bg-green-400 flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs text-gray-200 font-mono truncate">{a.label}</p>
+                      <p className="text-[10px] text-gray-500 font-mono truncate">{a.action}</p>
+                    </div>
+                    <span className="text-[10px] text-gray-500 font-mono whitespace-nowrap">{timeAgo}</span>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        );
+
+      case 'recent-records':
+        return (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-white flex items-center gap-2 font-mono">
+                <TrendingUpIcon size={16} className="text-green-400" /> Recent Records
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-green-500/15 text-green-400 border border-green-500/30">
+                  {liveTotalRecordsCount}
+                </span>
+              </h3>
+            </div>
+            {liveRecentRecordsList.length === 0 ? (
+              <div className="py-8 text-center border border-dashed border-gray-800 rounded-lg bg-gray-950/40">
+                <p className="text-xs text-gray-400 font-mono">No records yet</p>
+                <p className="text-[10px] text-gray-600 font-mono mt-1">Records added in A-CORE or synced from Podio will appear here.</p>
+              </div>
+            ) : (
+              liveRecentRecordsList.map((r: any) => {
+                const d = typeof r.data === 'string' ? JSON.parse(r.data) : (r.data || {});
+                const recTitle = d['First Name']
+                  ? `${d['First Name']} ${d['Last Name'] || ''}`.trim()
+                  : (d.Name || d.name || d.Title || d.title || r.item_uid || 'Record');
+                const appObj = liveMiniAppsList.find((a: any) => a.id === r.mini_app_id);
+                const wsObj = liveWorkspacesList.find((w: any) => w.id === appObj?.workspace_id);
+                return (
+                  <button
+                    key={r.id}
+                    onClick={() => {
+                      if (wsObj && appObj) {
+                        navigate(`/workspace/${wsObj.slug}?app=${encodeURIComponent(appObj.name)}`);
+                      }
+                    }}
+                    className="w-full flex items-center justify-between gap-2 p-2.5 rounded-lg bg-gray-900/50 border border-gray-800 hover:border-green-500/40 text-left transition-all group"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-mono text-white group-hover:text-green-400 truncate transition-colors">{recTitle}</p>
+                      <p className="text-[10px] font-mono text-gray-500 truncate">
+                        {appObj?.name || 'MiniApp'} • {r.item_uid}
+                      </p>
+                    </div>
+                    <ExternalLinkIcon size={12} className="text-gray-500 group-hover:text-green-400 flex-shrink-0" />
+                  </button>
+                );
+              })
+            )}
+          </div>
+        );
+
+      case 'workspaces-overview':
+        return (
+          <div className="space-y-2.5">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-semibold text-white flex items-center gap-2 font-mono">
+                <ServerIcon size={16} className="text-theme-primary-400" /> Workspaces &amp; MiniApps
+              </h3>
+              <span className="text-[10px] font-mono text-gray-500">{liveWorkspaceCount} active</span>
+            </div>
+            {liveWorkspacesList.length === 0 ? (
+              <div className="py-8 text-center border border-dashed border-gray-800 rounded-lg bg-gray-950/40 space-y-2">
+                <p className="text-xs text-gray-400 font-mono">No workspaces yet</p>
+                <button
+                  onClick={() => window.dispatchEvent(new CustomEvent('openPodioWorkspaceImporter'))}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-xs font-mono font-bold"
+                >
+                  ⚡ Import from Podio
+                </button>
+              </div>
+            ) : (
+              liveWorkspacesList.map((ws: any) => {
+                const wsApps = liveMiniAppsList.filter((a: any) => a.workspace_id === ws.id);
+                return (
+                  <div key={ws.id} className="p-3 rounded-lg bg-gray-900/50 border border-gray-800 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <button
+                        onClick={() => navigate(`/workspace/${ws.slug}`)}
+                        className="text-xs font-mono font-bold text-theme-primary-400 hover:underline flex items-center gap-1.5"
+                      >
+                        <span>{ws.name}</span>
+                        <ExternalLinkIcon size={11} />
+                      </button>
+                      <span className="text-[10px] font-mono text-gray-500">{wsApps.length} MiniApps</span>
+                    </div>
+                    {wsApps.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {wsApps.map((app: any) => (
+                          <button
+                            key={app.id}
+                            onClick={() => navigate(`/workspace/${ws.slug}?app=${encodeURIComponent(app.name)}`)}
+                            className="px-2.5 py-1 rounded text-[10px] font-mono bg-black/60 border border-gray-700 text-gray-300 hover:text-white hover:border-theme-primary-500/50 transition-all"
+                          >
+                            {app.name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        );
+
+      case 'team-management':
+        return (
+          <div>
+            <h3 className="text-sm font-semibold text-white flex items-center gap-2 mb-3 font-mono">
+              <UsersIcon size={16} className="text-orange-400" /> Organization Members
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-orange-500/15 text-orange-400 border border-orange-500/30">
+                {liveOrgMembers.length}
+              </span>
+            </h3>
+            <div className="space-y-2">
+              {liveOrgMembers.length === 0 ? (
+                <div className="py-6 text-center text-xs text-gray-500 font-mono">No organization members found.</div>
+              ) : (
+                liveOrgMembers.map((member: any) => {
+                  const displayName = member.full_name || member.email || 'Member';
+                  const initials = displayName.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase();
+                  return (
+                    <div key={member.id} className="flex items-center gap-3 p-2 bg-gray-900/50 border border-gray-800 rounded-lg">
+                      <div className="w-7 h-7 rounded-full bg-gradient-to-br from-theme-primary-500/30 to-theme-accent-500/30 border border-gray-700 flex items-center justify-center flex-shrink-0">
+                        <span className="text-[9px] text-gray-200 font-mono font-bold">{initials}</span>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-white text-xs font-mono truncate">{displayName}</p>
+                        <p className="text-gray-500 text-[10px] font-mono truncate">{member.email || member.role || 'Member'}</p>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        );
+
+      case 'revenue-chart':
+      case 'reports':
+        {
+          const totalTasks = liveCompletedTaskCount + liveActiveTaskCount;
+          const completionPct = totalTasks > 0 ? Math.round((liveCompletedTaskCount / totalTasks) * 100) : 0;
+          return (
+            <div className="space-y-3">
+              <h3 className="text-sm font-semibold text-white flex items-center gap-2 mb-2 font-mono">
+                <TrendingUpIcon size={16} className="text-fuchsia-400" /> Task &amp; Record Summary
+              </h3>
+              <div className="grid grid-cols-2 gap-2.5">
+                <div className="p-3 bg-gray-900/50 border border-gray-800 rounded-lg text-center">
+                  <p className="text-[10px] text-gray-500 font-mono uppercase">Completed Tasks</p>
+                  <p className="text-lg font-mono font-bold text-green-400 mt-1">{liveCompletedTaskCount}</p>
+                </div>
+                <div className="p-3 bg-gray-900/50 border border-gray-800 rounded-lg text-center">
+                  <p className="text-[10px] text-gray-500 font-mono uppercase">Open Tasks</p>
+                  <p className="text-lg font-mono font-bold text-theme-primary-400 mt-1">{liveActiveTaskCount}</p>
+                </div>
+                <div className="p-3 bg-gray-900/50 border border-gray-800 rounded-lg text-center">
+                  <p className="text-[10px] text-gray-500 font-mono uppercase">Total Records</p>
+                  <p className="text-lg font-mono font-bold text-theme-accent-400 mt-1">{liveTotalRecordsCount}</p>
+                </div>
+                <div className="p-3 bg-gray-900/50 border border-gray-800 rounded-lg text-center">
+                  <p className="text-[10px] text-gray-500 font-mono uppercase">MiniApps</p>
+                  <p className="text-lg font-mono font-bold text-orange-400 mt-1">{liveMiniAppCount}</p>
+                </div>
+              </div>
+              <div className="p-2.5 bg-gray-900/40 border border-gray-800 rounded-lg">
+                <div className="flex items-center justify-between text-[10px] font-mono mb-1.5">
+                  <span className="text-gray-400 uppercase">Task Completion Rate</span>
+                  <span className="text-green-400 font-bold">{completionPct}%</span>
+                </div>
+                <div className="w-full h-2 bg-gray-800 rounded-full overflow-hidden">
+                  <div className="h-full bg-gradient-to-r from-theme-primary-500 to-green-400 transition-all duration-300" style={{ width: `${completionPct}%` }} />
+                </div>
+              </div>
+            </div>
+          );
+        }
+
+      case 'notes-widget':
+      case 'quick-notes':
+        return (
+          <div className="flex flex-col h-full space-y-2">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-white flex items-center gap-2 font-mono">
+                <MessageIcon size={16} className="text-orange-400" /> Quick Notes
+              </h3>
+              <span className="text-[9px] font-mono text-gray-500 uppercase">Auto-saved</span>
+            </div>
+            <textarea
+              value={quickNotes}
+              onChange={(e) => {
+                setQuickNotes(e.target.value);
+                try { localStorage.setItem('acore_dashboard_quick_notes', e.target.value); } catch {}
+              }}
+              placeholder="Jot down quick notes, Podio migration reminders, or action items..."
+              className="flex-1 w-full min-h-[180px] bg-gray-950/70 border border-gray-800 rounded-lg p-3 text-xs text-gray-200 font-mono resize-none focus:outline-none focus:border-orange-500/50"
+            />
+          </div>
+        );
+
+      // ─── FULL VERSION WIDGET RENDERERS (Preserved for Full Mode) ───
       case 'quick-actions':
         return (
           <div>
@@ -1887,65 +2784,14 @@ const attemptSave = async (attempt: number): Promise<boolean> => {
             </div>
           </div>
         );
-      case 'activity':
-        return (
-          <div>
-            <h3 className="text-sm font-semibold text-white flex items-center gap-2 mb-3 font-mono">
-              <ActivityIcon size={16} className="text-green-400" /> Activity
-            </h3>
-            <div className="space-y-2">
-              {[{ label: 'Completed 3 tasks', color: 'green', time: '2h ago' }, { label: 'Updated status', color: 'theme-primary', time: '4h ago' }].map((a, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <div className={`w-1.5 h-1.5 rounded-full bg-${a.color}-400`} />
-                  <span className="text-xs text-gray-400 font-mono flex-1">{a.label}</span>
-                  <span className="text-[10px] text-gray-600 font-mono">{a.time}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-      case 'calendar-preview':
-        return (
-          <div>
-            <h3 className="text-sm font-semibold text-white flex items-center gap-2 mb-3 font-mono">
-              <CalendarIcon size={16} className="text-theme-accent-400" /> Upcoming Events
-            </h3>
-            <div className="space-y-2">
-              {[{ title: 'Team Standup', time: '10:00 AM' }, { title: 'Client Review', time: '2:00 PM' }].map((e, i) => (
-                <div key={i} className="flex items-center gap-3 p-2 bg-gray-900/50 border border-gray-800 rounded-lg">
-                  <div className="w-1.5 h-1.5 rounded-full bg-theme-accent-400" />
-                  <div className="flex-1">
-                    <p className="text-white text-xs font-mono">{e.title}</p>
-                    <p className="text-gray-600 text-[10px] font-mono">{e.time}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-      case 'messages-preview':
-        return (
-          <div>
-            <h3 className="text-sm font-semibold text-white flex items-center gap-2 mb-3 font-mono">
-              <MessageIcon size={16} className="text-orange-400" /> Recent Messages
-            </h3>
-            <div className="space-y-2">
-              {[{ from: 'Sarah Chen', subject: 'Project Update', time: '10m ago', unread: true }, { from: 'Mike Johnson', subject: 'Meeting Notes', time: '1h ago', unread: false }].map((m, i) => (
-                <div key={i} className="flex items-center gap-3 p-2 bg-gray-900/50 border border-gray-800 rounded-lg">
-                  <div className={`w-1.5 h-1.5 rounded-full ${m.unread ? 'bg-orange-400' : 'bg-gray-600'}`} />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-white text-xs font-mono truncate">{m.from}</p>
-                    <p className="text-gray-600 text-[10px] font-mono truncate">{m.subject}</p>
-                  </div>
-                  <span className="text-[10px] text-gray-500 font-mono">{m.time}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
       case 'quantum-visualization': return <QuantumVisualization />;
       case 'news-feed': return <NewsFeedWidget />;
+      case 'threat-heatmap': return <ThreatGeoHeatmap />;
+      case 'live-ip-feed': return <LiveIPFeed />;
       case 'system-health':
+      case 'system-uptime':
+      case 'response-time':
+      case 'error-rate':
         return (
           <div>
             <h3 className="text-sm font-semibold text-white flex items-center gap-2 mb-3 font-mono">
@@ -1968,140 +2814,32 @@ const attemptSave = async (attempt: number): Promise<boolean> => {
                   </div>
                 </div>
               ))}
-              <div className="mt-4 grid grid-cols-2 gap-2">
-                <div className="p-2 bg-gray-900/50 border border-gray-800 rounded-lg text-center">
-                  <p className="text-[10px] text-gray-500 font-mono">UPTIME</p>
-                  <p className="text-sm text-theme-primary-400 font-mono font-bold">99.97%</p>
-                </div>
-                <div className="p-2 bg-gray-900/50 border border-gray-800 rounded-lg text-center">
-                  <p className="text-[10px] text-gray-500 font-mono">RESPONSE</p>
-                  <p className="text-sm text-green-400 font-mono font-bold">42ms</p>
-                </div>
-              </div>
             </div>
           </div>
         );
       case 'security-overview':
-        return (
-          <div>
-            <h3 className="text-sm font-semibold text-white flex items-center gap-2 mb-3 font-mono">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-red-400">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-              </svg>
-              Security Overview
-            </h3>
-            <div className="space-y-2">
-              {[
-                { label: 'Firewall Status', status: 'Active', statusColor: 'text-green-400', dot: 'bg-green-400' },
-                { label: 'Threat Level', status: 'Low', statusColor: 'text-theme-primary-400', dot: 'bg-theme-primary-400' },
-                { label: 'Failed Logins (24h)', status: '3', statusColor: 'text-orange-400', dot: 'bg-orange-400' },
-                { label: 'Active Sessions', status: '247', statusColor: 'text-theme-accent-400', dot: 'bg-theme-accent-400' },
-                { label: 'SSL Certificate', status: 'Valid', statusColor: 'text-green-400', dot: 'bg-green-400' },
-              ].map((item, i) => (
-                <div key={i} className="flex items-center justify-between p-2 bg-gray-900/50 border border-gray-800 rounded-lg">
-                  <div className="flex items-center gap-2">
-                    <div className={`w-1.5 h-1.5 rounded-full ${item.dot}`} />
-                    <span className="text-xs text-gray-400 font-mono">{item.label}</span>
-                  </div>
-                  <span className={`text-xs font-mono font-bold ${item.statusColor}`}>{item.status}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
+      case 'access-log':
+        return <SecurityOverviewDashboard />;
       case 'user-stats':
+      case 'active-users':
         return (
           <div>
             <h3 className="text-sm font-semibold text-white flex items-center gap-2 mb-3 font-mono">
               <UsersIcon size={16} className="text-theme-accent-400" /> User Statistics
             </h3>
             <div className="grid grid-cols-2 gap-2 mb-3">
-              {[
-                { label: 'Total Users', value: '2,847', color: 'theme-accent' },
-                { label: 'Active Today', value: '1,234', color: 'theme-primary' },
-                { label: 'New (7d)', value: '+89', color: 'green' },
-                { label: 'Avg Session', value: '24m', color: 'orange' },
-              ].map((stat, i) => (
-                <div key={i} className="p-2 bg-gray-900/50 border border-gray-800 rounded-lg text-center">
-                  <p className="text-[10px] text-gray-500 font-mono uppercase">{stat.label}</p>
-                  <p className={`text-sm font-mono font-bold text-${stat.color}-400`}>{stat.value}</p>
-                </div>
-              ))}
-            </div>
-            <div className="flex items-end gap-1 h-16">
-              {[35, 42, 38, 55, 48, 62, 58, 71, 65, 78, 72, 85].map((h, i) => (
-                <div key={i} className="flex-1 bg-theme-accent-500/40 rounded-t" style={{ height: `${h}%` }} />
-              ))}
-            </div>
-            <p className="text-[9px] text-gray-600 font-mono mt-1 text-center">Daily active users (12 months)</p>
-          </div>
-        );
-      case 'team-management':
-        return (
-          <div>
-            <h3 className="text-sm font-semibold text-white flex items-center gap-2 mb-3 font-mono">
-              <UsersIcon size={16} className="text-theme-primary-400" /> Team Management
-            </h3>
-            <div className="space-y-2">
-              {[
-                { name: 'Sarah Chen', role: 'Admin', status: 'online', avatar: 'SC' },
-                { name: 'Mike Johnson', role: 'Manager', status: 'online', avatar: 'MJ' },
-                { name: 'Alex Rivera', role: 'Developer', status: 'away', avatar: 'AR' },
-                { name: 'Emily Park', role: 'Designer', status: 'offline', avatar: 'EP' },
-                { name: 'James Wilson', role: 'Support', status: 'online', avatar: 'JW' },
-              ].map((member, i) => (
-                <div key={i} className="flex items-center gap-3 p-2 bg-gray-900/50 border border-gray-800 rounded-lg hover:border-theme-primary-500/30 cursor-pointer">
-                  <div className="relative">
-                    <div className="w-7 h-7 rounded-full bg-gradient-to-br from-theme-primary-500/30 to-theme-accent-500/30 border border-gray-700 flex items-center justify-center">
-                      <span className="text-[9px] text-gray-300 font-mono font-bold">{member.avatar}</span>
-                    </div>
-                    <div className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-black ${
-                      member.status === 'online' ? 'bg-green-400' : member.status === 'away' ? 'bg-yellow-400' : 'bg-gray-600'
-                    }`} />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-white text-xs font-mono truncate">{member.name}</p>
-                    <p className="text-gray-600 text-[10px] font-mono">{member.role}</p>
-                  </div>
-                  <span className={`text-[9px] font-mono ${
-                    member.status === 'online' ? 'text-green-400' : member.status === 'away' ? 'text-yellow-400' : 'text-gray-600'
-                  }`}>{member.status}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-      case 'reports':
-        return (
-          <div>
-            <h3 className="text-sm font-semibold text-white flex items-center gap-2 mb-3 font-mono">
-              <TrendingUpIcon size={16} className="text-green-400" /> Reports
-            </h3>
-            <div className="space-y-3">
-              <div className="grid grid-cols-3 gap-2">
-                {[
-                  { label: 'Tasks Done', value: '142', trend: '+12%', color: 'theme-primary' },
-                  { label: 'On Time', value: '89%', trend: '+3%', color: 'green' },
-                  { label: 'Overdue', value: '7', trend: '-2', color: 'orange' },
-                ].map((kpi, i) => (
-                  <div key={i} className="p-2 bg-gray-900/50 border border-gray-800 rounded-lg text-center">
-                    <p className="text-[9px] text-gray-500 font-mono uppercase">{kpi.label}</p>
-                    <p className={`text-sm font-mono font-bold text-${kpi.color}-400`}>{kpi.value}</p>
-                    <p className="text-[9px] text-green-400 font-mono">{kpi.trend}</p>
-                  </div>
-                ))}
+              <div className="p-2 bg-gray-900/50 border border-gray-800 rounded-lg text-center">
+                <p className="text-[10px] text-gray-500 font-mono uppercase">Org Members</p>
+                <p className="text-sm font-mono font-bold text-theme-accent-400">{liveTeamCount}</p>
               </div>
-              <div className="flex items-end gap-1 h-20">
-                {[45, 52, 48, 65, 58, 72, 68].map((h, i) => (
-                  <div key={i} className="flex-1 flex flex-col items-center gap-1">
-                    <div className="w-full bg-green-500/40 rounded-t" style={{ height: `${h}%` }} />
-                    <span className="text-[7px] text-gray-600 font-mono">{['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][i]}</span>
-                  </div>
-                ))}
+              <div className="p-2 bg-gray-900/50 border border-gray-800 rounded-lg text-center">
+                <p className="text-[10px] text-gray-500 font-mono uppercase">Workspaces</p>
+                <p className="text-sm font-mono font-bold text-theme-primary-400">{liveWorkspaceCount}</p>
               </div>
             </div>
           </div>
         );
+
       default: return null;
     }
   };
@@ -3433,8 +4171,31 @@ const COLOR_PALETTE: Record<string, { color: string; rgb: string }> = {
           </button>
         </div>
 
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-          {stats.map((stat, i) => <StatCard key={i} {...stat} />)}
+        {FEATURES.IS_LITE_MODE && liveWorkspaceCount === 0 && (
+          <div className="mb-4 p-5 rounded-2xl border border-emerald-500/40 bg-gradient-to-r from-emerald-950/30 via-black to-cyan-950/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-[0_0_25px_rgba(16,185,129,0.12)]">
+            <div>
+              <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 text-[10px] font-mono font-bold uppercase tracking-wider mb-2">
+                Podio Edition • Quick Start
+              </div>
+              <h3 className="text-base sm:text-lg font-mono font-bold text-white">
+                Ready to import your Podio Workspaces &amp; MiniApps?
+              </h3>
+              <p className="text-xs text-gray-400 font-mono mt-1">
+                Open the <strong>MENU</strong> icon in the bottom navigation bar to create your first Workspace, then click <strong>Import from Podio</strong> inside your MiniApp to auto-build your entire Podio workspace in one click.
+              </p>
+            </div>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4 items-start">
+          {stats.map((stat) => (
+            <StatCard
+              key={stat.id}
+              {...stat}
+              isExpanded={expandedStatCard === stat.id}
+              onToggleExpand={() => setExpandedStatCard(prev => prev === stat.id ? null : stat.id)}
+            />
+          ))}
         </div>
 
         {/* Pinned Report Widgets for the active dashboard tab */}

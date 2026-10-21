@@ -20,7 +20,8 @@ import {
   CloudIcon,
   CalculatorIcon, // ⚡ Fixed to match Icons.tsx export
 } from '@/components/icons/Icons';
-import { Atom, LockKeyhole } from 'lucide-react'; // ⚡ Bypassing Icons.tsx to grab these directly
+import { Atom, LockKeyhole, GitBranch, FileText, Calendar, MessageSquare, CheckSquare, Sparkles } from 'lucide-react'; // ⚡ Bypassing Icons.tsx to grab these directly
+import { FEATURES } from '@/config/features';
 
 interface LandingPageProps {
   onOpenLogin: () => void;
@@ -139,7 +140,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onOpenLogin, onOpenRegister }
     { name: 'Personnel', icon: UsersIcon, apps: 5, description: 'Applicants, Members, Documents, Training, Protocols', features: ['Integrated Applicant Tracking System (ATS)', 'Automated employee onboarding workflows', 'Time-off & availability management', 'Performance review cycle tracking'], theme: { border: 'border-[#ff00ff]/20 hover:border-[#ff00ff]/40', badge: 'bg-[#ff00ff]/10 border-[#ff00ff]/30 text-[#ff00ff]', check: 'text-[#ff00ff]' } },
     { name: 'Main', icon: Atom, apps: 17, description: 'Contacts, Leads, Customers, Vendors, Projects, Events, Products, Services, Purchases, Quotes, Orders, Assets, Inventory, Locations, Clock, Support, Ideas', features: ['Drag-and-drop Kanban project boards', 'Customizable CRM pipeline views', 'Real-time multi-location inventory tracking', 'Integrated helpdesk ticketing system'], theme: { border: 'border-[#00ffff]/20 hover:border-[#00ffff]/40', badge: 'bg-[#00ffff]/10 border-[#00ffff]/30 text-[#00ffff]', check: 'text-[#00ffff]' } },
     { name: 'Data', icon: DatabaseIcon, apps: 12, description: 'Items, Types, Purposes, Units, Amounts, Specifications, Ratings, Dimensions, Flavors, Colors, Rates, Uses', features: ['Visual relational schema builder', 'Custom field mapping & validation', 'Bulk data import/export wizards', 'Automated point-in-time backups'], theme: { border: 'border-[#a855f7]/20 hover:border-[#a855f7]/40', badge: 'bg-[#a855f7]/10 border-[#a855f7]/30 text-[#a855f7]', check: 'text-[#a855f7]' } },
-    { name: 'Security', icon: LockKeyhole, apps: 0, description: 'Coming soon - Advanced security management and audit tools', features: ['Zero-trust architecture policy engine', 'AI-driven threat detection alerts', 'Comprehensive compliance auditing', 'Identity provider (IdP) integration'], theme: { border: 'border-[#ff9900]/20 hover:border-[#ff9900]/40', badge: 'bg-[#ff9900]/10 border-[#ff9900]/30 text-[#ff9900]', check: 'text-[#ff9900]' } },
+    { name: 'Security', icon: LockKeyhole, apps: 6, description: 'Live Camera Matrix, Q-CORE Encrypted NVR Vault, Access Control, Active Honeypot Defense, Team Bravo Internal Affairs AI & Threat Map (Q-CORE Add-On)', features: ['Live RTSP/WebRTC facility camera feeds', 'Q-CORE Encrypted NVR video clip vault', 'Kurogo & Kovac active deception honeypots', 'Green Horizon (IBM Quantum + Google Cloud) threat scoring'], theme: { border: 'border-[#ff9900]/20 hover:border-[#ff9900]/40', badge: 'bg-[#ff9900]/10 border-[#ff9900]/30 text-[#ff9900]', check: 'text-[#ff9900]' } },
   ];
 
   const systemRequirements = [
@@ -151,72 +152,120 @@ const LandingPage: React.FC<LandingPageProps> = ({ onOpenLogin, onOpenRegister }
     { icon: CloudIcon, title: 'Platform', items: ['No installation required', 'Cloud-hosted SaaS', 'Offline cache (PWA)', 'Auto-updating client'] },
   ];
 
-  // 6-tier pricing model with branded integration objects
+  // 6-tier pricing model with Simplified Cloud ($49) / Hardware ($199) Connector Caps & Unbundled Q-CORE Add-Ons
   const pricing = [
     {
       tier: 'basic', name: 'Basic Account', price: '$249', period: '/month', perUser: '$19/user/mo',
-      description: 'Full access to all 6 default workspaces and features',
-      features: ['All 6 default workspaces', '60+ built-in MiniApps', 'Custom MiniApp builder', 'Up to 60 MiniApps per workspace', 'Unlimited data records', 'Team activity streams', 'Analytics dashboards', 'Q-CORE quantum encryption', 'Standard support'],
+      description: 'Full access to all 6 default workspaces, Q-CORE Encrypted File Vault & 30-Day Local-First engine',
+      features: [
+        'Downloadable Local-First App (Works 100% offline for up to 30 days between cloud syncs)',
+        'Q-CORE Encrypted Vault File Storage (ML-KEM-1024 + AES-256-GCM + SHA-512 at rest & in transit)',
+        'All 6 default workspaces & 60+ built-in MiniApps (Up to 60 MiniApps/workspace)',
+        '1 Free Cloud Software Connector of choice (Podio, QuickBooks, Slack, WhatsApp, Shopify)',
+        'Add up to +2 extra Cloud Connectors at $49/mo each (3 Total Connectors Max)',
+        'Radial QBall quick-action menu, Light/Dark modes & custom workspace icon colors',
+        'Instant local Mass-Edit, Mass-Delete & unlimited data records',
+        '1-Click Q-CORE Security & Commercial AI Add-On Bridge Ready',
+      ],
       highlight: false, badge: null,
       theme: { card: 'border border-cyan-800/80 bg-gray-900/50 hover:border-cyan-400 hover:shadow-[0_0_25px_rgba(34,211,238,0.2)]', badge: '', price: 'text-white', check: 'text-cyan-500', integrateBtn: 'bg-cyan-900/20 border border-cyan-800 text-cyan-400 hover:bg-cyan-900/40', icon: 'text-cyan-400', getStartedBtn: 'bg-gray-800 border border-gray-700 text-gray-300 hover:bg-gray-700 hover:border-gray-600', integrateBorder: 'border-cyan-800', integrateIconBg: 'bg-cyan-900/30 border-cyan-800' },
       integrations: {
-        software: [b('QuickBooks', 'QB', 'Sync invoices, expenses & accounting ledgers', 'green'), b('Stripe', 'S', 'Process payments and subscriptions', 'purple'), b('Google Workspace', 'G', 'Calendar, Gmail & Drive sync', 'blue'), b('Microsoft 365', 'M', 'Outlook, Teams & OneDrive sync', 'blue'), b('Slack', 'SL', 'Push activity & alerts to channels', 'fuchsia'), b('Zapier', 'Z', 'Connect 5,000+ apps via automation', 'orange'), b('Mailchimp', 'MC', 'Sync contacts to email campaigns', 'orange'), b('Dropbox', 'DB', 'Attach & store record documents', 'blue')],
-        hardware: [b('QR / Barcode Scanner', 'QR', 'Scan codes directly into records', 'cyan'), b('Label Printer', 'LP', 'Print receipts & shipping labels', 'green'), b('USB Webcam', 'CAM', 'Capture photos for records', 'cyan'), b('POS Terminal', 'POS', 'Standard point-of-sale checkout', 'green')],
+        software: [b('1 Free Choice Included', '1x', 'Pick 1 free: Podio, QuickBooks, Slack, WhatsApp, or Shopify', 'cyan'), b('Podio', 'PO', '1-Click Workspace, Schema & Record bi-directional mirror', 'cyan'), b('QuickBooks', 'QB', 'Sync invoices, expenses & accounting ledgers', 'green'), b('Slack', 'SL', 'Stream channels & DMs into A-CORE Messages', 'fuchsia'), b('WhatsApp', 'WA', 'Two-way customer & team WhatsApp messaging', 'green'), b('Salesforce (+$49/mo)', 'SF', 'Add-on Cloud CRM sync (Max 3 total connectors on Basic)', 'blue'), b('HubSpot (+$49/mo)', 'HS', 'Add-on Cloud CRM sync', 'orange'), b('Zoho CRM (+$49/mo)', 'ZH', 'Add-on Cloud CRM & Books sync', 'purple'), b('Microsoft CRM (+$49/mo)', 'MS', 'Dynamics 365 Cloud CRM sync', 'blue')],
+        hardware: [b('Hardware Locked on Basic', '🔒', 'Upgrade to Expert ($899/mo) to unlock RFID, Barcode & POS hardware', 'orange')],
       },
     },
     {
       tier: 'pro', name: 'Pro Account', price: '$499', period: '/month', perUser: '$19/user/mo',
-      description: 'Create custom workspaces and scale your operations',
-      features: ['Everything in Basic', 'AI-Assistant', 'Up to 30 custom workspaces', 'Custom workspace creation', 'Up to 60 MiniApps per workspace', 'Advanced workflow automation', 'Priority support', 'Custom workspace icons & colors', 'Workspace-level analytics', 'No additional charge for workspaces'],
+      description: 'Unify your external cloud software, communications & workflows in one OS',
+      features: [
+        'Everything in Basic Account',
+        '3 Free Cloud Software Connectors included (Add up to +4 extra at $49/mo — 7 Total Max)',
+        'Up to 30 custom workspaces ($0 additional charge per workspace)',
+        'Unified Communications Hub: Cell Phone + Business Phone on-screen dialer, SMS & WhatsApp',
+        'Advanced cross-system workflow automation & Dynamic PDF invoice generation',
+        'Custom workspace icons, colors & workspace-level analytics',
+        'Priority support & 1-Click Q-CORE Security Add-On Bridge',
+      ],
       highlight: true, badge: 'Most Popular',
       theme: { card: 'border-2 border-cyan-500/60 bg-gradient-to-br from-cyan-950/30 to-black neon-glow-cyan hover:border-cyan-400 hover:shadow-[0_0_40px_rgba(34,211,238,0.4)]', badge: 'bg-cyan-500/20 border border-cyan-500/40 text-cyan-400', price: 'text-cyan-400 neon-text-cyan', check: 'text-cyan-400', integrateBtn: 'bg-cyan-500/10 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/20', icon: 'text-cyan-400', getStartedBtn: 'bg-cyan-500/20 border-2 border-cyan-500/50 text-cyan-400 hover:bg-cyan-500/30 shadow-[0_0_20px_rgba(0,255,255,0.15)]', integrateBorder: 'border-cyan-500/30', integrateIconBg: 'bg-cyan-500/15 border-cyan-500/40' },
       integrations: {
-        software: [b('Everything in Basic', '+', 'All Basic-tier software integrations', 'cyan'), b('OpenAI GPT', 'AI', 'Powers the built-in AI Assistant', 'green'), b('HubSpot', 'HS', 'Two-way CRM contact & deal sync', 'orange'), b('Salesforce', 'SF', 'Sync leads, accounts & opportunities', 'blue'), b('Twilio SMS', 'TW', 'Send SMS notifications & alerts', 'red'), b('DocuSign', 'DS', 'E-sign contracts & proposals', 'orange'), b('Xero', 'X', 'Cloud accounting ledger sync', 'blue'), b('Notion', 'N', 'Sync docs & knowledge bases', 'purple'), b('Asana', 'AS', 'Sync tasks & project boards', 'red')],
-        hardware: [b('Everything in Basic', '+', 'All Basic-tier hardware', 'cyan'), b('Bluetooth Scanner', 'BT', 'Wireless barcode scanning', 'blue'), b('Thermal Printer', 'TP', 'High-speed label printing', 'green'), b('Signature Pad', 'SP', 'Capture customer signatures', 'cyan'), b('Card Reader', 'CR', 'Accept chip & tap payments', 'green')],
+        software: [b('3 Free Cloud Connectors', '3x', 'Pick any 3 Cloud Software connectors free (Max 7 total on Pro)', 'cyan'), b('Podio + QuickBooks', 'PQ', 'Run CRM & Accounting side-by-side', 'green'), b('Salesforce', 'SF', 'Two-way Lead, Account & Opportunity sync', 'blue'), b('HubSpot', 'HS', 'Two-way CRM & pipeline sync', 'orange'), b('Microsoft CRM', 'MS', 'Dynamics 365 CRM sync', 'blue'), b('Zoho Suite', 'ZH', 'Zoho CRM & Books bi-directional sync', 'purple'), b('Shopify & Wix', 'SH', 'Live storefront order & inventory sync', 'green'), b('Slack & WhatsApp', 'SW', 'Unified external & internal messaging', 'fuchsia')],
+        hardware: [b('Hardware Locked on Pro', '🔒', 'Upgrade to Expert ($899/mo) to unlock RFID, Barcode & POS hardware', 'orange')],
       },
     },
     {
       tier: 'expert', name: 'Expert Account', price: '$899', period: '/month', perUser: '$19/user/mo',
-      description: 'Multi-organization management with AI workflows & mobile',
-      features: ['Everything in Pro', 'MiniApp Builder / Workflow AI', 'Mobile layouts for field & mobile personnel', 'Customer-facing AI chat (Team Alpha AI)', 'Reps can take over from AI in live chat', 'Up to 12 organizations', 'Up to 30 workspaces per org', 'Multi-org hierarchy management', 'Cross-org reporting', 'Custom integrations', 'Enterprise SSO (coming soon)'],
+      description: 'Multi-organization management with field hardware, barcode/RFID & mobile layouts',
+      features: [
+        'Everything in Pro Account',
+        'Up to 12 Organizations & 30 workspaces per org with Multi-Org Hierarchy Management',
+        '6 Free Connectors included — Mix & Match Cloud Software or Hardware (12 Total Max)',
+        'Unlocks Physical Hardware Connectors (+$199/mo beyond free slots): Barcode/RFID, POS & Scales',
+        'Role-locked Mobile Kiosk layouts for field technicians & shop-floor personnel',
+        'Cross-org financial & inventory roll-up reporting + Enterprise SSO',
+        'Eligible for 1-Click Q-CORE Commercial AI Suite (Team Alpha AI / Workflow AI) Add-On',
+      ],
       highlight: false, badge: 'Expert',
       theme: { card: 'border border-emerald-600/50 bg-gradient-to-br from-emerald-950/20 to-black hover:border-emerald-400 hover:shadow-[0_0_25px_rgba(16,185,129,0.2)]', badge: 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-400', price: 'text-emerald-400 drop-shadow-[0_0_8px_rgba(16,185,129,0.5)]', check: 'text-emerald-400', integrateBtn: 'bg-emerald-500/10 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/20', icon: 'text-emerald-400', getStartedBtn: 'bg-emerald-500/10 border border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/20 shadow-[0_0_15px_rgba(16,185,129,0.1)]', integrateBorder: 'border-emerald-500/30', integrateIconBg: 'bg-emerald-500/15 border-emerald-500/40' },
       integrations: {
-        software: [b('Everything in Pro', '+', 'All Pro-tier software integrations', 'purple'), b('Workflow AI', 'WF', 'AI-generated automation workflows', 'green'), b('Team Alpha AI', 'TA', 'Customer-facing AI chat agent', 'cyan'), b('Intercom', 'IC', 'Live chat & support inbox sync', 'blue'), b('Zendesk', 'ZD', 'Ticket & support desk sync', 'green'), b('Shopify', 'SH', 'Sync orders, products & customers', 'green'), b('WooCommerce', 'WC', 'WordPress storefront sync', 'purple'), b('Google Maps', 'GM', 'Geocoding & location lookups', 'blue'), b('SAML / OAuth SSO', 'SSO', 'Single sign-on identity provider', 'orange')],
-        hardware: [b('Everything in Pro', '+', 'All Pro-tier hardware', 'purple'), b('Rugged Field Tablet', 'RT', 'Durable tablets for field teams', 'orange'), b('Handheld Terminal', 'HT', 'Mobile data-entry terminals', 'cyan'), b('GPS Tracker', 'GPS', 'Track vehicles & assets live', 'red'), b('Vehicle Telematics', 'VT', 'Fleet diagnostics & routing', 'blue')],
+        software: [b('6 Free Connectors (Max 12)', '6x', 'Mix & match up to 6 Cloud or Hardware connectors free', 'green'), b('All Cloud CRMs & ERPs', '+', 'Podio, QuickBooks, Salesforce, HubSpot, Zoho, Dynamics', 'cyan'), b('ShipStation / Carriers', 'SS', 'Multi-carrier shipping label & tracking sync', 'blue'), b('SAML / OAuth SSO', 'SSO', 'Enterprise identity provider integration', 'orange'), b('Q-CORE AI Add-On (+$299)', 'AI', 'Optional 1-click upgrade for Team Alpha AI & Workflow AI', 'purple')],
+        hardware: [b('Zebra / Brother RFID & Barcode', 'RF', 'Automated thermal barcode & RFID label printing', 'green'), b('POS Terminals & Readers', 'POS', 'Point-of-sale checkout & card readers', 'cyan'), b('Rugged Field Tablets', 'RT', 'Mobile shop-floor & field data terminals', 'orange'), b('Digital Scales', 'SC', 'Batch & weight calibration hardware', 'blue')],
       },
     },
     {
       tier: 'enterprise', name: 'Enterprise', price: '$1,999', period: '/month', perUser: '$19/user/mo',
-      description: 'Interactive maps, facility layouts & dedicated AI team',
-      features: ['Everything in Expert', 'Interactive Map & Route Planning', 'Interactive Facility Layouts (Floor Plans)', 'AI-Powered Floor Plan Generation (WMS)', 'Team Bravo & Team Delta AI', 'Core AI Boss Personal Assistant (Org Admin)', 'News Feed Tab (Pop-out News Stations)'],
-      highlight: false, badge: 'Advanced AI',
+      description: 'Interactive maps, 3D facility floor-plan WMS & industrial sensor telemetry',
+      features: [
+        'Everything in Expert Account',
+        '12 Free Connectors included across Cloud, ERP & Industrial Hardware (20 Total Max)',
+        'Interactive Facility Layouts & Floor-Plan Warehouse Management System (WMS)',
+        'Interactive Map, Fleet Telematics & Multi-Stop Route Planning',
+        'Live Industrial PLC, Turbine & Frequency Sensor Telemetry (2D/3D Plant Monitoring)',
+        'News Feed Tab (Pop-out live market & industry news stations)',
+        '1-Click Bridge for Q-CORE Security Camera Workspace & Team Bravo/Delta AI Add-Ons',
+      ],
+      highlight: false, badge: 'Industrial & WMS',
       theme: { card: 'border border-purple-800/80 bg-gray-900/50 hover:border-purple-400 hover:shadow-[0_0_25px_rgba(168,85,247,0.2)]', badge: 'bg-purple-900/40 border border-purple-800 text-purple-300', price: 'text-white', check: 'text-purple-500', integrateBtn: 'bg-purple-900/20 border border-purple-800 text-purple-300 hover:bg-purple-900/40', icon: 'text-purple-400', getStartedBtn: 'bg-gray-800 border border-gray-700 text-gray-300 hover:bg-gray-700 hover:border-gray-600', integrateBorder: 'border-purple-800', integrateIconBg: 'bg-purple-900/30 border-purple-800' },
       integrations: {
-        software: [b('Everything in Expert', '+', 'All Expert-tier software integrations', 'cyan'), b('Mapbox / HERE', 'MB', 'Interactive maps & route planning', 'blue'), b('Route Optimizer', 'RO', 'AI multi-stop route optimization', 'green'), b('WMS / WCS', 'WMS', 'Warehouse management & control', 'orange'), b('Team Bravo & Delta AI', 'BD', 'Specialized operational AI agents', 'purple'), b('Core AI Boss', 'CB', 'Personal assistant for org admins', 'cyan'), b('News Aggregators', 'NF', 'Pop-out live news stations', 'red'), b('NetSuite / SAP ERP', 'ERP', 'Enterprise resource planning sync', 'blue')],
-        hardware: [b('Everything in Expert', '+', 'All Expert-tier hardware', 'cyan'), b('RFID Gateway', 'RF', 'Bulk asset tracking portals', 'green'), b('IoT Sensors', 'IOT', 'Warehouse environment sensors', 'cyan'), b('Forklift Terminal', 'FT', 'Vehicle-mounted data terminals', 'orange'), b('Map Wall Display', 'MD', 'Large-format facility map screens', 'blue'), b('Pick-to-Light', 'P2L', 'Guided warehouse picking system', 'green')],
+        software: [b('12 Free Connectors (Max 20)', '12x', 'Includes heavy ERP, WMS & industrial integrations', 'purple'), b('SAP S/4HANA & NetSuite', 'ERP', 'Two-way enterprise ERP sync', 'blue'), b('Manhattan WMS', 'WMS', 'Warehouse management & control sync', 'orange'), b('Mapbox / Fleet Routing', 'MB', 'Interactive route optimization', 'green'), b('Q-CORE Security Add-Ons', 'QC', '1-Click upgrade for Team Bravo/Delta AI & Live Camera Workspace', 'red')],
+        hardware: [b('Industrial PLC & Turbine Sensors', 'PLC', 'Real-time 2D/3D plant frequency & telemetry feeds', 'cyan'), b('RFID Portal Gateways', 'RG', 'Automated dock door & pallet scanning', 'green'), b('Forklift & Wall Displays', 'FT', 'Facility map wall & vehicle terminals', 'orange'), b('GPS Fleet Telematics', 'GPS', 'Live vehicle & asset tracking', 'red')],
       },
     },
     {
       tier: 'enterprisePlus', name: 'Enterprise +', price: '$4,999', period: '/month', perUser: 'Volume Discount',
-      description: 'Quantum predictive intelligence via IBM Quantum Cloud',
-      features: ['Branded UX', 'Everything in Enterprise', 'Quantum Predictive Analysis Program', 'Interactive Bubble Analysis Tool', 'Activity & Data Point Amortization', 'Real-time Runtime Analytics', 'IBM Quantum Cloud Server Access'],
+      description: 'Custom branded UX, runtime amortization & 1-click Quantum Cloud bridge',
+      features: [
+        'Everything in Enterprise',
+        '20 Free Connectors included across all Cloud, ERP & Industrial categories (35 Total Max)',
+        'Full Custom Branded UX & Volume Discounts on user seats',
+        'Interactive Bubble Analysis Tool & Activity/Data Point Amortization',
+        'Real-Time Runtime Analytics',
+        '1-Click Integration Ready for Green Horizon Quantum Predictive Intelligence (Billed via Card-on-File)',
+      ],
       highlight: true, badge: 'Quantum Ready',
       theme: { card: 'border-2 border-purple-500/60 bg-gradient-to-br from-purple-950/30 to-black neon-glow-purple hover:border-purple-400 hover:shadow-[0_0_40px_rgba(168,85,247,0.4)]', badge: 'bg-purple-500/20 border border-purple-500/40 text-purple-400', price: 'text-purple-400 neon-text-purple', check: 'text-purple-400', integrateBtn: 'bg-purple-500/10 border border-purple-500/40 text-purple-300 hover:bg-purple-500/20', icon: 'text-purple-400', getStartedBtn: 'bg-purple-500/20 border-2 border-purple-500/50 text-purple-400 hover:bg-purple-500/30 shadow-[0_0_20px_rgba(168,85,247,0.15)]', integrateBorder: 'border-purple-500/30', integrateIconBg: 'bg-purple-500/15 border-purple-500/40' },
       integrations: {
-        software: [b('Everything in Enterprise', '+', 'All Enterprise-tier integrations', 'purple'), b('IBM Quantum Cloud', 'IBM', 'Quantum compute for predictions', 'blue'), b('Quantum Bubble Tool', 'QB', 'Interactive predictive bubble viz', 'cyan'), b('Predictive Suite', 'PS', 'Forecasting & trend analysis', 'green'), b('Runtime Engine', 'RE', 'Amortization & runtime analytics', 'orange'), b('Branded UX Theming', 'UX', 'Fully branded user experience', 'fuchsia'), b('Custom Connectors', 'CC', 'Bespoke data source connectors', 'purple')],
-        hardware: [b('Everything in Enterprise', '+', 'All Enterprise-tier hardware', 'purple'), b('On-Prem Compute', 'OP', 'Dedicated on-site compute nodes', 'red'), b('Data Collectors', 'DC', 'High-density data acquisition', 'cyan'), b('Edge AI Appliance', 'EA', 'On-site AI inference hardware', 'green'), b('Branded Kiosk', 'KI', 'Custom-branded kiosk hardware', 'fuchsia')],
+        software: [b('20 Free Connectors (Max 35)', '20x', '20 included connectors across all categories', 'purple'), b('Quantum Bubble & Runtime', 'QB', 'Interactive bubble analysis & amortization engine', 'cyan'), b('Green Horizon Add-On Ready', 'GH', '1-click IBM Quantum Cloud + Google Cloud threat bridge (Card-on-file passthrough)', 'green'), b('Branded UX Engine', 'UX', 'Custom white-label organizational branding', 'fuchsia')],
+        hardware: [b('All Enterprise Hardware', '+', 'Full PLC, RFID, Telemetry & WMS hardware support', 'purple'), b('Dedicated Edge Collectors', 'DC', 'High-density plant data acquisition nodes', 'cyan'), b('Custom Kiosk Hardware', 'KI', 'Branded facility kiosk terminals', 'fuchsia')],
       },
     },
     {
-      tier: 'whiteGlove', name: 'White Glove', price: '$8,999', period: '/month', perUser: 'Included',
-      description: 'A dedicated development team and ongoing custom UX',
-      features: ['Custom Ongoing UX Development with User', 'Everything in Enterprise +', 'Dedicated Account Manager & Dev Team', 'In-house Development Team Access', 'Custom Code Integration Priority', 'Monthly System Optimization', '24/7 Executive Support Line'],
+      tier: 'whiteGlove', name: 'White Glove', price: '$8,999', period: '/month', perUser: 'Included ($0/user)',
+      description: 'Dedicated in-house development team, custom ongoing UX & unlimited user seats',
+      features: [
+        'Everything in Enterprise +',
+        'Unlimited Additional User Seats Included ($0/user/month)',
+        '40 Free Standard Connectors + Custom In-House Dev Builds (60 Total Connectors Max)',
+        'Dedicated Account Manager & Direct Access to In-House Development Team',
+        'Custom Ongoing UX Development tailored with your team & Custom Code Priority',
+        'Monthly System Optimization Audits & 24/7 Direct Executive Support Line',
+        '1-Click Bridge for All Standalone Q-CORE Security & Green Horizon Quantum Add-Ons',
+      ],
       highlight: false, badge: 'Full Service',
       theme: { card: 'border border-gray-500/50 bg-gradient-to-br from-gray-900/40 to-black shadow-[0_0_15px_rgba(255,255,255,0.05)] hover:border-gray-200 hover:shadow-[0_0_30px_rgba(255,255,255,0.2)]', badge: 'bg-gray-200/20 border border-gray-300/40 text-white', price: 'text-white drop-shadow-[0_0_8px_rgba(255,255,255,0.5)]', check: 'text-white', integrateBtn: 'bg-gray-500/20 border border-gray-400/40 text-gray-200 hover:bg-gray-500/40', icon: 'text-white', getStartedBtn: 'bg-gray-200/10 border border-gray-300/50 text-white hover:bg-gray-200/20 shadow-[0_0_15px_rgba(255,255,255,0.1)]', integrateBorder: 'border-gray-500/40', integrateIconBg: 'bg-gray-500/30 border-gray-400/40' },
       integrations: {
-        software: [b('Everything in Enterprise +', '+', 'All Enterprise + integrations', 'purple'), b('Bespoke Integrations', 'BI', 'Any custom software integration', 'cyan'), b('Private API Dev', 'API', 'Dedicated private API development', 'green'), b('Dedicated CI/CD', 'CD', 'Private deployment pipeline', 'orange'), b('Custom UX Builds', 'CX', 'Ongoing custom UX development', 'fuchsia'), b('White-Label All', 'WL', 'Fully white-labeled platform', 'purple')],
-        hardware: [b('Everything in Enterprise +', '+', 'All Enterprise + hardware', 'purple'), b('Custom Provisioning', 'CP', 'Bespoke hardware provisioning', 'cyan'), b('On-Site Install', 'OS', 'On-site installation & setup', 'green'), b('Dedicated HW Lab', 'HW', 'Private hardware testing lab', 'orange'), b('Sensor Networks', 'SN', 'Custom-built sensor networks', 'red')],
+        software: [b('40 Free + Custom Dev (Max 60)', '60x', '40 standard connectors + custom-engineered integrations', 'cyan'), b('Bespoke Legacy ERP/DB', 'BI', 'Our in-house team builds custom connectors for your proprietary systems', 'green'), b('Private CI/CD & UX', 'CX', 'Ongoing custom UX & workflow engineering', 'fuchsia'), b('Q-CORE Add-On Bridge', 'QC', '1-Click integration for Q-CORE Active Defense, Cameras & Green Horizon Quantum', 'purple')],
+        hardware: [b('Custom Hardware Engineering', 'HW', 'Bespoke sensor networks, custom PLCs & on-site provisioning', 'orange')],
       },
     },
   ];
@@ -336,6 +385,215 @@ const LandingPage: React.FC<LandingPageProps> = ({ onOpenLogin, onOpenRegister }
     }
     setIsCheckoutLoading(false);
   };
+
+  // ⚡ A-CORE LITE LANDING PAGE (Podio Marketplace Companion Edition)
+  // All full-launch data arrays above and full JSX sections below remain 100% preserved!
+  if (FEATURES.IS_LITE_MODE) {
+    const liteFeatures = [
+      {
+        icon: DatabaseIcon,
+        title: 'Bi-Directional Podio Sync',
+        description: 'Import your Podio Workspaces, Apps, Schemas, and Records in one click. Add or edit data in Podio or A-CORE and watch both stay in sync.',
+        color: 'cyan',
+      },
+      {
+        icon: GitBranch,
+        title: 'Automatic Relationship Wiring',
+        description: 'Podio Relationship fields are automatically detected in topological order and wired directly into A-CORE relational Connection fields.',
+        color: 'green',
+      },
+      {
+        icon: ZapIcon,
+        title: 'Visual Workflow Automation',
+        description: 'Build trigger-and-action workflows across your synced MiniApps to automate status updates, record creation, and team alerts.',
+        color: 'magenta',
+      },
+      {
+        icon: FileText,
+        title: 'Dynamic PDF Builder',
+        description: 'Design custom PDF templates mapped directly to your MiniApp fields to generate polished invoices, proposals, and reports on demand.',
+        color: 'orange',
+      },
+      {
+        icon: Sparkles,
+        title: 'QBall Quick-Action Hub',
+        description: 'Launch Tasks, Workflows, Reports, Calendar Events, and live Activity feeds from anywhere in your workspace with one click.',
+        color: 'purple',
+      },
+      {
+        icon: MessageSquare,
+        title: 'Tasks, Calendar & Messages',
+        description: 'Keep your organization aligned with integrated task management, shared scheduling, real-time team messaging, and Q-CORE security.',
+        color: 'red',
+      },
+    ];
+
+    return (
+      <div className="min-h-screen bg-black text-white flex flex-col">
+        <div className="fixed inset-0 alien-grid pointer-events-none" />
+        <div className="fixed inset-0 hex-pattern pointer-events-none opacity-50" />
+
+        {/* Header */}
+        <header className="fixed top-0 left-0 right-0 h-16 bg-black/95 backdrop-blur-lg border-b border-cyan-500/20 z-40">
+          <div className="flex items-center justify-between h-full px-4 w-full mx-auto">
+            <div className="flex items-center gap-3">
+              <div className="relative flex items-center">
+                <div className="absolute -inset-x-2 h-1/2 top-1/2 -translate-y-1/2 bg-cyan-500/10 rounded-lg blur-sm opacity-30" />
+                <ApplegateCoreLogo className="relative z-10 w-40 h-auto text-cyan-400 drop-shadow-[0_0_5px_rgba(0,255,255,0.25)]" />
+              </div>
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold uppercase tracking-widest bg-emerald-500/15 border border-emerald-500/40 text-emerald-400">
+                Podio Edition
+              </span>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={onOpenLogin}
+                className="px-5 py-2 bg-gray-900/50 border border-gray-700 text-gray-300 font-medium font-mono rounded-lg hover:bg-gray-800 hover:border-cyan-500/50 hover:text-cyan-400 transition-all"
+              >
+                Sign In
+              </button>
+              <button
+                onClick={() => onOpenRegister('lite')}
+                className="px-6 py-2 bg-cyan-500/10 border border-cyan-500/40 text-cyan-400 font-medium font-mono rounded-lg hover:bg-cyan-500/20 hover:border-cyan-400/60 transition-all shadow-[0_0_15px_rgba(0,255,255,0.15)]"
+              >
+                Create Account
+              </button>
+            </div>
+          </div>
+        </header>
+
+        {/* Hero Section */}
+        <section className="pt-28 pb-12 px-4 relative flex-1 flex flex-col justify-center">
+          <div className="w-full max-w-5xl mx-auto text-center relative z-10">
+            <div className="flex flex-col items-center gap-3 mb-6 relative z-20">
+              <div className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-500/10 border border-emerald-500/30 rounded-full text-emerald-400 text-sm font-mono shadow-[0_0_15px_rgba(16,185,129,0.15)]">
+                <GitBranch size={16} />
+                Official Podio Workspace &amp; MiniApp Companion
+              </div>
+              <div className="inline-flex items-center gap-2 px-4 py-1 bg-cyan-900/20 border border-cyan-500/20 rounded-full text-gray-400 text-[10px] sm:text-xs font-mono backdrop-blur-md">
+                <LockIcon size={12} className="text-cyan-400" />
+                <span>
+                  Protected by <span className="text-cyan-400 font-bold">Q-CORE</span> AES-256-GCM + PQC-ML-KEM-1024 Encryption
+                </span>
+              </div>
+            </div>
+
+            <div className="relative flex justify-center -mt-12 -mb-10 md:-mt-20 md:-mb-16 z-10 pointer-events-none">
+              <div className="absolute inset-0 rounded-full blur-3xl bg-cyan-500/15" />
+              <ApplegateCoreLogo className="relative w-72 sm:w-80 md:w-[28rem] h-auto text-cyan-400 drop-shadow-[0_0_30px_rgba(0,255,255,0.45)]" />
+            </div>
+
+            <h1 className="text-4xl md:text-6xl font-bold text-white mb-5 leading-tight font-mono relative z-20">
+              Supercharge Your <span className="text-emerald-400">Podio</span><br />
+              Workspaces in <span className="text-cyan-400">A-CORE</span>
+            </h1>
+
+            <p className="text-base md:text-lg text-gray-500 font-mono mb-4 flex items-center justify-center gap-2 relative z-20">
+              by
+              <a
+                href="https://www.applegate.solutions"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 text-cyan-400 hover:text-cyan-300 transition-colors pointer-events-auto"
+              >
+                <img src={LOGO_URL} alt="Applegate Solutions Logo" className="h-6 w-auto drop-shadow-[0_0_8px_rgba(0,255,255,0.4)]" />
+                Applegate.Solutions
+              </a>
+            </p>
+
+            <p className="text-base md:text-lg text-gray-400 max-w-3xl mx-auto mb-8 font-mono relative z-20">
+              Connect your Podio account to mirror your organization&apos;s Workspaces, Apps, Relationships, and Records with real-time bi-directional sync, custom Workflows, PDF generation, QBall quick actions, Tasks, Calendar, and Messages.
+            </p>
+
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-4 relative z-20">
+              <button
+                onClick={() => handleStartCheckout('lite')}
+                disabled={isCheckoutLoading}
+                className="w-full sm:w-auto px-8 py-4 bg-emerald-500/15 border border-emerald-500/50 text-emerald-300 font-semibold font-mono rounded-xl hover:bg-emerald-500/25 transition-all shadow-[0_0_25px_rgba(16,185,129,0.25)] text-lg disabled:opacity-50"
+              >
+                {isCheckoutLoading ? 'Loading...' : 'Get Started & Connect Podio'}
+              </button>
+              <button
+                onClick={onOpenLogin}
+                className="w-full sm:w-auto px-8 py-4 bg-gray-900/80 border border-gray-700 text-gray-300 font-semibold font-mono rounded-xl hover:bg-gray-800 hover:border-cyan-500/40 hover:text-cyan-300 transition-all text-lg"
+              >
+                Sign In to Existing Account
+              </button>
+            </div>
+          </div>
+        </section>
+
+        {/* Lite Features Grid */}
+        <section className="py-12 px-4 relative">
+          <div className="max-w-7xl mx-auto">
+            <div className="text-center mb-10">
+              <h2 className="text-2xl md:text-4xl font-bold text-white mb-3 font-mono">Built for Seamless Podio Collaboration</h2>
+              <p className="text-gray-500 text-base md:text-lg font-mono">Your organization, your Podio workspaces, zero clutter.</p>
+            </div>
+            <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {liteFeatures.map((f, i) => {
+                const Icon = f.icon;
+                return (
+                  <div key={i} className={`rounded-2xl border p-6 transition-all ${getFeatureClasses(f.color)}`}>
+                    <div className={`w-12 h-12 rounded-xl border flex items-center justify-center mb-4 ${getIconClasses(f.color)}`}>
+                      <Icon size={24} />
+                    </div>
+                    <h3 className="text-xl font-bold text-white mb-2 font-mono">{f.title}</h3>
+                    <p className="text-gray-400 font-mono text-sm leading-relaxed">{f.description}</p>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </section>
+
+        {/* How Podio <-> A-CORE Works */}
+        <section className="py-12 px-4 relative">
+          <div className="max-w-5xl mx-auto rounded-2xl border border-cyan-500/30 bg-gradient-to-br from-cyan-950/20 via-black to-emerald-950/20 p-8">
+            <h3 className="text-2xl font-bold text-white font-mono text-center mb-8">How A-CORE Works With Podio</h3>
+            <div className="grid md:grid-cols-3 gap-6 font-mono">
+              <div className="p-5 rounded-xl bg-black/60 border border-gray-800">
+                <div className="text-xs text-emerald-400 font-bold uppercase tracking-wider mb-2">Step 1 • Authenticate</div>
+                <h4 className="text-white font-bold mb-2">Create Your Organization</h4>
+                <p className="text-gray-400 text-xs leading-relaxed">
+                  Sign up for your dedicated A-CORE organization and authorize your Podio account via secure OAuth 2.0.
+                </p>
+              </div>
+              <div className="p-5 rounded-xl bg-black/60 border border-gray-800">
+                <div className="text-xs text-cyan-400 font-bold uppercase tracking-wider mb-2">Step 2 • Auto-Build</div>
+                <h4 className="text-white font-bold mb-2">Import Workspaces &amp; Apps</h4>
+                <p className="text-gray-400 text-xs leading-relaxed">
+                  Auto-create matching Workspaces, MiniApps, field schemas, and linked Connections in topological order.
+                </p>
+              </div>
+              <div className="p-5 rounded-xl bg-black/60 border border-gray-800">
+                <div className="text-xs text-purple-400 font-bold uppercase tracking-wider mb-2">Step 3 • Live Two-Way Sync</div>
+                <h4 className="text-white font-bold mb-2">Work in Either Platform</h4>
+                <p className="text-gray-400 text-xs leading-relaxed">
+                  Add or update records in Podio or A-CORE and trigger Workflows, PDFs, Tasks, Calendar events, and Reports automatically.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* Footer */}
+        <footer className="py-6 px-4 border-t border-cyan-500/20 mt-auto">
+          <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <ApplegateCoreLogo className="w-16 h-auto text-gray-500" />
+              <span className="text-gray-600 font-mono text-xs">A-CORE BOS • Podio Edition</span>
+            </div>
+            <div className="flex items-center gap-4 text-xs text-gray-600 font-mono">
+              <a href="https://www.applegate.solutions" className="hover:text-cyan-400 transition-colors">Applegate.Solutions</a>
+              <span>|</span>
+              <span>&copy; 2026 Applegate Solutions. All rights reserved.</span>
+            </div>
+          </div>
+        </footer>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-black text-white">
@@ -539,7 +797,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onOpenLogin, onOpenRegister }
             {/* Bullet explanation */}
             <div className="space-y-5">
               {[
-                { icon: DatabaseIcon, title: 'Connect, don\'t replace', desc: 'Sync data bi-directionally from SAP, NetSuite, Salesforce, Dynamics, Manhattan WMS and more — no costly rip-and-replace migration.' },
+                { icon: DatabaseIcon, title: 'Connect, don\'t replace', desc: 'Sync data bi-directionally from Podio, QuickBooks, HubSpot, Salesforce, Zoho, Slack, WhatsApp, Shopify, SAP, NetSuite, and Manhattan WMS — no costly rip-and-replace migration.' },
                 { icon: GlobeIcon, title: 'One unified view', desc: 'Customers, orders, inventory, finance and personnel all relate to each other in a single relational model across every department.' },
                 { icon: ZapIcon, title: 'Automate across systems', desc: 'Workflow AI triggers actions across previously-disconnected tools, eliminating manual re-keying and reconciliation.' },
                 { icon: ShieldIcon, title: 'Govern centrally', desc: 'Role-based access, audit logs and Q-CORE quantum encryption applied consistently over all your federated data.' },
@@ -628,7 +886,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onOpenLogin, onOpenRegister }
             <table className="w-full min-w-[760px] text-left">
               <thead>
                 <tr className="bg-gray-900/80">
-                  <th className="p-4 font-mono text-cyan-300 text-sm sticky left-0 bg-gray-900/95 z-10">Capability</th>
+                  <th className="p-4 font-mono text-cyan-300 text-sm sticky left-0 bg-[#05080f] z-20 border-r border-cyan-500/20 shadow-[4px_0_12px_rgba(0,0,0,0.9)]">Capability</th>
                   {erpProviders.map((p) => (
                     <th key={p.id} className={`p-4 font-mono text-sm text-center ${p.highlight ? 'text-cyan-400' : 'text-gray-400'}`}>
                       <div className={p.highlight ? 'neon-text-cyan font-bold' : 'font-semibold'}>{p.name}</div>
@@ -640,7 +898,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onOpenLogin, onOpenRegister }
               <tbody>
                 {erpComparison.map((row, i) => (
                   <tr key={i} className={`border-t border-gray-800 ${i % 2 === 0 ? 'bg-black/30' : 'bg-gray-900/20'}`}>
-                    <td className="p-4 font-mono text-gray-300 text-sm sticky left-0 bg-black/80 z-10">{row.feature}</td>
+                    <td className="p-4 font-mono text-gray-300 text-sm sticky left-0 bg-[#05080f] z-20 border-r border-cyan-500/20 shadow-[4px_0_12px_rgba(0,0,0,0.9)]">{row.feature}</td>
                     {erpProviders.map((p) => (
                       <td key={p.id} className={`p-4 text-center ${p.highlight ? 'bg-cyan-500/5' : ''}`}>
                         <div className="flex justify-center">{getStatusIcon((row as any)[p.id])}</div>
@@ -673,7 +931,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onOpenLogin, onOpenRegister }
             <table className="w-full min-w-[900px] text-left">
               <thead>
                 <tr className="bg-gray-900/80">
-                  <th className="p-4 font-mono text-cyan-300 text-sm sticky left-0 bg-gray-900/95 z-10">Security Feature</th>
+                  <th className="p-4 font-mono text-cyan-300 text-sm sticky left-0 bg-[#05080f] z-20 border-r border-cyan-500/20 shadow-[4px_0_12px_rgba(0,0,0,0.9)]">Security Feature</th>
                   {securityProviders.map((p) => (
                     <th key={p.id} className={`p-4 font-mono text-sm text-center ${p.highlight ? 'text-cyan-400' : 'text-gray-400'}`}>
                       <div className={p.highlight ? 'neon-text-cyan font-bold' : 'font-semibold'}>{p.name}</div>
@@ -685,7 +943,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onOpenLogin, onOpenRegister }
               <tbody>
                 {securityComparison.map((row, i) => (
                   <tr key={i} className={`border-t border-gray-800 ${i % 2 === 0 ? 'bg-black/30' : 'bg-gray-900/20'}`}>
-                    <td className="p-4 font-mono text-gray-300 text-sm sticky left-0 bg-black/80 z-10">{row.feature}</td>
+                    <td className="p-4 font-mono text-gray-300 text-sm sticky left-0 bg-[#05080f] z-20 border-r border-cyan-500/20 shadow-[4px_0_12px_rgba(0,0,0,0.9)]">{row.feature}</td>
                     {securityProviders.map((p) => {
                       const cell = (row as any)[p.id];
                       return (
@@ -872,7 +1130,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onOpenLogin, onOpenRegister }
             <table className="w-full min-w-[640px] text-left">
               <thead>
                 <tr className="bg-gray-900/80">
-                  <th className="p-4 font-mono text-purple-300 text-sm sticky left-0 bg-gray-900/95 z-10">Feature</th>
+                  <th className="p-4 font-mono text-purple-300 text-sm sticky left-0 bg-[#05080f] z-20 border-r border-purple-500/20 shadow-[4px_0_12px_rgba(0,0,0,0.9)]">Feature</th>
                   {visibleTierIdx.map((i) => {
                     const k = tierKeys[i];
                     return (
@@ -887,7 +1145,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onOpenLogin, onOpenRegister }
               <tbody>
                 {featureMatrix.map((row, i) => (
                   <tr key={i} className={`border-t border-gray-800 ${i % 2 === 0 ? 'bg-black/30' : 'bg-gray-900/20'}`}>
-                    <td className="p-3 font-mono text-gray-300 text-sm sticky left-0 bg-black/80 z-10">{row.feature}</td>
+                    <td className="p-3 font-mono text-gray-300 text-sm sticky left-0 bg-[#05080f] z-20 border-r border-purple-500/20 shadow-[4px_0_12px_rgba(0,0,0,0.9)]">{row.feature}</td>
                     {visibleTierIdx.map((idx) => (
                       <td key={idx} className={`p-3 text-center ${idx >= 3 ? 'bg-purple-500/5' : ''}`}>
                         {row.values[idx] ? <CheckCircleIcon size={18} className="text-green-400 mx-auto" /> : <XCircleIcon size={18} className="text-gray-700 mx-auto" />}

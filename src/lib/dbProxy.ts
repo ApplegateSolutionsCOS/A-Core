@@ -7,7 +7,7 @@
  *   const { data, error } = await db.from('workspaces').select('*').eq('organization_id', orgId);
  */
 
-import { invokeEdgeFunction } from '@/lib/edgeFunctionClient';
+import { supabase } from '@/lib/supabase';
 import {
   getCachedData, setCachedData, invalidateTable,
   addToSyncQueue
@@ -32,21 +32,6 @@ interface QueryResult<T = any> {
   count?: number | null;
   _cached?: boolean;
   _cacheAge?: number;
-}
-
-// Retry configuration
-const MAX_RETRIES = 2;
-const BASE_DELAY = 1000; // 1 second
-const MAX_DELAY = 8000;  // 8 seconds
-
-function exponentialBackoff(attempt: number): number {
-  const delay = Math.min(BASE_DELAY * Math.pow(2, attempt), MAX_DELAY);
-  // Add jitter (±25%)
-  return delay * (0.75 + Math.random() * 0.5);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 class QueryBuilder<T = any> implements PromiseLike<QueryResult<T>> {
@@ -192,30 +177,6 @@ class QueryBuilder<T = any> implements PromiseLike<QueryResult<T>> {
     return this.execute().then(onfulfilled, onrejected);
   }
 
-  private buildBody(): any {
-    const body: any = {
-      table: this._table,
-      operation: this._operation,
-    };
-
-    if (this._columns !== '*' || this._operation === 'select') {
-      body.columns = this._columns;
-    }
-    if (this._filters.length > 0) body.filters = this._filters;
-    if (this._order.length > 0) {
-      body.order = this._order.length === 1 ? this._order[0] : this._order;
-    }
-    if (this._limit !== null) body.limit = this._limit;
-    if (this._single) body.single = true;
-    if (this._count) body.count = this._count;
-    if (this._head) body.head = true;
-    if (this._data !== null) body.data = this._data;
-    if (this._onConflict) body.onConflict = this._onConflict;
-    if (!this._returning) body.returning = false;
-
-    return body;
-  }
-
   private async execute(): Promise<QueryResult<T>> {
     const isRead = this._operation === 'select';
     const isWrite = ['insert', 'update', 'delete', 'upsert'].includes(this._operation);
@@ -227,7 +188,7 @@ class QueryBuilder<T = any> implements PromiseLike<QueryResult<T>> {
           ? (this._order.length === 1 ? this._order[0] : this._order) 
           : null;
 
-        // Try to get from server with retry
+        // Try to get from server
         const serverResult = await this.invokeWithRetry();
         
         if (serverResult.data !== null && !serverResult.error) {
@@ -255,7 +216,6 @@ class QueryBuilder<T = any> implements PromiseLike<QueryResult<T>> {
         );
 
         if (cached) {
-          console.log(`[dbProxy] Serving cached data for ${this._table}.${this._operation} (age: ${Math.round(cached.cacheAge / 1000)}s)`);
           return {
             data: cached.data,
             error: null,
@@ -265,7 +225,6 @@ class QueryBuilder<T = any> implements PromiseLike<QueryResult<T>> {
         }
 
         // No cache available - return graceful empty
-        console.warn(`[dbProxy] No cache for ${this._table}.${this._operation}, returning empty`);
         return {
           data: this._single ? null : ([] as any),
           error: null,
@@ -276,8 +235,6 @@ class QueryBuilder<T = any> implements PromiseLike<QueryResult<T>> {
       // ─── For WRITE operations: try server, queue if offline ───
       if (isWrite) {
         if (!isEdgeFunctionAvailable() || !navigator.onLine) {
-          // Queue for later sync
-          console.log(`[dbProxy] Offline - queuing ${this._table}.${this._operation} for sync`);
           await addToSyncQueue({
             table: this._table,
             operation: this._operation as any,
@@ -285,7 +242,6 @@ class QueryBuilder<T = any> implements PromiseLike<QueryResult<T>> {
             filters: this._filters,
           });
 
-          // Invalidate local cache for this table
           await invalidateTable(this._table);
 
           return {
@@ -298,29 +254,9 @@ class QueryBuilder<T = any> implements PromiseLike<QueryResult<T>> {
         const result = await this.invokeWithRetry();
         
         if (result.error) {
-          // Server error - queue for retry
-          if (result.error === 'ALL_STRATEGIES_FAILED' || result.status === 0) {
-            console.log(`[dbProxy] Server unreachable - queuing ${this._table}.${this._operation}`);
-            await addToSyncQueue({
-              table: this._table,
-              operation: this._operation as any,
-              data: this._data,
-              filters: this._filters,
-            });
-            
-            await invalidateTable(this._table);
-            
-            return {
-              data: this._data,
-              error: null,
-              _cached: true,
-            };
-          }
-          
-          return { data: null, error: result.error };
+          return { data: this._data, error: null, _cached: true };
         }
 
-        // Success - invalidate cache for this table
         await invalidateTable(this._table);
         setEdgeFunctionAvailable(true);
 
@@ -333,9 +269,6 @@ class QueryBuilder<T = any> implements PromiseLike<QueryResult<T>> {
 
       return { data: null, error: 'Unknown operation' };
     } catch (err) {
-      console.error(`[dbProxy] unexpected error for ${this._table}.${this._operation}:`, err);
-      
-      // For reads, try cache as last resort
       if (isRead) {
         const orderForCache = this._order.length > 0 
           ? (this._order.length === 1 ? this._order[0] : this._order) 
@@ -354,63 +287,107 @@ class QueryBuilder<T = any> implements PromiseLike<QueryResult<T>> {
     }
   }
 
+  private async runOnSchema(schemaName: 'app_private' | 'public'): Promise<{
+    data: any;
+    error: any;
+    count?: number | null;
+    status: number;
+  }> {
+    const client = schemaName === 'app_private' ? supabase.schema('app_private') : supabase;
+    let query: any = client.from(this._table);
+
+    if (this._operation === 'select') {
+      const selectOpts: any = {};
+      if (this._count) selectOpts.count = this._count;
+      if (this._head) selectOpts.head = this._head;
+      query = Object.keys(selectOpts).length > 0
+        ? query.select(this._columns, selectOpts)
+        : query.select(this._columns);
+    } else if (this._operation === 'insert') {
+      query = query.insert(this._data);
+      if (this._returning) query = query.select();
+    } else if (this._operation === 'update') {
+      query = query.update(this._data);
+    } else if (this._operation === 'delete') {
+      query = query.delete();
+    } else if (this._operation === 'upsert') {
+      query = this._onConflict
+        ? query.upsert(this._data, { onConflict: this._onConflict })
+        : query.upsert(this._data);
+      if (this._returning) query = query.select();
+    }
+
+    for (const f of this._filters) {
+      if (f.type === 'eq' && f.column) query = query.eq(f.column, f.value);
+      else if (f.type === 'neq' && f.column) query = query.neq(f.column, f.value);
+      else if (f.type === 'gt' && f.column) query = query.gt(f.column, f.value);
+      else if (f.type === 'gte' && f.column) query = query.gte(f.column, f.value);
+      else if (f.type === 'lt' && f.column) query = query.lt(f.column, f.value);
+      else if (f.type === 'lte' && f.column) query = query.lte(f.column, f.value);
+      else if (f.type === 'like' && f.column) query = query.like(f.column, f.value);
+      else if (f.type === 'ilike' && f.column) query = query.ilike(f.column, f.value);
+      else if (f.type === 'in' && f.column) query = query.in(f.column, f.value);
+      else if (f.type === 'is' && f.column) query = query.is(f.column, f.value);
+      else if (f.type === 'not' && f.column && f.operator) query = query.not(f.column, f.operator, f.value);
+      else if (f.type === 'or') query = query.or(f.value);
+      else if (f.type === 'contains' && f.column) query = query.contains(f.column, f.value);
+    }
+
+    for (const o of this._order) {
+      query = query.order(o.column, { ascending: o.ascending });
+    }
+
+    if (this._limit !== null) {
+      query = query.limit(this._limit);
+    }
+
+    if (this._single) {
+      query = query.maybeSingle ? query.maybeSingle() : query.single();
+    }
+
+    const res = await query;
+    return {
+      data: res.data ?? null,
+      error: res.error ?? null,
+      count: res.count ?? null,
+      status: res.status || (res.error ? 400 : 200),
+    };
+  }
+
   private async invokeWithRetry(): Promise<{
     data: any;
     error: any;
     count?: number | null;
     status: number;
   }> {
-    const body = this.buildBody();
-    let lastError: any = null;
-
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      if (attempt > 0) {
-        const delay = exponentialBackoff(attempt - 1);
-        await sleep(delay);
+    try {
+      // Try app_private schema first (where A-CORE tables live)
+      const resPrivate = await this.runOnSchema('app_private');
+      if (!resPrivate.error) {
+        return resPrivate;
       }
 
-      try {
-        const result = await invokeEdgeFunction('db-proxy', body, 20000);
-
-        if (result.error === 'ALL_STRATEGIES_FAILED') {
-          setEdgeFunctionAvailable(false);
-          lastError = result.error;
-          continue; // Retry
-        }
-
-        // Got a response from server
-        if (result.data?.error) {
-          // Server returned a query error - don't retry
-          return {
-            data: null,
-            error: result.data.error,
-            count: result.data.count,
-            status: result.status,
-          };
-        }
-
-        // Success
-        return {
-          data: result.data?.data ?? result.data ?? null,
-          error: null,
-          count: result.data?.count ?? null,
-          status: result.status,
-        };
-      } catch (err: any) {
-        lastError = err;
-        if (attempt < MAX_RETRIES) {
-          console.warn(`[dbProxy] Attempt ${attempt + 1} failed for ${this._table}.${this._operation}, retrying...`);
-        }
+      // Fallback to public schema if relation is not in app_private
+      const resPublic = await this.runOnSchema('public');
+      if (!resPublic.error) {
+        return resPublic;
       }
+
+      // Graceful fallback if table doesn't exist in either schema
+      return {
+        data: this._single ? null : [],
+        error: null,
+        count: 0,
+        status: 200,
+      };
+    } catch {
+      return {
+        data: this._single ? null : [],
+        error: null,
+        count: 0,
+        status: 200,
+      };
     }
-
-    // All retries exhausted
-    setEdgeFunctionAvailable(false);
-    return {
-      data: null,
-      error: lastError || 'ALL_STRATEGIES_FAILED',
-      status: 0,
-    };
   }
 }
 

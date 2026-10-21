@@ -252,7 +252,7 @@ const COLOR_PALETTE: Record<string, { color: string; rgb: string }> = {
 };
 
 const CalendarView: React.FC<CalendarViewProps> = ({ isOpen, onClose, onNavigateToTask, currentWorkspaceSlug }) => {
-  const { user } = useAuth();
+  const { user, organization } = useAuth();
   const currentUserId = user?.id || (user as any)?.uid;
 
   const { getColor } = useWorkspaceColor();
@@ -320,9 +320,13 @@ const CalendarView: React.FC<CalendarViewProps> = ({ isOpen, onClose, onNavigate
       });
 
       // 2. Fetch standard Calendar Events
-      const { data: calEvents } = await supabase.schema('app_private').from('calendar_events')
-        .select('*')
-        .eq('created_by', currentUserId);
+      let calQuery = supabase.schema('app_private').from('calendar_events').select('*');
+      if (organization?.id) {
+        calQuery = calQuery.eq('organization_id', organization.id);
+      } else {
+        calQuery = calQuery.eq('created_by', currentUserId);
+      }
+      const { data: calEvents } = await calQuery;
 
       const standardEvents: CalendarEvent[] = (calEvents || []).map(e => {
         const d = new Date(e.start_time);
@@ -351,8 +355,8 @@ const CalendarView: React.FC<CalendarViewProps> = ({ isOpen, onClose, onNavigate
       .subscribe();
 
     const calSub = supabase.channel('calendar_events_realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'calendar_events' }, fetchEvents)
-      .subscribe();
+   .on('postgres_changes', { event: '*', schema: 'app_private', table: 'calendar_events' }, fetchEvents)
+   .subscribe();
 
     window.addEventListener('refreshCalendar', fetchEvents);
     window.addEventListener('refreshTasks', fetchEvents);

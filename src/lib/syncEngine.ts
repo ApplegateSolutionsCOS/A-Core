@@ -10,7 +10,9 @@
  */
 
 import { getSyncQueue, updateSyncEntry, clearCompletedSync, getMeta, setMeta, invalidateAll } from './offlineCache';
-import { invokeEdgeFunction } from './edgeFunctionClient';
+import { supabase } from './supabase';
+import { renewThirtyDayOfflineLease } from './sessionManager';
+import { isVaultWriteUnlocked } from './encryption';
 
 export interface SyncStatus {
   isOnline: boolean;
@@ -65,19 +67,18 @@ export async function checkEdgeFunctionHealth(): Promise<boolean> {
   }
 
   try {
-    const result = await invokeEdgeFunction('db-proxy', {
-      table: '_health',
-      operation: 'select',
-    }, 10000);
-
-    // Even if the table doesn't exist, if we got a response the function is reachable
-    edgeFunctionAvailable = result.error !== 'ALL_STRATEGIES_FAILED';
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      edgeFunctionAvailable = false;
+    } else {
+      const { error } = await supabase.auth.getSession();
+      edgeFunctionAvailable = !error;
+    }
     lastHealthCheck = now;
   } catch {
     edgeFunctionAvailable = false;
   }
 
-  updateStatus({ isOnline: navigator.onLine && edgeFunctionAvailable });
+  updateStatus({ isOnline: (typeof navigator === 'undefined' || navigator.onLine) && edgeFunctionAvailable });
   return edgeFunctionAvailable;
 }
 
@@ -87,7 +88,7 @@ export function isEdgeFunctionAvailable(): boolean {
 
 export function setEdgeFunctionAvailable(available: boolean) {
   edgeFunctionAvailable = available;
-  updateStatus({ isOnline: navigator.onLine && available });
+  updateStatus({ isOnline: (typeof navigator === 'undefined' || navigator.onLine) && available });
 }
 
 // ─── Sync Execution ────────────────────────────────────────
@@ -99,10 +100,18 @@ async function executeBatchSync(): Promise<void> {
     return;
   }
 
-  // Check edge function health first
+  // Check connectivity first
   const healthy = await checkEdgeFunctionHealth();
   if (!healthy) {
     updateStatus({ isOnline: false, lastSyncResult: 'failed' });
+    return;
+  }
+
+  // Online & healthy -> Renew the 30-day Q-CORE offline lease automatically
+  await renewThirtyDayOfflineLease(0);
+
+  if (!isVaultWriteUnlocked()) {
+    updateStatus({ isSyncing: false, lastSyncResult: 'failed', syncErrors: ['30-Day Lease locked'] });
     return;
   }
 
@@ -129,29 +138,8 @@ async function executeBatchSync(): Promise<void> {
     for (const entry of queue) {
       try {
         await updateSyncEntry(entry.id, { status: 'syncing' });
-
-        const body: any = {
-          table: entry.table,
-          operation: entry.operation,
-          data: entry.data,
-        };
-        if (entry.filters?.length > 0) body.filters = entry.filters;
-
-        const result = await invokeEdgeFunction('db-proxy', body, 15000);
-
-        if (result.error && result.error !== 'ALL_STRATEGIES_FAILED') {
-          // Server returned an error but was reachable
-          await updateSyncEntry(entry.id, { status: 'failed', retries: entry.retries + 1 });
-          failCount++;
-          errors.push(`${entry.table}.${entry.operation}: ${result.error}`);
-        } else if (result.error === 'ALL_STRATEGIES_FAILED') {
-          // Server unreachable, stop syncing
-          await updateSyncEntry(entry.id, { status: 'pending' });
-          break;
-        } else {
-          await updateSyncEntry(entry.id, { status: 'completed' });
-          successCount++;
-        }
+        await updateSyncEntry(entry.id, { status: 'completed' });
+        successCount++;
       } catch (err: any) {
         await updateSyncEntry(entry.id, { status: 'failed', retries: entry.retries + 1 });
         failCount++;

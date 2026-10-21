@@ -6,11 +6,19 @@ import {
   getSupportedTypes,
   formatFileSize,
   getThreatLevelColor,
+  getActiveHoneypotForensicEvents,
+  exportLawEnforcementForensicDossier,
+  isHoneypotTestModeActive,
+  toggleHoneypotTestMode,
+  cancelHoneypotAlert,
+  reinstateAccountAndSecurityLocks,
+  type HoneypotForensicEvent,
   type QCoreHealthStatus,
   type QCoreSecurityStats,
   type QCoreSupportedTypes,
   type FileScanLog
 } from '@/lib/qcoreSecurity';
+import { useAuth } from '@/contexts/AuthContext';
 import {
   ShieldIcon,
   LockIcon,
@@ -49,6 +57,7 @@ type SortField = 'file_name' | 'file_category' | 'scan_status' | 'threat_level' 
 type SortDir = 'asc' | 'desc';
 
 const QCoreSecurityDashboard: React.FC = () => {
+  const { user, isPlatformOwner } = useAuth();
   const [health, setHealth] = useState<QCoreHealthStatus | null>(null);
   const [stats, setStats] = useState<QCoreSecurityStats | null>(null);
   const [scanHistory, setScanHistory] = useState<FileScanLog[]>([]);
@@ -60,6 +69,47 @@ const QCoreSecurityDashboard: React.FC = () => {
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [searchQuery, setSearchQuery] = useState('');
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
+  const [honeypotEvents, setHoneypotEvents] = useState<HoneypotForensicEvent[]>(() => getActiveHoneypotForensicEvents());
+  const [honeypotTestMode, setHoneypotTestMode] = useState<boolean>(() => isHoneypotTestModeActive());
+  const [reinstateEmail, setReinstateEmail] = useState('');
+  const [reinstateStatus, setReinstateStatus] = useState<string | null>(null);
+  const [reinstating, setReinstating] = useState(false);
+
+  useEffect(() => {
+    const syncHoneypot = () => {
+      setHoneypotEvents(getActiveHoneypotForensicEvents());
+      setHoneypotTestMode(isHoneypotTestModeActive());
+    };
+    window.addEventListener('qcore-security-state-changed', syncHoneypot);
+    return () => window.removeEventListener('qcore-security-state-changed', syncHoneypot);
+  }, []);
+
+  const handleToggleTestMode = async () => {
+    const next = !honeypotTestMode;
+    setHoneypotTestMode(next);
+    const evs = await toggleHoneypotTestMode(next);
+    setHoneypotEvents(evs);
+    setReinstateStatus(next ? 'Honeypot & Q-CORE Security Lock Test Mode ENABLED.' : 'Honeypot Test Mode DISABLED and alerts cleared.');
+  };
+
+  const handleCancelHoneypotAlert = () => {
+    cancelHoneypotAlert();
+    setHoneypotTestMode(false);
+    setHoneypotEvents([]);
+    setReinstateStatus('Honeypot alert cancelled and trap cleared.');
+  };
+
+  const handleReinstateUser = async (targetEmail?: string) => {
+    setReinstating(true);
+    try {
+      const res = await reinstateAccountAndSecurityLocks(targetEmail || reinstateEmail.trim() || user?.email);
+      setHoneypotTestMode(false);
+      setHoneypotEvents([]);
+      setReinstateStatus(res.message);
+    } finally {
+      setReinstating(false);
+    }
+  };
 
   const fetchAll = useCallback(async () => {
     setIsRefreshing(true);
@@ -248,6 +298,103 @@ const QCoreSecurityDashboard: React.FC = () => {
       {/* Overview Tab */}
       {activeSubTab === 'overview' && (
         <div className="space-y-6">
+          {/* 🛡️ Platform Owner Admin: Honeypot Deception & Account Reinstatement Control Center */}
+          {isPlatformOwner() && (
+            <div className="relative rounded-xl border border-emerald-500/40 bg-gradient-to-br from-emerald-950/30 via-black/90 to-red-950/20 p-5 backdrop-blur-xl shadow-[0_0_25px_rgba(16,185,129,0.15)]">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/50 text-emerald-300 font-mono font-bold text-[10px]">
+                      🛡️ GOD MODE // PLATFORM OWNER CONTROLS
+                    </span>
+                    <h4 className="text-white font-mono font-bold text-sm">
+                      Honeypot Trap, Q-CORE Lock & Account Reinstatement Center
+                    </h4>
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${
+                        honeypotTestMode || honeypotEvents.length > 0
+                          ? 'bg-red-500/20 border-red-500/50 text-red-300'
+                          : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                      }`}
+                    >
+                      {honeypotTestMode
+                        ? 'TEST SIMULATION ACTIVE'
+                        : honeypotEvents.length > 0
+                        ? `ACTIVE ALERT (${honeypotEvents.length} EVENTS)`
+                        : 'ALL CLEAR / STANDBY'}
+                    </span>
+                  </div>
+                  <p className="text-xs font-mono text-gray-400 mt-1">
+                    Preview the Honeypot & Q-CORE Security Banner anytime for testing, cancel active alerts after collecting forensic telemetry, or reinstate any locked user/admin account.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    onClick={handleToggleTestMode}
+                    className={`px-3 py-2 rounded-lg font-mono text-xs font-bold border transition-all ${
+                      honeypotTestMode
+                        ? 'bg-amber-500/25 border-amber-400 text-amber-200 shadow-[0_0_12px_rgba(245,158,11,0.3)]'
+                        : 'bg-gray-900/80 border-amber-500/40 text-amber-300 hover:bg-amber-500/15'
+                    }`}
+                  >
+                    🧪 {honeypotTestMode ? 'Disable Honeypot Test Mode (ON)' : 'Enable Honeypot & Q-CORE Test Mode (OFF)'}
+                  </button>
+                  <button
+                    onClick={handleCancelHoneypotAlert}
+                    className="px-3 py-2 rounded-lg font-mono text-xs font-bold bg-gray-800/90 border border-gray-600 text-gray-200 hover:bg-gray-700 transition-all"
+                  >
+                    ✕ Cancel Alert / Clear Trap
+                  </button>
+                  <button
+                    onClick={() => handleReinstateUser(user?.email)}
+                    disabled={reinstating}
+                    className="px-3 py-2 rounded-lg font-mono text-xs font-bold bg-emerald-500/25 border border-emerald-400/60 text-emerald-200 hover:bg-emerald-500/35 transition-all shadow-[0_0_12px_rgba(16,185,129,0.25)] disabled:opacity-50"
+                  >
+                    {reinstating ? 'Reinstating...' : '🛡️ Reinstate My Admin Account & Unlock'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Target User Account Reinstatement Bar */}
+              <div className="mt-4 pt-3 border-t border-white/10 flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 justify-between">
+                <div className="flex items-center gap-2 flex-1 max-w-xl">
+                  <input
+                    type="email"
+                    value={reinstateEmail}
+                    onChange={(e) => setReinstateEmail(e.target.value)}
+                    placeholder="Enter user email to reinstate locked account (or leave blank for current session)..."
+                    className="flex-1 bg-black/70 border border-gray-700 focus:border-emerald-400 rounded-lg px-3 py-1.5 text-xs font-mono text-white placeholder-gray-500 outline-none"
+                  />
+                  <button
+                    onClick={() => handleReinstateUser(reinstateEmail)}
+                    disabled={reinstating}
+                    className="px-3 py-1.5 rounded-lg bg-cyan-500/20 border border-cyan-500/50 text-cyan-200 hover:bg-cyan-500/30 font-mono text-xs font-bold whitespace-nowrap disabled:opacity-50"
+                  >
+                    Reinstate User Account
+                  </button>
+                </div>
+                {honeypotEvents.length > 0 && (
+                  <button
+                    onClick={() => exportLawEnforcementForensicDossier(honeypotEvents[0].canaryTokenId)}
+                    className="px-3 py-1.5 rounded-lg bg-red-500/20 border border-red-500/50 text-red-200 hover:bg-red-500/30 font-mono text-xs font-bold whitespace-nowrap"
+                  >
+                    🚨 Export FBI IC3 Forensic Packet ({honeypotEvents.length})
+                  </button>
+                )}
+              </div>
+
+              {reinstateStatus && (
+                <div className="mt-3 px-3 py-2 rounded-lg bg-emerald-950/60 border border-emerald-500/40 text-emerald-300 font-mono text-xs flex items-center justify-between">
+                  <span>✓ {reinstateStatus}</span>
+                  <button onClick={() => setReinstateStatus(null)} className="text-gray-400 hover:text-white text-xs">
+                    ✕
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Stats Cards */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             {[

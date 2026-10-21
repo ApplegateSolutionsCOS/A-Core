@@ -60,6 +60,7 @@ import BulkFieldActions from './BulkFieldActions';
 import MiniAppAIAssistant from './MiniAppAIAssistant';
 import MiniAppFooterBuilder from './MiniAppFooterBuilder';
 import MiniAppHeaderBuilder from './MiniAppHeaderBuilder';
+import FacilityTemplateBuilder from './FacilityTemplateBuilder';
 
 
 import { 
@@ -74,6 +75,8 @@ import {
 
 import { WandSparkles, Activity } from 'lucide-react';
 import * as LucideIcons from 'lucide-react';
+
+import { FEATURES } from '@/config/features';
 
 // Helper to safely map lowercase DB icon strings to Lucide's PascalCase exports
 const resolveBuilderIcon = (iconStr: string | null | undefined) => {
@@ -104,7 +107,7 @@ type BuildingBlockType =
   | 'visualizer_field'
   | 'tabs'; 
 
-type LayoutType = 'table' | 'card' | 'badge' | 'calendar';
+type LayoutType = 'table' | 'card' | 'badge' | 'calendar' | 'facility' | 'map';
 
 interface CategoryOption {
   id: string;
@@ -189,8 +192,8 @@ interface FieldSettings {
   connectionDropdownSearchable?: boolean; // 👈 Add this line
   connectionBarExpandFields?: string[];
   connectionTableColumns?: string[];
+  connectionDisplayField?: string; // ⚡ NEW: Custom Display Field
 }
-
 
 interface BuildingBlock {
   id: string;
@@ -256,6 +259,8 @@ const LAYOUT_OPTIONS = [
   { type: 'card' as LayoutType, label: 'Card Layout', icon: CardLayoutIcon, description: 'Card-based grid view' },
   { type: 'badge' as LayoutType, label: 'Badge Layout', icon: BadgeIcon, description: 'Compact badge-style display' },
   { type: 'calendar' as LayoutType, label: 'Calendar Layout', icon: CalendarIcon, description: 'Calendar view (requires Date field)' },
+  { type: 'facility' as LayoutType, label: 'Facility Layout', icon: LucideIcons.Building2, description: '2D/3D physical schema & floorplan twin' },
+  { type: 'map' as LayoutType, label: 'Map Layout', icon: MapPinIcon, description: 'Interactive physical address & geospatial map' },
 ];
 
 const CATEGORY_COLORS = [
@@ -555,7 +560,8 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
   const [configLayout, setConfigLayout] = useState<LayoutType | null>(null);
   const [cardConfigTab, setCardConfigTab] = useState<'standard' | 'connection'>('standard');
   const [selectedConnectionAppId, setSelectedConnectionAppId] = useState<string>('');
-  const [miniAppSettingsTab, setMiniAppSettingsTab] = useState<'general' | 'advanced' | 'version'>('general');
+  const [miniAppSettingsTab, setMiniAppSettingsTab] = useState<'general' | 'templates' | 'advanced' | 'version'>('general');
+  const [templateBuilderMode, setTemplateBuilderMode] = useState<'fields' | 'facility'>('fields');
   const [isFieldSettingsExpanded, setIsFieldSettingsExpanded] = useState(true);
   const [isBuildingBlocksExpanded, setIsBuildingBlocksExpanded] = useState(true);
 
@@ -777,9 +783,11 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
               trigger: w.trigger_event,
               steps: typeof w.steps === 'string' ? JSON.parse(w.steps) : (w.steps || [])
             }));
+          } else if (!Array.isArray(parsedAppSettings.workflows)) {
+            parsedAppSettings.workflows = [];
           }
 
-          setAppSettings({ ...DEFAULT_APP_SETTINGS, ...parsedAppSettings });
+          setAppSettings({ ...DEFAULT_APP_SETTINGS, workflows: [], ...parsedAppSettings });
           if (parsedAppSettings.layouts && Array.isArray(parsedAppSettings.layouts)) {
             setSelectedLayouts(parsedAppSettings.layouts as LayoutType[]);
           }
@@ -1769,7 +1777,7 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
 
           <div className="hidden md:flex items-center justify-center flex-[2]">
             <div className="flex items-stretch h-full">
-              {(['template', 'settings', 'workflows', 'pdfs', 'labels'] as const).map((tab, index, array) => (
+              {(['template', 'settings', 'workflows', 'pdfs', ...(FEATURES.ENABLE_LABEL_PRINTING ? ['labels'] : [])] as const).map((tab, index, array) => (
                 <React.Fragment key={tab}>
                   <button
                     onClick={() => setMainTab(tab)}
@@ -1900,7 +1908,8 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
 
             <div className="flex-1 min-w-0 transition-all duration-300 p-6 overflow-y-auto bg-black/20 backdrop-blur-lg" ref={canvasRef}>
               <div className="mb-6">
-                <div className="flex items-center justify-between mb-4">
+                <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                  <div className="flex items-center gap-3">
                     {activeTabEditor ? (
                       <div className="flex items-center gap-3">
                         <button 
@@ -1917,17 +1926,90 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                     ) : (
                       <h3 className="text-sm font-medium text-slate-300 flex items-center gap-2">
                         <ColumnsIcon size={16} style={{ color: ac.primary }} />
-                        Field Layout ({fields.length} / {MAX_FIELDS_PER_MINIAPP} fields)
+                        {templateBuilderMode === 'facility'
+                          ? 'Facility Physical Schema Template Builder'
+                          : `Field Layout (${fields.length} / ${MAX_FIELDS_PER_MINIAPP} fields)`}
                       </h3>
                     )}
-                    {isNearFieldLimit && (
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center bg-black/60 p-1 rounded-xl border border-white/15 backdrop-blur-xl">
+                      <button
+                        type="button"
+                        onClick={() => setTemplateBuilderMode('fields')}
+                        className={`px-3.5 py-1.5 rounded-lg text-xs font-mono font-medium transition-all flex items-center gap-1.5 ${
+                          templateBuilderMode === 'fields'
+                            ? 'text-white shadow-md'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                        style={
+                          templateBuilderMode === 'fields'
+                            ? {
+                                backgroundColor: `rgba(${ac.rgb}, 0.22)`,
+                                border: `1px solid rgba(${ac.rgb}, 0.5)`,
+                                color: ac.primary,
+                              }
+                            : {}
+                        }
+                      >
+                        <ColumnsIcon size={14} />
+                        Form Schema
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTemplateBuilderMode('facility');
+                          if (!selectedLayouts.includes('facility')) {
+                            setSelectedLayouts(prev => [...prev, 'facility']);
+                          }
+                        }}
+                        className={`px-3.5 py-1.5 rounded-lg text-xs font-mono font-medium transition-all flex items-center gap-1.5 ${
+                          templateBuilderMode === 'facility'
+                            ? 'text-white shadow-md'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                        style={
+                          templateBuilderMode === 'facility'
+                            ? {
+                                backgroundColor: `rgba(${ac.rgb}, 0.22)`,
+                                border: `1px solid rgba(${ac.rgb}, 0.5)`,
+                                color: ac.primary,
+                              }
+                            : {}
+                        }
+                      >
+                        <LucideIcons.Building2 size={14} />
+                        FacilityTemplate Builder
+                      </button>
+                    </div>
+
+                    {isNearFieldLimit && templateBuilderMode === 'fields' && (
                       <div className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium ${isAtFieldLimit ? 'bg-red-500/20 border border-red-500/40 text-red-400' : 'bg-yellow-500/20 border border-yellow-500/40 text-yellow-400'}`}>
                         <AlertTriangleIcon size={12} />
                         {isAtFieldLimit ? `Field limit reached (${MAX_FIELDS_PER_MINIAPP} max)` : `${MAX_FIELDS_PER_MINIAPP - fieldCount} fields remaining`}
                       </div>
                     )}
                   </div>
+                </div>
                   
+                {templateBuilderMode === 'facility' ? (
+                  <FacilityTemplateBuilder
+                    value={appSettings.facilityTemplate}
+                    onChange={(nextFacility) =>
+                      setAppSettings(prev => ({ ...prev, facilityTemplate: nextFacility }))
+                    }
+                    fields={fields.map(f => ({
+                      id: f.id,
+                      name: f.name,
+                      label: f.name,
+                      type: f.type as any,
+                      required: f.required,
+                    }))}
+                    wsColor={ac}
+                    appName={appName || 'MiniApp'}
+                  />
+                ) : (
                   <div 
                     ref={gridRef}
                     className="grid content-start rounded-xl p-2.5 min-h-[400px] border border-white/[0.06] transition-all relative pb-24 min-w-0" 
@@ -2132,6 +2214,7 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                       />
                     </div>
                   </div>
+                )}
                 </div>
               </div>
 
@@ -2688,6 +2771,21 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                             })}
                           </div>
 
+                              {/* ⚡ NEW: PRIMARY DISPLAY FIELD CONFIG */}
+                              <div className="mt-3 p-2.5 bg-black/30 rounded-lg border border-emerald-500/15">
+                                <label className="block text-[10px] text-slate-400 mb-1 uppercase tracking-wider">Primary Display Field</label>
+                                <input
+                                  type="text"
+                                  value={selectedFieldData.settings.connectionDisplayField || ''}
+                                  onChange={e => updateFieldSettings(selectedFieldData.id, {
+                                    connectionDisplayField: e.target.value
+                                  })}
+                                  placeholder="e.g., Company Name, Status"
+                                  className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-white text-xs font-mono focus:outline-none focus:border-emerald-500"
+                                />
+                                <p className="text-[9px] text-slate-500 mt-1">The exact field name from the connected app to display (defaults to Name or Title).</p>
+                              </div>
+
                               {/* Calibrate Dropdown Settings */}
                               {(!selectedFieldData.settings.connectionLayoutMode || selectedFieldData.settings.connectionLayoutMode === 'dropdown') && (
                                 <div className="mt-3 p-3 bg-black/30 rounded-lg border border-emerald-500/15">
@@ -3073,26 +3171,30 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
 
           {/* TAB 2: WORKFLOWS */}
           {mainTab === 'workflows' && (() => {
-            // ⚡ ENTERPRISE TOOLBOX CONFIGURATION
-            const TOOLBOX_ITEMS = [
+            // ⚡ ENTERPRISE TOOLBOX CONFIGURATION (Preserves all 15 tools for Full Mode, scopes Lite Mode to 100% live tools)
+            const ALL_TOOLBOX_ITEMS = [
               // Logic & Control Flow
-              { category: 'logic', type: 'condition', label: 'If / Condition', icon: GitBranchIcon, color: 'text-amber-400', border: 'border-amber-500/50' },
-              { category: 'logic', type: 'loop', label: 'For Each (Loop)', icon: LucideIcons.Repeat, color: 'text-orange-400', border: 'border-orange-500/50' },
-              { category: 'logic', type: 'delay', label: 'Delay / Wait', icon: ClockIcon, color: 'text-yellow-400', border: 'border-yellow-500/50' },
+              { category: 'logic', type: 'condition', label: 'If / Condition', icon: GitBranchIcon, color: 'text-amber-400', border: 'border-amber-500/50', liteSupported: true },
+              { category: 'logic', type: 'delay', label: 'Delay / Wait', icon: ClockIcon, color: 'text-yellow-400', border: 'border-yellow-500/50', liteSupported: true },
+              { category: 'logic', type: 'loop', label: 'For Each (Loop)', icon: LucideIcons.Repeat, color: 'text-orange-400', border: 'border-orange-500/50', liteSupported: false },
               // Actions
-              { category: 'action', type: 'create_record', label: 'Create Item', icon: PlusIcon, color: 'text-emerald-400', border: 'border-emerald-500/50' },
-              { category: 'action', type: 'update_record', label: 'Update Item', icon: EditIcon, color: 'text-sky-400', border: 'border-sky-500/50' },
-              { category: 'action', type: 'delete_record', label: 'Delete Item', icon: TrashIcon, color: 'text-red-400', border: 'border-red-500/50' },
-              { category: 'action', type: 'send_task', label: 'Assign Task', icon: LucideIcons.CheckSquare, color: 'text-fuchsia-400', border: 'border-fuchsia-500/50' },
-              { category: 'action', type: 'send_alert', label: 'Send Alert', icon: LucideIcons.Bell, color: 'text-yellow-400', border: 'border-yellow-500/50' },
-              { category: 'action', type: 'add_comment', label: 'Add Comment', icon: LucideIcons.MessageSquare, color: 'text-pink-400', border: 'border-pink-500/50' },
-              { category: 'action', type: 'send_email', label: 'Send Email', icon: MailIcon, color: 'text-purple-400', border: 'border-purple-500/50' },
-              { category: 'action', type: 'send_sms', label: 'Send SMS', icon: PhoneIcon, color: 'text-green-400', border: 'border-green-500/50' },
-              { category: 'action', type: 'webhook', label: 'Trigger Webhook', icon: LucideIcons.Globe, color: 'text-rose-400', border: 'border-rose-500/50' },
-              { category: 'action', type: 'generate_pdf', label: 'Generate PDF', icon: ColumnsIcon, color: 'text-red-400', border: 'border-red-500/50' },
-              { category: 'action', type: 'ai_prompt', label: 'AI Prompt', icon: SparklesIcon, color: 'text-violet-400', border: 'border-violet-500/50' },
-              { category: 'action', type: 'math', label: 'Custom Math', icon: CalculatorIcon, color: 'text-teal-400', border: 'border-teal-500/50' },
+              { category: 'action', type: 'create_record', label: 'Create Item', icon: PlusIcon, color: 'text-emerald-400', border: 'border-emerald-500/50', liteSupported: true },
+              { category: 'action', type: 'update_record', label: 'Update Item', icon: EditIcon, color: 'text-sky-400', border: 'border-sky-500/50', liteSupported: true },
+              { category: 'action', type: 'delete_record', label: 'Delete Item', icon: TrashIcon, color: 'text-red-400', border: 'border-red-500/50', liteSupported: true },
+              { category: 'action', type: 'send_task', label: 'Assign Task', icon: LucideIcons.CheckSquare, color: 'text-fuchsia-400', border: 'border-fuchsia-500/50', liteSupported: true },
+              { category: 'action', type: 'send_alert', label: 'Send Alert', icon: LucideIcons.Bell, color: 'text-yellow-400', border: 'border-yellow-500/50', liteSupported: true },
+              { category: 'action', type: 'add_comment', label: 'Add Comment', icon: LucideIcons.MessageSquare, color: 'text-pink-400', border: 'border-pink-500/50', liteSupported: true },
+              { category: 'action', type: 'math', label: 'Custom Math', icon: CalculatorIcon, color: 'text-teal-400', border: 'border-teal-500/50', liteSupported: true },
+              { category: 'action', type: 'webhook', label: 'Trigger Webhook', icon: LucideIcons.Globe, color: 'text-rose-400', border: 'border-rose-500/50', liteSupported: true },
+              { category: 'action', type: 'send_email', label: 'Send Email', icon: MailIcon, color: 'text-purple-400', border: 'border-purple-500/50', liteSupported: false },
+              { category: 'action', type: 'send_sms', label: 'Send SMS', icon: PhoneIcon, color: 'text-green-400', border: 'border-green-500/50', liteSupported: false },
+              { category: 'action', type: 'generate_pdf', label: 'Generate PDF', icon: ColumnsIcon, color: 'text-red-400', border: 'border-red-500/50', liteSupported: false },
+              { category: 'action', type: 'ai_prompt', label: 'AI Prompt', icon: SparklesIcon, color: 'text-violet-400', border: 'border-violet-500/50', liteSupported: false },
             ];
+
+            const TOOLBOX_ITEMS = FEATURES.IS_LITE_MODE
+              ? ALL_TOOLBOX_ITEMS.filter(t => t.liteSupported)
+              : ALL_TOOLBOX_ITEMS;
 
             return (
               <div className="relative flex h-full z-10 flex-1 w-full overflow-hidden bg-black/20 backdrop-blur-lg">
@@ -3154,11 +3256,12 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                        e.preventDefault();
                        const type = e.dataTransfer.getData('stepType');
                        if (type && activeWorkflowId) {
-                         const currentWf = appSettings.workflows.find((w:any) => w.id === activeWorkflowId);
+                         const currentWf = (appSettings.workflows || []).find((w: any) => w.id === activeWorkflowId);
+                         if (!currentWf) return;
                          const newSteps = [...(currentWf.steps || []), { id: `step_${Date.now()}`, type, config: {} }];
                          setAppSettings(prev => ({
                            ...prev,
-                           workflows: prev.workflows.map((w: any) => w.id === activeWorkflowId ? { ...w, steps: newSteps } : w)
+                           workflows: (prev.workflows || []).map((w: any) => w.id === activeWorkflowId ? { ...w, steps: newSteps } : w)
                          }));
                        }
                      }}
@@ -3170,13 +3273,13 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                       <p className="text-sm text-slate-400 font-mono max-w-md text-center">Create a new workflow or select one from the sidebar to build your automation timeline.</p>
                     </div>
                   ) : (() => {
-                    const currentWf = appSettings.workflows.find((w: any) => w.id === activeWorkflowId);
+                    const currentWf = (appSettings.workflows || []).find((w: any) => w.id === activeWorkflowId);
                     if (!currentWf) return null;
 
                     const updateWf = (updates: any) => {
                       setAppSettings(prev => ({
                         ...prev,
-                        workflows: prev.workflows.map((w: any) => w.id === activeWorkflowId ? { ...w, ...updates } : w)
+                        workflows: (prev.workflows || []).map((w: any) => w.id === activeWorkflowId ? { ...w, ...updates } : w)
                       }));
                     };
 
@@ -3194,7 +3297,7 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                     return (
                       <div className="flex-1 overflow-y-auto darkwave-scrollbar p-6 lg:p-10 pb-32 relative">
                         {/* TOP HEADER CONTROLS */}
-                        <div className="flex items-center gap-4 mb-10 pb-4 border-b border-white/10">
+                        <div className="flex items-center gap-4 mb-6 pb-4 border-b border-white/10">
                           <div className="flex-1">
                             <input 
                               type="text" 
@@ -3215,6 +3318,27 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                             <input type="checkbox" className="hidden" checked={currentWf.isActive} onChange={(e) => updateWf({ isActive: e.target.checked })} />
                           </label>
                         </div>
+
+                        {/* AVAILABLE FIELD TOKENS HELPER BAR */}
+                        {sourceFields.length > 0 && (
+                          <div className="max-w-2xl mx-auto mb-8 p-3 rounded-xl bg-black/40 border border-slate-800 flex items-center gap-2 flex-wrap">
+                            <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500 mr-1">Available Tokens (click to copy):</span>
+                            {sourceFields.map((sf: any) => {
+                              const tokenStr = `@${(sf.name || '').replace(/\s+/g, '')}`;
+                              return (
+                                <button
+                                  key={sf.id}
+                                  type="button"
+                                  onClick={() => navigator.clipboard?.writeText(tokenStr).catch(() => {})}
+                                  className="px-2 py-0.5 rounded bg-slate-900 border border-slate-700 hover:border-sky-500/50 text-[10px] font-mono text-sky-400 transition-colors"
+                                  title="Click to copy token"
+                                >
+                                  {tokenStr}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
 
                         {/* ⚡ THE VERTICAL STACK TIMELINE */}
                         <div className="max-w-2xl mx-auto relative pl-4">
@@ -3239,7 +3363,6 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                                 <option value="record_updated">When an Item is Updated</option>
                                 <option value="record_deleted">When an Item is Deleted</option>
                                 <option value="field_changed">When a Specific Field Changes</option>
-                                <option value="date_reached">When a Date/Time is Reached</option>
                               </select>
                               
                               {currentWf.trigger === 'field_changed' && (
@@ -3251,20 +3374,7 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                                     className="w-full bg-black/50 border border-slate-700 rounded-lg px-4 py-2 text-white text-xs font-mono focus:outline-none focus:border-sky-500"
                                   >
                                     <option value="">-- Choose Field --</option>
-                                    {sourceFields.map((f: any) => <option key={f.id} value={f.id}>{f.name}</option>)}
-                                  </select>
-                                </div>
-                              )}
-                              {currentWf.trigger === 'date_reached' && (
-                                <div className="mt-3 animate-in fade-in slide-in-from-top-2">
-                                  <label className="block text-[10px] font-mono text-slate-500 uppercase tracking-wider mb-1">Select Date Field</label>
-                                  <select 
-                                    value={currentWf.triggerField || ''} 
-                                    onChange={e => updateWf({ triggerField: e.target.value })}
-                                    className="w-full bg-black/50 border border-slate-700 rounded-lg px-4 py-2 text-white text-xs font-mono focus:outline-none focus:border-sky-500"
-                                  >
-                                    <option value="">-- Choose Date Field --</option>
-                                    {sourceFields.filter((f: any) => f.type === 'date_field').map((f: any) => <option key={f.id} value={f.id}>{f.name}</option>)}
+                                    {sourceFields.map((f: any) => <option key={f.id} value={f.name || f.id}>{f.name}</option>)}
                                   </select>
                                 </div>
                               )}
@@ -3273,8 +3383,20 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
 
                           {/* DYNAMIC STEPS ARRAY */}
                           {(currentWf.steps || []).map((step: any, index: number) => {
-                            const toolInfo = TOOLBOX_ITEMS.find(t => t.type === step.type);
+                            const toolInfo = ALL_TOOLBOX_ITEMS.find(t => t.type === step.type);
                             const NodeIcon = toolInfo?.icon || LucideIcons.Activity;
+
+                            // Resolve target app schema fields if this step is `create_record`
+                            const targetAppObj = step.type === 'create_record' && step.config?.targetAppId
+                              ? allMiniApps.find(a => a.id === step.config.targetAppId)
+                              : null;
+                            const targetAppSchemaRaw = (targetAppObj as any)?.schema_definition;
+                            const targetAppSchema = typeof targetAppSchemaRaw === 'string'
+                              ? (() => { try { return JSON.parse(targetAppSchemaRaw); } catch { return {}; } })()
+                              : (targetAppSchemaRaw || {});
+                            const targetAppFields: any[] = Array.isArray(targetAppSchema.fields) && targetAppSchema.fields.length > 0
+                              ? targetAppSchema.fields
+                              : [...(targetAppSchema.base_fields || []), ...(targetAppSchema.custom_fields || [])];
 
                             return (
                               <div key={step.id} className="relative z-10 bg-slate-800/60 border border-slate-700 rounded-xl p-6 shadow-xl group mb-8">
@@ -3302,17 +3424,37 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                                         <div className="flex items-center gap-2 flex-wrap">
                                           <select value={step.config.fieldId || ''} onChange={e => updateStep(step.id, { fieldId: e.target.value })} className="flex-1 min-w-[120px] bg-black/50 border border-slate-700 rounded px-3 py-2 text-xs text-white font-mono focus:outline-none">
                                             <option value="">-- Select Field --</option>
-                                            {sourceFields.map((f: any) => <option key={f.id} value={f.id}>{f.name}</option>)}
+                                            {sourceFields.map((f: any) => <option key={f.id} value={f.name || f.id}>{f.name}</option>)}
                                           </select>
-                                          <select value={step.config.operator || 'equals'} onChange={e => updateStep(step.id, { operator: e.target.value })} className="w-32 bg-black/50 border border-slate-700 rounded px-3 py-2 text-xs text-white font-mono focus:outline-none">
-                                            <option value="equals">Equals</option><option value="not_equals">Not Equals</option>
-                                            <option value="contains">Contains</option><option value="is_empty">Is Empty</option>
-                                            <option value="greater_than">Greater Than</option><option value="less_than">Less Than</option>
+                                          <select value={step.config.operator || 'equals'} onChange={e => updateStep(step.id, { operator: e.target.value })} className="w-36 bg-black/50 border border-slate-700 rounded px-3 py-2 text-xs text-white font-mono focus:outline-none">
+                                            <option value="equals">Equals</option>
+                                            <option value="not_equals">Not Equals</option>
+                                            <option value="contains">Contains</option>
+                                            <option value="is_empty">Is Empty</option>
+                                            <option value="is_not_empty">Is Not Empty</option>
+                                            <option value="greater_than">Greater Than</option>
+                                            <option value="less_than">Less Than</option>
                                           </select>
-                                          {!['is_empty'].includes(step.config.operator) && (
+                                          {!['is_empty', 'is_not_empty'].includes(step.config.operator) && (
                                             <input type="text" value={step.config.value || ''} onChange={e => updateStep(step.id, { value: e.target.value })} placeholder="Comparison Value" className="flex-1 min-w-[120px] bg-black/50 border border-slate-700 rounded px-3 py-2 text-xs text-white font-mono focus:outline-none" />
                                           )}
                                         </div>
+                                      </div>
+                                    )}
+
+                                    {/* LOGIC: DELAY */}
+                                    {step.type === 'delay' && (
+                                      <div className="flex items-center gap-3">
+                                        <label className="text-xs font-mono text-slate-400">Wait Duration (seconds):</label>
+                                        <input
+                                          type="number"
+                                          min="1"
+                                          max="10"
+                                          value={step.config.seconds ?? 2}
+                                          onChange={e => updateStep(step.id, { seconds: Number(e.target.value) })}
+                                          className="w-24 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-white text-xs font-mono"
+                                        />
+                                        <span className="text-[10px] font-mono text-slate-500">(1–10s pause before next step)</span>
                                       </div>
                                     )}
 
@@ -3320,10 +3462,10 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                                     {step.type === 'create_record' && (
                                       <div className="space-y-4">
                                         <div>
-                                          <label className="block text-[10px] font-mono text-slate-500 uppercase tracking-wider mb-2">Target App</label>
+                                          <label className="block text-[10px] font-mono text-slate-500 uppercase tracking-wider mb-2">Target MiniApp</label>
                                           <select value={step.config.targetAppId || ''} onChange={e => updateStep(step.id, { targetAppId: e.target.value, fieldMapping: [] })} className="w-full bg-black/50 border border-slate-700 rounded-lg px-4 py-2.5 text-white text-sm font-mono focus:outline-none">
-                                            <option value="">-- Select Target App --</option>
-                                            {allMiniApps.filter(a => a.id !== internalAppId).map(app => (
+                                            <option value="">-- Select Target MiniApp --</option>
+                                            {allMiniApps.filter(a => a.id !== internalAppId && !(a as any).is_preset).map(app => (
                                               <option key={app.id} value={app.id}>{app.name}</option>
                                             ))}
                                           </select>
@@ -3334,36 +3476,54 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                                             <div className="flex items-center justify-between mb-3 border-b border-slate-700/50 pb-2">
                                               <label className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Field Mapping</label>
                                               <button onClick={() => {
-                                                const newMapping = [...(step.config.fieldMapping || []), { targetFieldId: '', sourceValue: '' }];
+                                                const curMap = Array.isArray(step.config.fieldMapping) ? step.config.fieldMapping : [];
+                                                const newMapping = [...curMap, { targetFieldId: '', sourceValue: '' }];
                                                 updateStep(step.id, { fieldMapping: newMapping });
                                               }} className="text-[10px] text-emerald-400 hover:text-emerald-300 font-mono font-bold flex items-center gap-1 bg-emerald-500/10 px-2 py-1 rounded transition-colors">
-                                                <PlusIcon size={10} /> Add Map
+                                                <PlusIcon size={10} /> Add Field Map
                                               </button>
                                             </div>
                                             
-                                            {(step.config.fieldMapping || []).length === 0 ? (
-                                              <p className="text-[10px] text-slate-600 font-mono text-center italic py-2">No fields mapped.</p>
+                                            {(!Array.isArray(step.config.fieldMapping) || step.config.fieldMapping.length === 0) ? (
+                                              <p className="text-[10px] text-slate-600 font-mono text-center italic py-2">No fields mapped yet. Click "+ Add Field Map" above.</p>
                                             ) : (
                                               <div className="space-y-2">
                                                 <div className="flex items-center text-[9px] font-mono text-slate-500 uppercase px-1">
-                                                  <span className="flex-1">Target Field ID</span>
+                                                  <span className="flex-1">Target Field</span>
                                                   <span className="w-6 text-center"></span>
-                                                  <span className="flex-1">Source Value / Token</span>
+                                                  <span className="flex-1">Source Value or @Token</span>
                                                   <span className="w-8"></span>
                                                 </div>
-                                                {(step.config.fieldMapping || []).map((mapping: any, mIdx: number) => (
+                                                {step.config.fieldMapping.map((mapping: any, mIdx: number) => (
                                                   <div key={mIdx} className="flex items-center gap-2">
-                                                    <input type="text" value={mapping.targetFieldId || ''} onChange={e => {
-                                                      const newMapping = [...step.config.fieldMapping];
-                                                      newMapping[mIdx].targetFieldId = e.target.value;
-                                                      updateStep(step.id, { fieldMapping: newMapping });
-                                                    }} placeholder="Target Field ID" className="flex-1 bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-emerald-500" />
-                                                    <span className="text-slate-600"><GitBranchIcon size={12} /></span>
-                                                    <input type="text" value={mapping.sourceValue || ''} onChange={e => {
-                                                      const newMapping = [...step.config.fieldMapping];
-                                                      newMapping[mIdx].sourceValue = e.target.value;
-                                                      updateStep(step.id, { fieldMapping: newMapping });
-                                                    }} placeholder="@FieldName or _record_id" className="flex-1 bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-emerald-500" />
+                                                    <select
+                                                      value={mapping.targetFieldId || ''}
+                                                      onChange={e => {
+                                                        const newMapping = [...step.config.fieldMapping];
+                                                        newMapping[mIdx] = { ...newMapping[mIdx], targetFieldId: e.target.value };
+                                                        updateStep(step.id, { fieldMapping: newMapping });
+                                                      }}
+                                                      className="flex-1 bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-emerald-500"
+                                                    >
+                                                      <option value="">-- Target Field --</option>
+                                                      {targetAppFields
+                                                        .filter((tf: any) => tf.name && !['split_separator', 'tabs', 'submenu'].includes(tf.type))
+                                                        .map((tf: any) => (
+                                                          <option key={tf.id || tf.name} value={tf.name}>{tf.name}</option>
+                                                        ))}
+                                                    </select>
+                                                    <span className="text-slate-600"><LucideIcons.ArrowLeft size={12} /></span>
+                                                    <input
+                                                      type="text"
+                                                      value={mapping.sourceValue || ''}
+                                                      onChange={e => {
+                                                        const newMapping = [...step.config.fieldMapping];
+                                                        newMapping[mIdx] = { ...newMapping[mIdx], sourceValue: e.target.value };
+                                                        updateStep(step.id, { fieldMapping: newMapping });
+                                                      }}
+                                                      placeholder="e.g. @Name or Active"
+                                                      className="flex-1 bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-emerald-500"
+                                                    />
                                                     <button onClick={() => {
                                                       const newMapping = step.config.fieldMapping.filter((_: any, i: number) => i !== mIdx);
                                                       updateStep(step.id, { fieldMapping: newMapping });
@@ -3393,12 +3553,12 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                                             }}
                                           >
                                             <option value="">+ Add Field to Update</option>
-                                            {sourceFields.map((f: any) => <option key={f.id} value={f.id}>{f.name}</option>)}
+                                            {sourceFields.map((f: any) => <option key={f.id} value={f.name || f.id}>{f.name}</option>)}
                                           </select>
                                         </div>
                                         {Object.entries(step.config.fieldUpdates || {}).map(([fId, val]) => (
                                           <div key={fId} className="flex items-center gap-3 bg-black/40 p-3 rounded-lg border border-slate-700/50">
-                                            <div className="w-1/3 truncate text-xs font-mono text-slate-300 pl-1">{sourceFields.find((f:any) => f.id === fId)?.name || 'Unknown Field'}</div>
+                                            <div className="w-1/3 truncate text-xs font-mono text-slate-300 pl-1">{sourceFields.find((f:any) => f.id === fId || f.name === fId)?.name || fId}</div>
                                             <div className="text-slate-600"><LucideIcons.ArrowRight size={12} /></div>
                                             <input type="text" value={val as string} onChange={(e) => updateStep(step.id, { fieldUpdates: { ...step.config.fieldUpdates, [fId]: e.target.value } })}
                                               placeholder="New value or @Token" className="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-sky-500 transition-colors" />
@@ -3410,22 +3570,128 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                                       </div>
                                     )}
 
+                                    {/* ACTION: CUSTOM MATH */}
+                                    {step.type === 'math' && (
+                                      <div className="space-y-3">
+                                        <p className="text-[10px] text-slate-400 font-mono">Calculate a numeric result and store it in a field on this record:</p>
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                          <div>
+                                            <label className="block text-[10px] font-mono text-slate-500 uppercase mb-1">Save Result Into Field</label>
+                                            <select
+                                              value={step.config.targetFieldId || ''}
+                                              onChange={e => updateStep(step.id, { targetFieldId: e.target.value })}
+                                              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs font-mono"
+                                            >
+                                              <option value="">-- Select Target Field --</option>
+                                              {sourceFields.map((f: any) => <option key={f.id} value={f.name || f.id}>{f.name}</option>)}
+                                            </select>
+                                          </div>
+                                          <div>
+                                            <label className="block text-[10px] font-mono text-slate-500 uppercase mb-1">Operator</label>
+                                            <select
+                                              value={step.config.operator || 'add'}
+                                              onChange={e => updateStep(step.id, { operator: e.target.value })}
+                                              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs font-mono"
+                                            >
+                                              <option value="add">Add (+)</option>
+                                              <option value="subtract">Subtract (−)</option>
+                                              <option value="multiply">Multiply (×)</option>
+                                              <option value="divide">Divide (÷)</option>
+                                            </select>
+                                          </div>
+                                          <div>
+                                            <label className="block text-[10px] font-mono text-slate-500 uppercase mb-1">Field A</label>
+                                            <select
+                                              value={step.config.fieldA || ''}
+                                              onChange={e => updateStep(step.id, { fieldA: e.target.value })}
+                                              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs font-mono"
+                                            >
+                                              <option value="">-- Select Field A --</option>
+                                              {sourceFields.map((f: any) => <option key={f.id} value={f.name || f.id}>{f.name}</option>)}
+                                            </select>
+                                          </div>
+                                          <div>
+                                            <label className="block text-[10px] font-mono text-slate-500 uppercase mb-1">Field B (or Constant Below)</label>
+                                            <select
+                                              value={step.config.fieldB || ''}
+                                              onChange={e => updateStep(step.id, { fieldB: e.target.value })}
+                                              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs font-mono"
+                                            >
+                                              <option value="">-- Use Constant Number --</option>
+                                              {sourceFields.map((f: any) => <option key={f.id} value={f.name || f.id}>{f.name}</option>)}
+                                            </select>
+                                          </div>
+                                        </div>
+                                        {!step.config.fieldB && (
+                                          <div>
+                                            <label className="block text-[10px] font-mono text-slate-500 uppercase mb-1">Constant Number Value</label>
+                                            <input
+                                              type="number"
+                                              value={step.config.constantB ?? ''}
+                                              onChange={e => updateStep(step.id, { constantB: e.target.value })}
+                                              placeholder="e.g. 1.08 or 100"
+                                              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs font-mono"
+                                            />
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+
                                     {/* ACTION: SEND TASK */}
                                     {step.type === 'send_task' && (
-                                      <div className="space-y-4">
+                                      <div className="space-y-3">
                                         <div>
-                                          <label className="block text-[10px] font-mono text-slate-500 uppercase tracking-wider mb-1">Task Title</label>
-                                          <input type="text" value={step.config.taskTitle || ''} placeholder="e.g. Review @Name" className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-fuchsia-500"
+                                          <label className="block text-[10px] font-mono text-slate-500 uppercase tracking-wider mb-1">Task Title (supports @Tokens)</label>
+                                          <input type="text" value={step.config.taskTitle || ''} placeholder="e.g. Follow up with @FirstName @LastName" className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs font-mono focus:outline-none focus:border-fuchsia-500"
                                             onChange={e => updateStep(step.id, { taskTitle: e.target.value })} />
                                         </div>
-                                        <div>
-                                          <label className="block text-[10px] font-mono text-slate-500 uppercase tracking-wider mb-1">Assign To</label>
-                                          <select value={step.config.assigneeId || ''} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-fuchsia-500"
-                                            onChange={e => updateStep(step.id, { assigneeId: e.target.value })}>
-                                            <option value="">-- Select User --</option>
-                                            {organizationUsers.map(u => <option key={u.id} value={u.id}>{u.email}</option>)}
-                                          </select>
+                                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                          <div>
+                                            <label className="block text-[10px] font-mono text-slate-500 uppercase tracking-wider mb-1">Assign To</label>
+                                            <select value={step.config.assigneeId || ''} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs font-mono focus:outline-none focus:border-fuchsia-500"
+                                              onChange={e => updateStep(step.id, { assigneeId: e.target.value })}>
+                                              <option value="">Current User</option>
+                                              {organizationUsers.map(u => <option key={u.id} value={u.id}>{(u as any).full_name || u.email}</option>)}
+                                            </select>
+                                          </div>
+                                          <div>
+                                            <label className="block text-[10px] font-mono text-slate-500 uppercase tracking-wider mb-1">Priority</label>
+                                            <select value={step.config.priority || 'medium'} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs font-mono focus:outline-none focus:border-fuchsia-500"
+                                              onChange={e => updateStep(step.id, { priority: e.target.value })}>
+                                              <option value="low">Low</option>
+                                              <option value="medium">Medium</option>
+                                              <option value="high">High</option>
+                                              <option value="urgent">Urgent</option>
+                                            </select>
+                                          </div>
+                                          <div>
+                                            <label className="block text-[10px] font-mono text-slate-500 uppercase tracking-wider mb-1">Due In (Days)</label>
+                                            <input type="number" min="0" value={step.config.dueInDays ?? ''} placeholder="e.g. 3" className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs font-mono focus:outline-none focus:border-fuchsia-500"
+                                              onChange={e => updateStep(step.id, { dueInDays: e.target.value })} />
+                                          </div>
                                         </div>
+                                      </div>
+                                    )}
+
+                                    {/* ACTION: ADD COMMENT */}
+                                    {step.type === 'add_comment' && (
+                                      <div>
+                                        <label className="block text-[10px] font-mono text-slate-500 uppercase tracking-wider mb-1">Automated Comment Text (supports @Tokens)</label>
+                                        <textarea
+                                          value={step.config.commentText || ''}
+                                          onChange={e => updateStep(step.id, { commentText: e.target.value })}
+                                          placeholder="e.g. Automated workflow triggered for @Name."
+                                          className="w-full h-20 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs font-mono focus:outline-none focus:border-pink-500 resize-none"
+                                        />
+                                      </div>
+                                    )}
+
+                                    {/* ACTION: DELETE RECORD */}
+                                    {step.type === 'delete_record' && (
+                                      <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+                                        <p className="text-xs font-mono text-red-300">
+                                          Deletes the current record when this step is reached (use after an <strong>If / Condition</strong> step).
+                                        </p>
                                       </div>
                                     )}
 
@@ -3434,12 +3700,12 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                                       <div className="space-y-4">
                                         <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
                                           <p className="text-[10px] font-mono text-yellow-500/80">
-                                            This alert will be broadcast to the entire workspace and appear in the global notifications menu.
+                                            This alert will be broadcast to the workspace and appear in the MiniApp Alerts pane.
                                           </p>
                                         </div>
                                         <div>
                                           <label className="block text-[10px] font-mono text-slate-500 uppercase tracking-wider mb-1">Notification Title</label>
-                                          <input type="text" value={step.config.alertTitle || ''} onChange={e => updateStep(step.id, { alertTitle: e.target.value })} placeholder="e.g. New Record Created" className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-yellow-500" />
+                                          <input type="text" value={step.config.alertTitle || ''} onChange={e => updateStep(step.id, { alertTitle: e.target.value })} placeholder="e.g. High Value Record: @Name" className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-yellow-500" />
                                         </div>
                                         <div>
                                           <label className="block text-[10px] font-mono text-slate-500 uppercase tracking-wider mb-1">Notification Message</label>
@@ -3457,10 +3723,10 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                                       </div>
                                     )}
 
-                                    {/* PENDING ACTIONS (Placeholders for now) */}
-                                    {['send_email', 'send_sms', 'generate_pdf', 'ai_prompt', 'delay', 'loop', 'math', 'delete_record', 'add_comment'].includes(step.type) && (
+                                    {/* FULL VERSION ENTERPRISE ACTIONS (Preserved for Full Mode) */}
+                                    {['send_email', 'send_sms', 'generate_pdf', 'ai_prompt', 'loop'].includes(step.type) && (
                                       <div className="p-4 bg-black/30 border border-dashed border-slate-700 rounded-lg text-center">
-                                        <p className="text-xs font-mono text-slate-500">Configuration panel for <strong className="text-white">{toolInfo?.label}</strong> is ready for backend integration.</p>
+                                        <p className="text-xs font-mono text-slate-500">Configuration panel for <strong className="text-white">{toolInfo?.label}</strong> is available in Full Enterprise Mode.</p>
                                       </div>
                                     )}
 
@@ -3524,9 +3790,10 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                                 <span className="text-xs text-slate-300 font-mono">{tool.label}</span>
                              </div>
                              <button onClick={() => {
-                               const currentWf = appSettings.workflows.find((w:any) => w.id === activeWorkflowId);
+                               const currentWf = (appSettings.workflows || []).find((w: any) => w.id === activeWorkflowId);
+                               if (!currentWf) return;
                                const newSteps = [...(currentWf.steps || []), { id: `step_${Date.now()}`, type: tool.type, config: {} }];
-                               setAppSettings(prev => ({ ...prev, workflows: prev.workflows.map((w: any) => w.id === activeWorkflowId ? { ...w, steps: newSteps } : w) }));
+                               setAppSettings(prev => ({ ...prev, workflows: (prev.workflows || []).map((w: any) => w.id === activeWorkflowId ? { ...w, steps: newSteps } : w) }));
                              }} className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-white transition-opacity"><PlusIcon size={14}/></button>
                           </div>
                         ))}
@@ -3545,9 +3812,10 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                                 <span className="text-xs text-slate-300 font-mono">{tool.label}</span>
                              </div>
                              <button onClick={() => {
-                               const currentWf = appSettings.workflows.find((w:any) => w.id === activeWorkflowId);
+                               const currentWf = (appSettings.workflows || []).find((w: any) => w.id === activeWorkflowId);
+                               if (!currentWf) return;
                                const newSteps = [...(currentWf.steps || []), { id: `step_${Date.now()}`, type: tool.type, config: {} }];
-                               setAppSettings(prev => ({ ...prev, workflows: prev.workflows.map((w: any) => w.id === activeWorkflowId ? { ...w, steps: newSteps } : w) }));
+                               setAppSettings(prev => ({ ...prev, workflows: (prev.workflows || []).map((w: any) => w.id === activeWorkflowId ? { ...w, steps: newSteps } : w) }));
                              }} className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-white transition-opacity"><PlusIcon size={14}/></button>
                           </div>
                         ))}
@@ -3607,6 +3875,7 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
               <div className="flex flex-wrap items-center gap-2 px-6 pt-4 border-b border-white/10 flex-shrink-0">
                 {[
                   { key: 'general' as const, label: 'General', icon: SettingsIcon },
+                  { key: 'templates' as const, label: 'Templates', icon: LayoutIcon },
                   { key: 'advanced' as const, label: 'Advanced', icon: BuildIcon },
                   { key: 'version' as const, label: 'Version', icon: HistoryIcon },
                 ].map((tab) => {
@@ -3711,7 +3980,7 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                       <div className="p-6 lg:w-2/3 flex-1">
                         <h4 className="text-sm font-medium text-slate-300 mb-2 border-b border-slate-700 pb-2">Display Layouts</h4>
                         <p className="text-xs text-slate-400 mb-6">Choose how items in this MiniApp can be viewed. Users can switch between enabled layouts.</p>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                             {LAYOUT_OPTIONS.map((layout) => {
                               const Icon = layout.icon;
                               const isSelected = selectedLayouts.includes(layout.type);
@@ -3732,7 +4001,8 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                                   style={isSelected && !isDisabled ? {
                                     backgroundColor: `rgba(${ac.rgb}, 0.2)`,
                                     borderColor: `rgba(${ac.rgb}, 0.5)`,
-                                    color: ac.primary
+                                    color: ac.primary,
+                                    boxShadow: `0 0 20px rgba(${ac.rgb}, 0.15)`
                                   } : {}}
                                 >
                                 {isSelected && (
@@ -3747,6 +4017,7 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                                 <Icon size={24} />
                                 <div className="text-center">
                                   <span className="text-xs font-bold block mb-1">{layout.label}</span>
+                                  <span className="text-[10px] text-slate-400/80 block leading-tight">{layout.description}</span>
                                 </div>
                                 {isDisabled && (
                                   <span className="text-[9px] text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded mt-1">Requires Date field</span>
@@ -4030,6 +4301,58 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                   </div>
                 )}
 
+                {miniAppSettingsTab === 'templates' && (
+                  <div className="animate-in fade-in slide-in-from-bottom-2 duration-300 max-w-6xl space-y-6">
+                    <div className="p-4 rounded-xl bg-black/60 backdrop-blur-xl border border-white/10 flex flex-wrap items-center justify-between gap-4">
+                      <div>
+                        <h4 className="text-sm font-mono font-bold text-white flex items-center gap-2">
+                          <LucideIcons.Building2 size={16} style={{ color: ac.primary }} />
+                          FacilityTemplate Builder — Physical Schema & Digital Twin
+                        </h4>
+                        <p className="text-xs text-slate-400 mt-1">
+                          Load or import a physical CAD/SVG/PNG schema drawing or create a multi-floor 2D/3D facility layout for the Facility Layout view.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!selectedLayouts.includes('facility')) {
+                            setSelectedLayouts(prev => [...prev, 'facility']);
+                          }
+                        }}
+                        className="px-4 py-2 rounded-lg text-xs font-mono font-semibold border transition-all"
+                        style={{
+                          backgroundColor: selectedLayouts.includes('facility')
+                            ? `rgba(${ac.rgb}, 0.2)`
+                            : 'rgba(255,255,255,0.06)',
+                          borderColor: `rgba(${ac.rgb}, 0.5)`,
+                          color: ac.primary,
+                        }}
+                      >
+                        {selectedLayouts.includes('facility')
+                          ? '✓ Facility Layout Enabled'
+                          : '+ Enable Facility Layout'}
+                      </button>
+                    </div>
+
+                    <FacilityTemplateBuilder
+                      value={appSettings.facilityTemplate}
+                      onChange={(nextFacility) =>
+                        setAppSettings(prev => ({ ...prev, facilityTemplate: nextFacility }))
+                      }
+                      fields={fields.map(f => ({
+                        id: f.id,
+                        name: f.name,
+                        label: f.name,
+                        type: f.type as any,
+                        required: f.required,
+                      }))}
+                      wsColor={ac}
+                      appName={appName || 'MiniApp'}
+                    />
+                  </div>
+                )}
+
                 {miniAppSettingsTab === 'version' && (
                   <div className="animate-in fade-in slide-in-from-bottom-2 duration-300 max-w-5xl">
                     <MiniAppVersionHistory
@@ -4299,7 +4622,7 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
         {configLayout && (
           <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
             <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setConfigLayout(null)} />
-            <div className="relative bg-black rounded-xl w-full max-w-2xl mx-4 overflow-hidden border border-slate-700 shadow-2xl flex flex-col max-h-[90vh]">
+            <div className={`relative bg-black/95 backdrop-blur-2xl rounded-xl w-full ${configLayout === 'facility' ? 'max-w-6xl' : 'max-w-2xl'} mx-4 overflow-hidden border border-slate-700 shadow-2xl flex flex-col max-h-[90vh]`}>
               <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-900/50 flex-shrink-0">
                  <h3 className="text-white font-mono font-bold capitalize">{configLayout} Layout Settings</h3>
                  <button onClick={() => setConfigLayout(null)} className="text-slate-400 hover:text-white"><CloseIcon size={20}/></button>
@@ -4424,6 +4747,195 @@ const MiniAppBuilder: React.FC<MiniAppBuilderProps> = ({ isOpen, onClose, onSave
                              )}
                           </div>
                        </div>
+                    );
+                 })() : configLayout === 'facility' ? (
+                    <FacilityTemplateBuilder
+                      value={appSettings.facilityTemplate}
+                      onChange={(nextFacility) =>
+                        setAppSettings(prev => ({ ...prev, facilityTemplate: nextFacility }))
+                      }
+                      fields={fields.map(f => ({
+                        id: f.id,
+                        name: f.name,
+                        label: f.name,
+                        type: f.type as any,
+                        required: f.required,
+                      }))}
+                      wsColor={ac}
+                      appName={appName || 'MiniApp'}
+                    />
+                 ) : configLayout === 'map' ? (() => {
+                    const availableFields = fields.filter((f: any) => !['split_separator', 'tabs', 'submenu'].includes(f.type));
+                    const mapCfg: any = appSettings.mapConfig || {
+                      defaultStyle: 'darkwave',
+                      defaultZoom: 5,
+                      enableClustering: false,
+                      enable3DTilt: true,
+                      enableHeatmap: false,
+                      radiusKm: 25,
+                    };
+                    const updateMapCfg = (updates: any) => {
+                      setAppSettings(prev => ({
+                        ...prev,
+                        mapConfig: { ...mapCfg, ...updates },
+                      }));
+                    };
+
+                    return (
+                      <div className="space-y-6">
+                        <div className="bg-slate-800/30 p-4 rounded-xl border border-slate-700/50 space-y-4">
+                          <h4 className="text-sm font-medium text-slate-300 border-b border-slate-700 pb-2">
+                            Geospatial & Address Field Mapping
+                          </h4>
+                          <p className="text-xs text-slate-400">
+                            Map your MiniApp fields to physical coordinates or street addresses. Leave on Auto-Detect to automatically resolve Address, City, State, ZIP, and Coordinate fields.
+                          </p>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div>
+                              <label className="block text-xs text-slate-400 mb-1">Pin Title Field</label>
+                              <select
+                                value={mapCfg.titleFieldId || ''}
+                                onChange={e => updateMapCfg({ titleFieldId: e.target.value })}
+                                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs"
+                              >
+                                <option value="">-- Auto-Detect Title --</option>
+                                {availableFields.map((f: any) => (
+                                  <option key={f.id} value={f.name || f.id}>{f.name || 'Unnamed Field'}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-xs text-slate-400 mb-1">Physical Address / Location Field</label>
+                              <select
+                                value={mapCfg.addressFieldId || ''}
+                                onChange={e => updateMapCfg({ addressFieldId: e.target.value })}
+                                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs"
+                              >
+                                <option value="">-- Auto-Detect Address --</option>
+                                {availableFields.map((f: any) => (
+                                  <option key={f.id} value={f.name || f.id}>{f.name || 'Unnamed Field'}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-xs text-slate-400 mb-1">Latitude Field (Optional)</label>
+                              <select
+                                value={mapCfg.latFieldId || ''}
+                                onChange={e => updateMapCfg({ latFieldId: e.target.value })}
+                                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs"
+                              >
+                                <option value="">-- Auto-Detect / Geocode --</option>
+                                {availableFields.map((f: any) => (
+                                  <option key={f.id} value={f.name || f.id}>{f.name || 'Unnamed Field'}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-xs text-slate-400 mb-1">Longitude Field (Optional)</label>
+                              <select
+                                value={mapCfg.lngFieldId || ''}
+                                onChange={e => updateMapCfg({ lngFieldId: e.target.value })}
+                                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs"
+                              >
+                                <option value="">-- Auto-Detect / Geocode --</option>
+                                {availableFields.map((f: any) => (
+                                  <option key={f.id} value={f.name || f.id}>{f.name || 'Unnamed Field'}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-xs text-slate-400 mb-1">Status Color Field</label>
+                              <select
+                                value={mapCfg.statusFieldId || ''}
+                                onChange={e => updateMapCfg({ statusFieldId: e.target.value })}
+                                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs"
+                              >
+                                <option value="">-- Auto-Detect Status --</option>
+                                {availableFields.map((f: any) => (
+                                  <option key={f.id} value={f.name || f.id}>{f.name || 'Unnamed Field'}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-xs text-slate-400 mb-1">Category / Subtitle Field</label>
+                              <select
+                                value={mapCfg.categoryFieldId || ''}
+                                onChange={e => updateMapCfg({ categoryFieldId: e.target.value })}
+                                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs"
+                              >
+                                <option value="">-- Auto-Detect Category --</option>
+                                {availableFields.map((f: any) => (
+                                  <option key={f.id} value={f.name || f.id}>{f.name || 'Unnamed Field'}</option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="bg-slate-800/30 p-4 rounded-xl border border-slate-700/50 space-y-4">
+                          <h4 className="text-sm font-medium text-slate-300 border-b border-slate-700 pb-2">
+                            Default Map Presentation & 3D Telemetry
+                          </h4>
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                            <div>
+                              <label className="block text-xs text-slate-400 mb-1">Default Tile Layer</label>
+                              <select
+                                value={mapCfg.defaultStyle || 'darkwave'}
+                                onChange={e => updateMapCfg({ defaultStyle: e.target.value })}
+                                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs"
+                              >
+                                <option value="darkwave">Darkwave Cyber (Carto Dark)</option>
+                                <option value="satellite">Satellite Imagery (Esri)</option>
+                                <option value="street">Physical Street Map (OSM)</option>
+                                <option value="terrain">Topographic Terrain</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-xs text-slate-400 mb-1">Default Zoom (2 - 18)</label>
+                              <input
+                                type="number"
+                                min={2}
+                                max={18}
+                                value={mapCfg.defaultZoom ?? 5}
+                                onChange={e => updateMapCfg({ defaultZoom: Number(e.target.value) })}
+                                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-slate-400 mb-1">Geofence Radius (km)</label>
+                              <input
+                                type="number"
+                                min={1}
+                                max={500}
+                                value={mapCfg.radiusKm ?? 25}
+                                onChange={e => updateMapCfg({ radiusKm: Number(e.target.value) })}
+                                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
+                            <ToggleSwitch
+                              value={mapCfg.enable3DTilt ?? true}
+                              onChange={(v: boolean) => updateMapCfg({ enable3DTilt: v })}
+                              label="3D Perspective Tilt"
+                              description="Isometric 3D map camera"
+                            />
+                            <ToggleSwitch
+                              value={mapCfg.enableClustering ?? false}
+                              onChange={(v: boolean) => updateMapCfg({ enableClustering: v })}
+                              label="Pin Clustering"
+                              description="Group dense address pins"
+                            />
+                            <ToggleSwitch
+                              value={mapCfg.enableHeatmap ?? false}
+                              onChange={(v: boolean) => updateMapCfg({ enableHeatmap: v })}
+                              label="Thermal Heatmap"
+                              description="Render density glow layer"
+                            />
+                          </div>
+                        </div>
+                      </div>
                     );
                  })() : (
                     <div className="text-center text-slate-500 font-mono py-8">Advanced settings for {configLayout} layout coming soon.</div>

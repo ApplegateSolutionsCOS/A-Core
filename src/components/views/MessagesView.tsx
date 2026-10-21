@@ -2,6 +2,12 @@ import React, { useState, useRef, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/AuthContext';
 import { useWorkspaceColor } from '@/contexts/WorkspaceColorContext';
+import {
+  encryptTextInlinePqc,
+  decryptTextInlinePqc,
+  isPqcEncryptedString,
+  SECURITY_ALGORITHMS,
+} from '@/lib/encryption';
 import { 
   SearchIcon, PlusIcon, MessageIcon, ChevronRightIcon, CloseIcon 
 } from '@/components/icons/Icons';
@@ -341,7 +347,7 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
         const { data: recentMessages } = await supabase.schema('app_private').from('messages').select('*').order('created_at', { ascending: false });
 
         if (threads && threads.length > 0) {
-          const formattedThreads: Contact[] = threads.map(t => {
+          const formattedThreads: Contact[] = await Promise.all(threads.map(async (t) => {
             const realLastMsg = recentMessages?.find(m => m.thread_id === t.id);
             const unreadCount = recentMessages?.filter(m => m.thread_id === t.id && m.is_read === false && m.sender_id !== currentUserId).length || 0;
 
@@ -355,7 +361,8 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
             let lastMessageStr = ''; let timeStr = ''; let lastMessageTime: Date | null = null;
             if (realLastMsg) {
               const prefix = realLastMsg.sender_id === currentUserId ? 'You: ' : '';
-              lastMessageStr = `${prefix}${realLastMsg.content}`;
+              const dec = await decryptTextInlinePqc(realLastMsg.content, `thread-${t.id}`);
+              lastMessageStr = `${prefix}${dec.text}`;
               lastMessageTime = new Date(realLastMsg.created_at);
               const isToday = new Date().toDateString() === lastMessageTime.toDateString();
               timeStr = isToday ? lastMessageTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : lastMessageTime.toLocaleDateString([], { month: 'short', day: 'numeric' });
@@ -371,7 +378,7 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
               time: timeStr, 
               unread: unreadCount
             };
-          });
+          }));
           setContacts(formattedThreads.filter(t => t.lastMessage || t.name !== 'Unknown User'));
         }
       } catch (err) {
@@ -403,12 +410,22 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
         .from('messages').select('*').eq('thread_id', selectedContact.id).order('created_at', { ascending: true });
 
       if (chat) {
-        setMessages(chat.map(m => ({
-          id: m.id, senderId: m.sender_id, text: m.content,
-          time: new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          isMe: m.sender_id === currentUserId, type: m.message_type || 'text',
-          attachment: m.attachment || undefined, videoUrl: m.video_url || undefined
-        })));
+        const decryptedChat = await Promise.all(
+          chat.map(async (m) => {
+            const dec = await decryptTextInlinePqc(m.content, `thread-${selectedContact.id}`);
+            return {
+              id: m.id,
+              senderId: m.sender_id,
+              text: dec.text,
+              time: new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              isMe: m.sender_id === currentUserId,
+              type: m.message_type || 'text',
+              attachment: m.attachment || undefined,
+              videoUrl: m.video_url || undefined,
+            };
+          })
+        );
+        setMessages(decryptedChat);
       } else { setMessages([]); }
 
       await supabase.schema('app_private').from('messages').update({ is_read: true }).eq('thread_id', selectedContact.id).eq('is_read', false);
@@ -418,14 +435,15 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
     fetchChatHistory();
 
     const messageSubscription = supabase.channel(`chat_${selectedContact.id}_${Date.now()}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'app_private', table: 'messages' }, (payload) => {
+      .on('postgres_changes', { event: 'INSERT', schema: 'app_private', table: 'messages' }, async (payload) => {
           const newDbMsg = payload.new as any;
           if (newDbMsg.thread_id === selectedContact.id) {
+            const dec = await decryptTextInlinePqc(newDbMsg.content, `thread-${selectedContact.id}`);
             setMessages((prev) => {
               if (newDbMsg.sender_id === currentUserId) return prev;
               if (prev.some(m => m.id === newDbMsg.id)) return prev;
               return [...prev, {
-                id: newDbMsg.id, senderId: newDbMsg.sender_id, text: newDbMsg.content,
+                id: newDbMsg.id, senderId: newDbMsg.sender_id, text: dec.text,
                 time: new Date(newDbMsg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
                 isMe: false, type: newDbMsg.message_type || 'text',
                 attachment: newDbMsg.attachment || undefined, videoUrl: newDbMsg.video_url || undefined
@@ -467,11 +485,13 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
     }
   }, [contacts, selectedContact, pendingThreadId]);
 
-  // 4. Send Message Handler
+  // 4. Send Message Handler (Encrypted with AES-256-GCM + ML-KEM-1024 + SHA-512)
   const handleSendMessage = async () => {
     if (!newMessage.trim() || !selectedContact || !currentUserId || !currentUserOrg) return;
     
     const contentToSave = newMessage.trim();
+    const pqcResult = await encryptTextInlinePqc(contentToSave, `thread-${selectedContact.id}`);
+    const encryptedPayload = pqcResult?.inlineEnvelope || contentToSave;
     
     const tempMsg: Message = { 
       id: `m${Date.now()}`, senderId: currentUserId, text: contentToSave, 
@@ -496,7 +516,7 @@ const MessagesView: React.FC<MessagesViewProps> = ({ isOpen, onClose, currentWor
       recipient_type: 'organization',
       recipient_id: selectedContact.id,
       subject: chatTitle || 'Direct Message',
-      content: contentToSave,
+      content: encryptedPayload,
       message_type: 'text',
       is_read: false
     });

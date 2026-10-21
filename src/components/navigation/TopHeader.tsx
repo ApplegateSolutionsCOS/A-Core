@@ -22,6 +22,18 @@ import {
 } from '@/components/icons/Icons';
 import { OrganizationUser, PlatformUser, WORKSPACE_DEFINITIONS, WorkspaceSlug } from '@/types';
 import { getMiniAppIcon } from '@/components/miniapp/MiniAppIcons';
+import { FEATURES, setGodModePreviewTier, PreviewEditionOrTier, setGodModePreviewRole, PreviewUserRole } from '@/config/features';
+import {
+  initKurogoKovacDeceptionLayer,
+  subscribeToHoneypotState,
+  getActiveHoneypotForensicEvents,
+  exportLawEnforcementForensicDossier,
+  isHoneypotTestModeActive,
+  cancelHoneypotAlert,
+  reinstateAccountAndSecurityLocks,
+  toggleHoneypotTestMode,
+  HoneypotForensicEvent,
+} from '@/lib/qcoreSecurity';
 
 const LOGO_URL = 'https://d64gsuwffb70l.cloudfront.net/695fc81af8bb22c52e2539fb_1769628610343_93d83d41.png';
 
@@ -172,6 +184,7 @@ interface TopHeaderProps {
   onGoHome?: () => void;
   onOpenAdminPanel?: () => void;
   onOpenOrgAdminPanel?: () => void;
+  onOpenIntegrations?: () => void;
   onOpenWorkspaceSettings?: (slug: string) => void;
   onOpenOrgSettings?: () => void;
   currentWorkspace?: string;
@@ -190,11 +203,11 @@ const wsIconMap: Record<string, React.FC<{ size?: number; className?: string }>>
 
 const TopHeader: React.FC<TopHeaderProps> = ({
   onOpenSearch, onOpenNotifications, onOpenSettings, onOpenProfile,
-  onOpenLogin, onGoHome, onOpenAdminPanel, onOpenOrgAdminPanel, onOpenWorkspaceSettings,
+  onOpenLogin, onGoHome, onOpenAdminPanel, onOpenOrgAdminPanel, onOpenIntegrations, onOpenWorkspaceSettings,
   onOpenOrgSettings, currentWorkspace
 }) => {
 
-  const { user, organization, logout, isPlatformUser, isPlatformOwner, isOrganizationAdmin, isAuthenticated } = useAuth();
+  const { user, organization, logout, isPlatformUser, isPlatformOwner, isActualPlatformOwner, isOrganizationAdmin, isAuthenticated } = useAuth();
   const { getColor } = useWorkspaceColor();
   
   const [customWorkspaceData, setCustomWorkspaceData] = useState<{name: string, icon: string} | null>(null);
@@ -202,6 +215,72 @@ const TopHeader: React.FC<TopHeaderProps> = ({
   // Context Menu & User Color States
   const [contextMenu, setContextMenu] = useState<{ isOpen: boolean, x: number, y: number, buttonId: string } | null>(null);
   const [userHeaderColors, setUserHeaderColors] = useState<Record<string, string>>({});
+
+  // Kurogo Systems / Kovac Security F12 Watermark & Platform Owner God-Mode Honeypot State
+  const [f12Watermark, setF12Watermark] = useState<string | null>(null);
+  const [honeypotEvents, setHoneypotEvents] = useState<HoneypotForensicEvent[]>([]);
+  const [showGodModeForensics, setShowGodModeForensics] = useState(false);
+  const [honeypotTestMode, setHoneypotTestMode] = useState<boolean>(() => isHoneypotTestModeActive());
+  const [reinstatingSecurity, setReinstatingSecurity] = useState(false);
+
+  const handleToggleHoneypotTest = async () => {
+    const nextState = !honeypotTestMode;
+    setHoneypotTestMode(nextState);
+    const updatedEvents = await toggleHoneypotTestMode(nextState);
+    setHoneypotEvents(updatedEvents);
+  };
+
+  const handleCancelHoneypot = () => {
+    cancelHoneypotAlert();
+    setHoneypotTestMode(false);
+    setHoneypotEvents([]);
+    setShowGodModeForensics(false);
+  };
+
+  const handleReinstateSecurity = async () => {
+    setReinstatingSecurity(true);
+    try {
+      await reinstateAccountAndSecurityLocks(user?.email);
+      setHoneypotTestMode(false);
+      setHoneypotEvents([]);
+      setShowGodModeForensics(false);
+    } finally {
+      setReinstatingSecurity(false);
+    }
+  };
+
+  useEffect(() => {
+    const godMode = isPlatformOwner();
+    initKurogoKovacDeceptionLayer(godMode);
+    const unsub = subscribeToHoneypotState((state) => {
+      setF12Watermark(state.watermark);
+    });
+
+    const syncSecurityState = () => {
+      setHoneypotTestMode(isHoneypotTestModeActive());
+      if (isPlatformOwner()) {
+        setHoneypotEvents(getActiveHoneypotForensicEvents());
+      }
+    };
+    window.addEventListener('qcore-security-state-changed', syncSecurityState);
+
+    if (godMode) {
+      setHoneypotEvents(getActiveHoneypotForensicEvents());
+      const poll = setInterval(() => {
+        setHoneypotEvents(getActiveHoneypotForensicEvents());
+        setHoneypotTestMode(isHoneypotTestModeActive());
+      }, 4000);
+      return () => {
+        clearInterval(poll);
+        window.removeEventListener('qcore-security-state-changed', syncSecurityState);
+        unsub();
+      };
+    }
+    return () => {
+      window.removeEventListener('qcore-security-state-changed', syncSecurityState);
+      unsub();
+    };
+  }, [user]);
 
   useEffect(() => {
     // ⚡ FIX: Removed the WORKSPACE_DEFINITIONS bypass so it ALWAYS checks the DB
@@ -300,13 +379,15 @@ const TopHeader: React.FC<TopHeaderProps> = ({
   // Fetch dynamic workspaces for the dropdown
   useEffect(() => {
     const fetchWorkspaces = async () => {
-      // 1. Generate base workspaces
-      const baseWs = Object.entries(WORKSPACE_DEFINITIONS).map(([slug, def], index) => ({
-        name: def.name,
-        slug,
-        iconSlug: slug,
-        display_order: index
-      }));
+      // 1. Generate base workspaces (only in Pro+ when preset workspaces are enabled)
+      const baseWs = FEATURES.ENABLE_PRESET_WORKSPACES_AND_APPS
+        ? Object.entries(WORKSPACE_DEFINITIONS).map(([slug, def], index) => ({
+            name: def.name,
+            slug,
+            iconSlug: slug,
+            display_order: index
+          }))
+        : [];
 
       if (!organization?.id) {
         setAvailableWorkspaces(baseWs);
@@ -315,32 +396,50 @@ const TopHeader: React.FC<TopHeaderProps> = ({
 
       try {
         // 2. Query the app_private schema and select ALL fields so we don't miss organization_id
-        const { data, error } = await supabase.schema('app_private')
+        let wsQuery = supabase.schema('app_private')
           .from('workspaces')
-          .select('*')
-          .or(`organization_id.eq.${organization.id},organization_id.eq.aaaa0000-0000-0000-0000-000000000001`);
+          .select('*');
+
+        if (!FEATURES.ENABLE_PRESET_WORKSPACES_AND_APPS) {
+          wsQuery = wsQuery.eq('organization_id', organization.id);
+        } else {
+          wsQuery = wsQuery.or(`organization_id.eq.${organization.id},organization_id.eq.aaaa0000-0000-0000-0000-000000000001`);
+        }
+
+        const { data, error } = await wsQuery;
 
         if (error) throw error;
 
         let mergedWs = [...baseWs];
 
         if (data && data.length > 0) {
-          const dbMap = new Map(data.map((w: any) => [w.slug, w]));
-          
-          mergedWs = baseWs.map(bw => {
-            const dbWorkspace = dbMap.get(bw.slug);
-            return { ...bw, ...dbWorkspace, iconSlug: dbWorkspace?.icon || bw.slug };
-          });
-
-          // Filter for custom workspaces belonging ONLY to this organization
-          const customWs = data
-            .filter((w: any) => w.organization_id === organization.id)
-            .map((ws: any) => ({ ...ws, iconSlug: ws.icon || 'main' }));
+          if (FEATURES.ENABLE_PRESET_WORKSPACES_AND_APPS) {
+            const dbMap = new Map(data.map((w: any) => [w.slug, w]));
             
-          const globalSlugs = new Set(mergedWs.map(w => w.slug));
-          const uniqueCustomWs = customWs.filter((w: any) => !globalSlugs.has(w.slug));
-          
-          mergedWs = [...mergedWs, ...uniqueCustomWs];
+            mergedWs = baseWs.map(bw => {
+              const dbWorkspace = dbMap.get(bw.slug);
+              return { ...bw, ...dbWorkspace, iconSlug: dbWorkspace?.icon || bw.slug };
+            });
+
+            // Filter for custom workspaces belonging ONLY to this organization
+            const customWs = data
+              .filter((w: any) => w.organization_id === organization.id)
+              .map((ws: any) => ({ ...ws, iconSlug: ws.icon || 'main' }));
+              
+            const globalSlugs = new Set(mergedWs.map(w => w.slug));
+            const uniqueCustomWs = customWs.filter((w: any) => !globalSlugs.has(w.slug));
+            
+            mergedWs = [...mergedWs, ...uniqueCustomWs];
+          } else {
+            const SYSTEM_PRESET_SLUGS = ['admin', 'accounting', 'personnel', 'main', 'data', 'security'];
+            mergedWs = data
+              .filter((w: any) => {
+                if (!SYSTEM_PRESET_SLUGS.includes(w.slug)) return true;
+                const s = typeof w.settings === 'string' ? JSON.parse(w.settings || '{}') : (w.settings || {});
+                return Boolean(s.is_custom_lite);
+              })
+              .map((ws: any) => ({ ...ws, iconSlug: ws.icon || 'main' }));
+          }
         }
 
         // 3. Sort by cached drag-and-drop order, then display_order
@@ -1047,9 +1146,9 @@ const TopHeader: React.FC<TopHeaderProps> = ({
   return (
     <>
       {/* ⚡ FIX: Added -mb-16 to the wrapper to absorb the layout's hardcoded padding, eliminating the massive black gap */}
-      <div className="sticky top-0 left-0 right-0 z-40 flex flex-col w-full -mb-16">
+      <div className="sticky top-0 left-0 right-0 z-[60] flex flex-col w-full -mb-16">
         {/* ⚡ FIX: Elevated the header's z-index so its child dropdowns naturally paint over the banner */}
-        <header className="h-16 bg-black/95 backdrop-blur-lg w-full relative z-[60]"
+        <header className="h-16 bg-black/95 backdrop-blur-lg w-full relative z-[70]"
           style={{ borderBottom: wsColor ? `1px solid rgba(${wsColor.rgb}, 0.3)` : '1px solid rgba(0,255,255,0.2)' }}>
           <div className="absolute inset-0 overflow-hidden pointer-events-none opacity-20">
           <div className="absolute inset-0 bg-gradient-to-b from-transparent via-cyan-400/5 to-transparent h-4" />
@@ -1643,6 +1742,133 @@ const TopHeader: React.FC<TopHeaderProps> = ({
                       <UserIcon size={14} className="text-gray-400" />
                       Profile
                     </button>
+                    {(isPlatformOwner() || isOrganizationAdmin()) && onOpenIntegrations && (
+                      <button
+                        onClick={() => { setShowAccountDropdown(false); onOpenIntegrations(); }}
+                        className="flex items-center gap-3 px-4 py-2.5 text-sm font-mono text-emerald-300 hover:text-emerald-200 hover:bg-emerald-500/10 transition-colors w-full text-left"
+                      >
+                        <DatabaseIcon size={14} className="text-emerald-400" />
+                        Integrations
+                      </button>
+                    )}
+
+                    {/* ⚡ GOD-MODE LIVE TIER & ROLE PREVIEW SWITCHER (Platform Owner Only) */}
+                    {isActualPlatformOwner() && (
+                      <div className="px-3 py-2 border-t border-b border-gray-800/80 bg-cyan-950/15 my-1">
+                        <p className="text-[10px] font-mono font-bold text-cyan-400 uppercase tracking-wider mb-1.5">
+                          🛡️ God-Mode Tier Preview
+                        </p>
+                        <div className="grid grid-cols-2 gap-1">
+                          {(
+                            [
+                              { id: 'basic', label: 'Basic $249' },
+                              { id: 'pro', label: 'Pro $499' },
+                              { id: 'expert', label: 'Expert $899' },
+                              { id: 'enterprise', label: 'Ent $1,999' },
+                              { id: 'enterprisePlus', label: 'Ent+ $4,999' },
+                              { id: 'whiteGlove', label: 'White Glove' },
+                            ] as { id: PreviewEditionOrTier; label: string }[]
+                          ).map((t) => {
+                            const isActive = FEATURES.ACTIVE_PREVIEW_TIER === t.id;
+                            return (
+                              <button
+                                key={t.id}
+                                onClick={() => setGodModePreviewTier(t.id)}
+                                className={`px-2 py-1 rounded text-[10px] font-mono text-left truncate border transition-all ${
+                                  isActive
+                                    ? 'bg-cyan-500/25 border-cyan-400 text-cyan-200 font-bold'
+                                    : 'bg-black/60 border-gray-800 text-gray-400 hover:text-white hover:border-gray-600'
+                                }`}
+                              >
+                                {t.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {/* 👤 God-Mode Role Preview Switcher */}
+                        <div className="mt-2.5 pt-2 border-t border-cyan-500/20">
+                          <p className="text-[10px] font-mono font-bold text-purple-300 uppercase tracking-wider mb-1.5">
+                            👤 God-Mode Role Preview
+                          </p>
+                          <div className="grid grid-cols-2 gap-1">
+                            {(
+                              [
+                                { id: 'actual', label: 'Platform Owner' },
+                                { id: 'organization_admin', label: 'Org Admin' },
+                                { id: 'organization_manager', label: 'Org Manager' },
+                                { id: 'organization_user', label: 'Standard User' },
+                              ] as { id: PreviewUserRole; label: string }[]
+                            ).map((r) => {
+                              const isRoleActive = FEATURES.ACTIVE_PREVIEW_ROLE === r.id;
+                              return (
+                                <button
+                                  key={r.id}
+                                  onClick={() => setGodModePreviewRole(r.id)}
+                                  className={`px-2 py-1 rounded text-[10px] font-mono text-left truncate border transition-all ${
+                                    isRoleActive
+                                      ? 'bg-purple-500/25 border-purple-400 text-purple-200 font-bold'
+                                      : 'bg-black/60 border-gray-800 text-gray-400 hover:text-white hover:border-gray-600'
+                                  }`}
+                                >
+                                  {r.label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* 🍯 Honeypot & Q-CORE Security Controls for Platform Owner */}
+                        <div className="mt-2.5 pt-2.5 border-t border-cyan-500/20">
+                          <div className="flex items-center justify-between mb-1.5">
+                            <span className="text-[10px] font-mono uppercase tracking-wider text-amber-300 font-bold">
+                              🍯 Honeypot & Q-CORE Controls
+                            </span>
+                            <span
+                              className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${
+                                honeypotTestMode || honeypotEvents.length > 0
+                                  ? 'bg-red-500/20 border-red-500/50 text-red-300'
+                                  : 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
+                              }`}
+                            >
+                              {honeypotTestMode ? 'TEST ACTIVE' : honeypotEvents.length > 0 ? 'ALERT ACTIVE' : 'STANDBY'}
+                            </span>
+                          </div>
+                          <div className="flex flex-col gap-1.5">
+                            <button
+                              onClick={handleToggleHoneypotTest}
+                              className={`w-full px-2.5 py-1.5 rounded text-[10px] font-mono font-bold border transition-all flex items-center justify-between ${
+                                honeypotTestMode
+                                  ? 'bg-amber-500/25 border-amber-400 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.25)]'
+                                  : 'bg-black/60 border-gray-700 text-gray-300 hover:text-white hover:border-amber-500/50'
+                              }`}
+                            >
+                              <span>🧪 Test Honeypot & Q-CORE Lock</span>
+                              <span className={honeypotTestMode ? 'text-amber-300' : 'text-gray-500'}>
+                                {honeypotTestMode ? 'ON (Click to Turn Off)' : 'OFF'}
+                              </span>
+                            </button>
+                            <div className="grid grid-cols-2 gap-1.5">
+                              <button
+                                onClick={handleReinstateSecurity}
+                                disabled={reinstatingSecurity}
+                                className="px-2 py-1.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 border border-emerald-400/50 text-emerald-200 hover:bg-emerald-500/30 transition-all truncate disabled:opacity-50"
+                                title="Reinstate account, clear honeypot alerts, and renew 30-day Q-CORE lease"
+                              >
+                                {reinstatingSecurity ? 'Reinstating...' : '🛡️ Reinstate Account'}
+                              </button>
+                              <button
+                                onClick={handleCancelHoneypot}
+                                className="px-2 py-1.5 rounded text-[10px] font-mono font-bold bg-gray-800/80 border border-gray-600 text-gray-200 hover:bg-gray-700 transition-all truncate"
+                                title="Dismiss active honeypot alert banner after collecting forensics"
+                              >
+                                ✕ Cancel Alert
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                     
                     {/* ⚡ NEW: Exit Demo Mode Option */}
                     {isPlatformOwner() && organization?.subscription_tier === 'demo' && (
@@ -1696,6 +1922,84 @@ const TopHeader: React.FC<TopHeaderProps> = ({
           </div>
         </div>
       </header>
+
+      {/* 🛡️ PLATFORM OWNER ("GOD MODE") LIVE HONEYPOT & IPINFO INTRUSION BANNER */}
+      {isPlatformOwner() && honeypotEvents.length > 0 && (
+        <div className="w-full pointer-events-auto relative z-[55] bg-gradient-to-r from-emerald-950/95 via-black/95 to-red-950/90 border-b border-emerald-500/40 backdrop-blur-md px-4 py-2 font-mono text-xs">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/50 text-emerald-300 font-bold text-[10px]">
+                🛡️ GOD MODE // HONEYPOT TRAP ACTIVE
+              </span>
+              <span className="text-red-400 font-bold">
+                [{honeypotEvents[0].eventType}]
+              </span>
+              <span className="text-gray-200">
+                Token <strong>{honeypotEvents[0].canaryTokenId}</strong> → {honeypotEvents[0].actionDetails}
+              </span>
+              {honeypotEvents[0].ipGeo && (
+                <span className="text-amber-300">
+                  📍 IPinfo: {honeypotEvents[0].ipGeo.ip} ({honeypotEvents[0].ipGeo.city || 'Unknown'}, {honeypotEvents[0].ipGeo.country || 'XX'} | {honeypotEvents[0].ipGeo.org || 'ISP'})
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={() => exportLawEnforcementForensicDossier(honeypotEvents[0].canaryTokenId)}
+                className="px-2.5 py-1 rounded bg-red-500/20 border border-red-500/50 text-red-200 hover:bg-red-500/30 text-[10px] font-bold"
+              >
+                🚨 Export FBI IC3 / Law Enforcement Packet
+              </button>
+              <button
+                onClick={() => setShowGodModeForensics(!showGodModeForensics)}
+                className="px-2.5 py-1 rounded bg-cyan-500/15 border border-cyan-500/40 text-cyan-300 text-[10px]"
+              >
+                {showGodModeForensics ? 'Hide Log ▲' : `Forensic Log (${honeypotEvents.length}) ▼`}
+              </button>
+              <button
+                onClick={handleReinstateSecurity}
+                disabled={reinstatingSecurity}
+                className="px-2.5 py-1 rounded bg-emerald-500/25 border border-emerald-400/60 text-emerald-200 hover:bg-emerald-500/35 text-[10px] font-bold shadow-[0_0_10px_rgba(16,185,129,0.25)] disabled:opacity-50"
+                title="Reinstate account, clear honeypot trap, and unlock Q-CORE security banner"
+              >
+                {reinstatingSecurity ? 'Reinstating...' : '🛡️ Reinstate Account & Unlock'}
+              </button>
+              <button
+                onClick={handleCancelHoneypot}
+                className="px-2.5 py-1 rounded bg-gray-800/90 border border-gray-600 text-gray-200 hover:bg-gray-700 text-[10px] font-bold"
+                title="Cancel honeypot alert & turn off test banner"
+              >
+                ✕ Cancel Alert
+              </button>
+            </div>
+          </div>
+          {showGodModeForensics && (
+            <div className="mt-2 pt-2 border-t border-emerald-500/20 max-h-40 overflow-y-auto space-y-1">
+              {honeypotEvents.map((ev) => (
+                <div key={ev.eventId} className="flex justify-between text-[10px] text-gray-300 py-0.5 border-b border-white/5">
+                  <span>
+                    [{new Date(ev.timestampUtc).toLocaleTimeString()}] <strong className="text-cyan-300">{ev.canaryTokenId}</strong> ({ev.lureTriggered}): {ev.actionDetails}
+                  </span>
+                  <span className="text-amber-300">
+                    {ev.ipGeo?.ip || 'local'} | {ev.ipGeo?.city || ''}, {ev.ipGeo?.country || ''} | SHA512: {ev.sha512EvidenceHash.slice(0, 12)}...
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Subtle F12 Deception Watermark (Only rendered when someone opens F12 DevTools) */}
+      {f12Watermark && (
+        <div
+          data-oem-parent="kurogo-systems-jp"
+          data-qcore-escrow="kovac-security-sk"
+          className="fixed bottom-1.5 right-3 z-[9999] pointer-events-none select-none font-mono text-[9px] tracking-widest text-cyan-400/20"
+        >
+          {f12Watermark}
+        </div>
+      )}
 
       {/* ⚡ NEW: Task Due Today Banner within the sticky flow */}
       {globalAlertsEnabled && activeTasksDueToday.length > 0 && !dismissedTaskAlert && (!snoozeUntil || snoozeUntil <= Date.now()) && (

@@ -17,6 +17,13 @@
 
 import { supabase } from '@/lib/supabase';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from '@/lib/supabaseConfig';
+import {
+  createPqcApiTransportHeaders,
+  generateKeyPair,
+  encryptData,
+  decryptData,
+  SECURITY_ALGORITHMS,
+} from '@/lib/encryption';
 
 // Re-export for diagnostic panel
 export { SUPABASE_URL, SUPABASE_ANON_KEY };
@@ -452,30 +459,58 @@ export async function invokeEdgeFunction<T = any>(
   body: Record<string, any>,
   timeoutMs: number = 30000
 ): Promise<EdgeFunctionResult<T>> {
-  console.log(`[edgeFn] Invoking '${functionName}' action=${body.action || body.healthCheck ? 'healthCheck' : 'N/A'}`);
+  // Native PQC fulfillment for hybrid-encryption edge function calls
+  if (functionName === 'hybrid-encryption') {
+    if (body.action === 'generate_keypair') {
+      const kp = await generateKeyPair();
+      return { data: kp as unknown as T, error: kp ? null : 'Key generation failed', status: kp ? 200 : 500 };
+    }
+    if (body.action === 'encrypt') {
+      const encrypted = await encryptData(body.data, body.publicKey);
+      return { data: { encrypted } as unknown as T, error: encrypted ? null : 'Encryption failed', status: encrypted ? 200 : 500 };
+    }
+    if (body.action === 'decrypt') {
+      const plaintext = await decryptData(body.data, body.privateKey);
+      return { data: { plaintext } as unknown as T, error: plaintext !== null ? null : 'Decryption failed', status: plaintext !== null ? 200 : 500 };
+    }
+  }
+
+  // Attach native PQC transport envelope metadata (AES-256-GCM + ML-KEM-1024 + SHA-512)
+  const pqcHeaders = await createPqcApiTransportHeaders(body, functionName);
+  const securedBody = {
+    ...body,
+    _pqcTransport: {
+      cipherSuite: SECURITY_ALGORITHMS.display,
+      sha512Signature: pqcHeaders['X-ACORE-SHA512-Signature'],
+      mlKem1024KeyId: pqcHeaders['X-ACORE-MLKEM1024-KeyId'],
+      timestamp: pqcHeaders['X-ACORE-Timestamp'],
+    },
+  };
+
+  console.log(`[edgeFn] Invoking '${functionName}' action=${body.action || body.healthCheck ? 'healthCheck' : 'N/A'} [PQC: ${SECURITY_ALGORITHMS.display}]`);
   
   // Strategy 1: supabase.functions.invoke()
-  const result1 = await trySupabaseInvoke<T>(functionName, body, timeoutMs);
+  const result1 = await trySupabaseInvoke<T>(functionName, securedBody, timeoutMs);
   if (result1) return result1;
   
   // Strategy 2: XHR
-  const result2 = await tryXHR<T>(functionName, body, timeoutMs);
+  const result2 = await tryXHR<T>(functionName, securedBody, timeoutMs);
   if (result2) return result2;
   
   // Strategy 3: Native fetch
-  const result3 = await tryNativeFetch<T>(functionName, body, timeoutMs);
+  const result3 = await tryNativeFetch<T>(functionName, securedBody, timeoutMs);
   if (result3) return result3;
   
   // Strategy 4: Simplified headers fetch
-  const result4 = await trySimplifiedFetch<T>(functionName, body, timeoutMs);
+  const result4 = await trySimplifiedFetch<T>(functionName, securedBody, timeoutMs);
   if (result4) return result4;
   
   // Strategy 5: CORS proxy (corsproxy.io)
-  const result5 = await tryCorsProxy<T>(functionName, body, timeoutMs);
+  const result5 = await tryCorsProxy<T>(functionName, securedBody, timeoutMs);
   if (result5) return result5;
   
   // Strategy 6: Query-string auth
-  const result6 = await tryQueryStringAuth<T>(functionName, body, timeoutMs);
+  const result6 = await tryQueryStringAuth<T>(functionName, securedBody, timeoutMs);
   if (result6) return result6;
   
   // All strategies failed — run a quick GET connectivity test for diagnostic info

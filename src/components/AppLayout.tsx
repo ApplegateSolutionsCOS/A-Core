@@ -7,6 +7,7 @@ import { db } from '@/lib/dbProxy';
 import { Workspace, WorkspaceSlug } from '@/types';
 import ConfigWarningBanner from '@/components/ConfigWarningBanner';
 import ErrorBoundary from '@/components/ErrorBoundary';
+import { FEATURES } from '@/config/features';
 
 // Image logo from admin panel
 const LOGO_URL = 'https://d64gsuwffb70l.cloudfront.net/695fc81af8bb22c52e2539fb_1769628610343_93d83d41.png';
@@ -93,8 +94,12 @@ const AppLayout: React.FC<AppLayoutProps> = ({ initialView, workspaceSlug }) => 
   }, []);
 
   const [showPlatformOwnerPanel, setShowPlatformOwnerPanel] = useState(false);
+  const [platformInitialTab, setPlatformInitialTab] = useState<'overview' | 'organizations' | 'billing' | 'system' | 'security' | 'platform_users' | 'feature_controls' | undefined>(undefined);
+  const [platformInitialSubTab, setPlatformInitialSubTab] = useState<'database' | 'api_keys' | 'integrations' | undefined>(undefined);
   const [showOrgSettings, setShowOrgSettings] = useState(false);
   const [showOrgAdminPanel, setShowOrgAdminPanel] = useState(false);
+  const [orgAdminInitialTab, setOrgAdminInitialTab] = useState<string | undefined>(undefined);
+  const [initialOpenPodio, setInitialOpenPodio] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showUserProfile, setShowUserProfile] = useState(false);
   const [showGlobalSearch, setShowGlobalSearch] = useState(false);
@@ -294,9 +299,23 @@ const AppLayout: React.FC<AppLayoutProps> = ({ initialView, workspaceSlug }) => 
     }
   }, [initialView, isAuthenticated, workspaceSlug]);
 
-  // Check for URL action parameter
+  // Check for URL action parameter & Podio OAuth popup return
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('podio_auth') === 'success') {
+      try {
+        localStorage.setItem('podio_oauth_completed', String(Date.now()));
+        if (window.opener) {
+          window.opener.postMessage({ type: 'PODIO_AUTH_SUCCESS' }, '*');
+          window.close();
+          return;
+        }
+      } catch (e) {}
+      urlParams.delete('podio_auth');
+      const cleanSearch = urlParams.toString();
+      window.history.replaceState({}, document.title, window.location.pathname + (cleanSearch ? `?${cleanSearch}` : ''));
+    }
+
     const action = urlParams.get('action');
     if (action === 'login' && !isAuthenticated) {
       setShowLoginModal(true);
@@ -334,28 +353,86 @@ const AppLayout: React.FC<AppLayoutProps> = ({ initialView, workspaceSlug }) => 
   }, [isAuthenticated, user]);
 
 
-  // Fetch workspaces when authenticated
-  useEffect(() => {
-    if (isAuthenticated && organization) {
-      fetchWorkspaces();
-    }
-  }, [isAuthenticated, organization]);
+  const [workspacesLoaded, setWorkspacesLoaded] = useState(false);
 
-  const fetchWorkspaces = async () => {
-    if (!organization) return;
+  const fetchWorkspaces = useCallback(async () => {
+    if (!organization?.id) return;
     try {
-      const { data, error } = await db
+      const { data, error } = await supabase
+        .schema('app_private')
         .from('workspaces')
         .select('*')
         .eq('organization_id', organization.id)
-        .order('display_order');
-      if (data) {
-        setWorkspaces(data);
+        .order('display_order', { ascending: true });
+      if (!error && data) {
+        const SYSTEM_PRESET_SLUGS = ['admin', 'accounting', 'personnel', 'main', 'data', 'security'];
+        const allowed = !FEATURES.ENABLE_PRESET_WORKSPACES_AND_APPS
+          ? data.filter((w: any) => {
+              if (!SYSTEM_PRESET_SLUGS.includes(w.slug)) return true;
+              const s = typeof w.settings === 'string' ? JSON.parse(w.settings || '{}') : (w.settings || {});
+              return Boolean(s.is_custom_lite);
+            })
+          : data;
+        setWorkspaces(allowed);
       }
     } catch (error) {
       console.error('Error fetching workspaces:', error);
+    } finally {
+      setWorkspacesLoaded(true);
     }
-  };
+  }, [organization?.id]);
+
+  // ⚡ URL ROUTE GUARD: Block direct URL access to the 6 hardcoded preset workspaces when preset workspaces are disabled (Basic Tier)
+  useEffect(() => {
+    if (!isAuthenticated || !activeWorkspace || !organization?.id) return;
+
+    if (!FEATURES.ENABLE_PRESET_WORKSPACES_AND_APPS) {
+      const SYSTEM_PRESET_SLUGS = ['admin', 'accounting', 'personnel', 'main', 'data', 'security'];
+
+      // 1. If the slug is NOT one of the 6 hardcoded preset slugs, it is a custom/Podio workspace — allow it immediately!
+      if (!SYSTEM_PRESET_SLUGS.includes(activeWorkspace)) {
+        return;
+      }
+
+      // 2. If it IS one of the 6 preset slugs (e.g. someone typed /workspace/main), verify in DB if the user actually imported/created a custom Lite workspace with that name
+      let cancelled = false;
+      (async () => {
+        const { data: wsRow } = await supabase
+          .schema('app_private')
+          .from('workspaces')
+          .select('id, settings')
+          .eq('organization_id', organization.id)
+          .eq('slug', activeWorkspace)
+          .maybeSingle();
+
+        if (cancelled) return;
+
+        const s = typeof wsRow?.settings === 'string' ? JSON.parse(wsRow.settings || '{}') : (wsRow?.settings || {});
+        if (!wsRow || !s.is_custom_lite) {
+          console.warn(`[RouteGuard] Blocked preset URL access to /workspace/${activeWorkspace}`);
+          setActiveWorkspace(null);
+          setActiveTab('dashboard');
+          navigate('/', { replace: true });
+        }
+      })();
+
+      return () => { cancelled = true; };
+    }
+  }, [isAuthenticated, activeWorkspace, organization?.id, navigate]);
+
+  // Fetch workspaces when authenticated & whenever Podio auto-creates a workspace/MiniApp
+  useEffect(() => {
+    if (isAuthenticated && organization?.id) {
+      fetchWorkspaces();
+    }
+    const handleWsRefresh = () => { fetchWorkspaces(); };
+    window.addEventListener('miniapp_schema_updated', handleWsRefresh);
+    window.addEventListener('workspacesUpdated', handleWsRefresh);
+    return () => {
+      window.removeEventListener('miniapp_schema_updated', handleWsRefresh);
+      window.removeEventListener('workspacesUpdated', handleWsRefresh);
+    };
+  }, [isAuthenticated, organization?.id, fetchWorkspaces]);
 
 
   // Handle tab changes from BottomNav
@@ -468,6 +545,51 @@ const AppLayout: React.FC<AppLayoutProps> = ({ initialView, workspaceSlug }) => 
     }
   };
 
+  // Direct handler for opening Integrations setup (optionally auto-opening Podio importer)
+  const handleOpenIntegrations = useCallback((openPodio = false) => {
+    setInitialOpenPodio(openPodio);
+    if (isPlatformOwner()) {
+      setPlatformInitialTab('system');
+      setPlatformInitialSubTab('integrations');
+      setShowPlatformOwnerPanel(true);
+    } else if (isOrganizationAdmin()) {
+      setOrgAdminInitialTab('integrations');
+      setShowOrgAdminPanel(true);
+    }
+    if (openPodio) {
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('openPodioIntegrationSetup'));
+      }, 100);
+    }
+  }, [isPlatformOwner, isOrganizationAdmin]);
+
+  // Listen for global requests to open Integrations or Podio Workspace Importer, or close admin panels
+  useEffect(() => {
+    const onOpenIntegrationsEvent = (e: Event) => {
+      const detail = (e as CustomEvent)?.detail;
+      handleOpenIntegrations(Boolean(detail?.openPodio));
+    };
+    const onOpenPodioImporterEvent = () => {
+      handleOpenIntegrations(true);
+    };
+    const onCloseAllAdminPanels = () => {
+      setShowPlatformOwnerPanel(false);
+      setShowOrgAdminPanel(false);
+      setInitialOpenPodio(false);
+      setPlatformInitialTab(undefined);
+      setPlatformInitialSubTab(undefined);
+      setOrgAdminInitialTab(undefined);
+    };
+    window.addEventListener('openIntegrationsModal', onOpenIntegrationsEvent);
+    window.addEventListener('openPodioWorkspaceImporter', onOpenPodioImporterEvent);
+    window.addEventListener('closeAllAdminPanels', onCloseAllAdminPanels);
+    return () => {
+      window.removeEventListener('openIntegrationsModal', onOpenIntegrationsEvent);
+      window.removeEventListener('openPodioWorkspaceImporter', onOpenPodioImporterEvent);
+      window.removeEventListener('closeAllAdminPanels', onCloseAllAdminPanels);
+    };
+  }, [handleOpenIntegrations]);
+
 
   // Handle login modal close
   const handleLoginModalClose = () => {
@@ -488,6 +610,9 @@ const AppLayout: React.FC<AppLayoutProps> = ({ initialView, workspaceSlug }) => 
   // Handle panel closes
   const handlePlatformPanelClose = () => {
     setShowPlatformOwnerPanel(false);
+    setPlatformInitialTab(undefined);
+    setPlatformInitialSubTab(undefined);
+    setInitialOpenPodio(false);
     if (location.pathname === '/admin' || location.pathname.startsWith('/admin/')) {
       navigate('/', { replace: true });
     }
@@ -611,8 +736,18 @@ const AppLayout: React.FC<AppLayoutProps> = ({ initialView, workspaceSlug }) => 
             setInitialMiniApp(null);
             setInitialAddRecord(false);
           } : handleGoHome}
-          onOpenAdminPanel={() => setShowPlatformOwnerPanel(true)}
-          onOpenOrgAdminPanel={() => setShowOrgAdminPanel(true)}
+          onOpenAdminPanel={() => {
+            setPlatformInitialTab(undefined);
+            setPlatformInitialSubTab(undefined);
+            setInitialOpenPodio(false);
+            setShowPlatformOwnerPanel(true);
+          }}
+          onOpenOrgAdminPanel={() => {
+            setOrgAdminInitialTab(undefined);
+            setInitialOpenPodio(false);
+            setShowOrgAdminPanel(true);
+          }}
+          onOpenIntegrations={() => handleOpenIntegrations(false)}
           onOpenWorkspaceSettings={activeWorkspace ? handleOpenWorkspaceSettings : undefined}
           onOpenOrgSettings={() => setShowOrgSettings(true)}
           currentWorkspace={activeWorkspace || undefined}
@@ -631,11 +766,12 @@ const AppLayout: React.FC<AppLayoutProps> = ({ initialView, workspaceSlug }) => 
       <BottomNav
         activeTab={activeTab}
         onTabChange={handleTabChange}
-        unreadMessages={5}
-        pendingTasks={12}
+        unreadMessages={0}
+        pendingTasks={0}
         onSelectWorkspace={handleSelectWorkspace}
         onNavigateToMiniApp={handleNavigateToMiniApp}
         currentWorkspace={activeWorkspace || undefined}
+        workspaces={workspaces}
       />
 
       {/* Left Slide Panels for Tasks and Calendar (Mapped for Stacking) */}
@@ -768,6 +904,9 @@ const AppLayout: React.FC<AppLayoutProps> = ({ initialView, workspaceSlug }) => 
       <PlatformOwnerPanel
         isOpen={showPlatformOwnerPanel && isPlatformOwner()}
         onClose={handlePlatformPanelClose}
+        initialTab={platformInitialTab}
+        initialSystemSubTab={platformInitialSubTab}
+        initialOpenPodio={initialOpenPodio}
       />
 
       {/* Organization Settings */}
@@ -779,7 +918,13 @@ const AppLayout: React.FC<AppLayoutProps> = ({ initialView, workspaceSlug }) => 
       {/* Organization Admin Panel (Org Admin only, not Platform Owner) */}
       <OrganizationAdminPanel
         isOpen={showOrgAdminPanel && isOrganizationAdmin() && !isPlatformOwner()}
-        onClose={() => setShowOrgAdminPanel(false)}
+        onClose={() => {
+          setShowOrgAdminPanel(false);
+          setOrgAdminInitialTab(undefined);
+          setInitialOpenPodio(false);
+        }}
+        initialTab={orgAdminInitialTab}
+        initialOpenPodio={initialOpenPodio}
       />
 
       {/* Workspace Settings Modal */}
@@ -860,6 +1005,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ initialView, workspaceSlug }) => 
         onOpenEvent={() => setShowEventPanel(true)}
         onOpenProject={() => setShowProjectPanel(true)}
         onOpenMicrophone={() => setShowMicrophonePanel(true)}
+        onNavigateToMiniApp={handleNavigateToMiniApp}
         currentView={activeWorkspace ? 'workspace' : 'home'}
         currentWorkspace={activeWorkspace || undefined}
       />

@@ -42,24 +42,75 @@ export interface ReportConfig {
 
 export interface AggregatedPoint { label: string; value: number }
 
-const getVal = (obj: any, key: string): any => {
+const unwrapData = (rawObj: any): Record<string, any> => {
+  if (!rawObj) return {};
+  if (typeof rawObj === 'string') {
+    try { return JSON.parse(rawObj); } catch { return {}; }
+  }
+  return rawObj;
+};
+
+const cleanReportVal = (val: any): any => {
+  if (val === null || val === undefined) return '';
+  let parsed = val;
+  if (typeof val === 'string' && (val.trim().startsWith('[') || val.trim().startsWith('{'))) {
+    try { parsed = JSON.parse(val); } catch {}
+  }
+  const extractOne = (item: any): any => {
+    if (item && typeof item === 'object') {
+      if ('value' in item) {
+        if (typeof item.value === 'object' && item.value !== null) {
+          return item.value.name || item.value.title || item.value.text || JSON.stringify(item.value);
+        }
+        return item.value;
+      }
+      if ('text' in item) return item.text;
+      if ('name' in item) return item.name;
+      if ('title' in item) return item.title;
+      if ('label' in item) return item.label;
+    }
+    return item;
+  };
+  if (Array.isArray(parsed)) {
+    return parsed.map(extractOne).filter(v => v !== null && v !== undefined && v !== '').join(', ');
+  }
+  if (typeof parsed === 'object' && parsed !== null) {
+    return extractOne(parsed);
+  }
+  return parsed;
+};
+
+const parseNumeric = (val: any): number => {
+  const cleaned = cleanReportVal(val);
+  if (typeof cleaned === 'number') return cleaned;
+  if (typeof cleaned === 'string') {
+    const stripped = cleaned.replace(/[^0-9.\-]/g, '');
+    return stripped ? Number(stripped) : NaN;
+  }
+  return Number(cleaned);
+};
+
+const getVal = (rawObj: any, key: string): any => {
+  const obj = unwrapData(rawObj);
   if (!obj || !key) return undefined;
-  if (obj[key] !== undefined) return obj[key];
+  if (obj[key] !== undefined) return cleanReportVal(obj[key]);
   const lower = String(key).toLowerCase();
   const found = Object.keys(obj).find(k => k.toLowerCase() === lower);
-  return found ? obj[found] : undefined;
+  return found ? cleanReportVal(obj[found]) : undefined;
 };
 
 const parseDate = (v: any): number | null => {
   if (!v) return null;
-  const t = typeof v === 'number' ? v : Date.parse(String(v));
+  const cleaned = cleanReportVal(v);
+  const t = typeof cleaned === 'number' ? cleaned : Date.parse(String(cleaned));
   return isNaN(t) ? null : t;
 };
 
 const rowMatchesFilter = (row: any, f: FilterRow): boolean => {
+  if (!f.fieldName) return true;
   const raw = getVal(row.data || {}, f.fieldName);
   const strRaw = raw === undefined || raw === null ? '' : String(raw);
-  const numRaw = Number(raw);
+  const numRaw = parseNumeric(raw);
   const v = f.value ?? '';
   const v2 = f.value2 ?? '';
   switch (f.op) {
@@ -162,7 +213,7 @@ export async function runReportAggregation(cfg: ReportConfig): Promise<Aggregate
       return 1;
     }
     if (metricMode === 'sum') {
-      const v = Number(getVal(d, countField || ''));
+      const v = parseNumeric(getVal(d, countField || ''));
       return isNaN(v) ? 0 : v;
     }
     // calc
@@ -170,13 +221,13 @@ export async function runReportAggregation(cfg: ReportConfig): Promise<Aggregate
       if (!key) return 0;
       const [fName, appId] = key.split('::');
       if (!appId || appId === sourceAppId) {
-        const v = Number(getVal(d, fName));
+        const v = parseNumeric(getVal(d, fName));
         return isNaN(v) ? 0 : v;
       }
       const p = connectedCache[appId] || [];
       let total = 0;
       p.forEach(pr => {
-        const v = Number(getVal(pr.data || {}, fName));
+        const v = parseNumeric(getVal(pr.data || {}, fName));
         if (!isNaN(v)) total += v;
       });
       return total;

@@ -20,6 +20,7 @@ import {
   BuildIcon
 } from '@/components/icons/Icons';
 import { PlatformUser, MiniApp } from '@/types';
+import { FEATURES } from '@/config/features';
 import IconPickerModal from '@/components/miniapp/IconPickerModal';
 import { getMiniAppIcon } from '@/components/miniapp/MiniAppIcons';
 
@@ -112,7 +113,7 @@ const WorkspaceSettings: React.FC<WorkspaceSettingsProps> = ({
   workspaceName,
   onAppDeleted,
 }) => {
-  const { user, userType, organization } = useAuth();
+  const { user, userType, organization, isPlatformOwner: checkIsPlatformOwner, isOrganizationAdmin: checkIsOrgAdmin } = useAuth();
   const { getColor, setWorkspaceColor } = useWorkspaceColor();
   const [miniApps, setMiniApps] = useState<MiniAppListItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -141,8 +142,8 @@ const WorkspaceSettings: React.FC<WorkspaceSettingsProps> = ({
   const [isSavingAppDist, setIsSavingAppDist] = useState(false);
   const [appAutoDeploy, setAppAutoDeploy] = useState(false); // ⚡ Auto-deploy MiniApp
 
-  const isPlatformOwner = userType === 'platform' && (user as PlatformUser)?.is_owner;
-  const isOrgAdmin = userType === 'organization' && (user as any)?.role === 'organization_admin';
+  const isPlatformOwner = checkIsPlatformOwner();
+  const isOrgAdmin = checkIsOrgAdmin();
   const canManage = isPlatformOwner || isOrgAdmin;
 
   const wsColor = getColor(workspaceSlug);
@@ -196,8 +197,11 @@ const WorkspaceSettings: React.FC<WorkspaceSettingsProps> = ({
 
       if (!error && data) {
         const uniqueAppsMap = new Map();
+        const filteredData = !FEATURES.ENABLE_PRESET_WORKSPACES_AND_APPS
+          ? data.filter((a: any) => !a.is_preset)
+          : data;
         
-        data.forEach((a: any) => {
+        filteredData.forEach((a: any) => {
           const existing = uniqueAppsMap.get(a.name);
           if (!existing || (a.organization_id === organization.id && existing.is_preset)) {
             uniqueAppsMap.set(a.name, a);

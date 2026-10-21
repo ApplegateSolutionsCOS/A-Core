@@ -12,8 +12,6 @@ import * as LucideIcons from 'lucide-react'; // ⚡ ADD THIS IMPORT
 
 import { useAuth } from '@/contexts/AuthContext';
 
-import { useAuth } from '@/contexts/AuthContext';
-
 interface MiniAppAdvancedSettingsProps {
   isOpen: boolean;
   onClose: () => void;
@@ -30,6 +28,8 @@ const LAYOUT_OPTIONS = [
   { key: 'card', label: 'Card', icon: CardLayoutIcon },
   { key: 'badge', label: 'Badge', icon: BadgeIcon },
   { key: 'calendar', label: 'Calendar', icon: CalendarIcon },
+  { key: 'facility', label: 'Facility', icon: LucideIcons.Building2 },
+  { key: 'map', label: 'Map', icon: LucideIcons.MapPin },
 ];
 
 // Globe icon for SaveGlobally
@@ -80,19 +80,19 @@ const MiniAppAdvancedSettings: React.FC<MiniAppAdvancedSettingsProps> = ({
     
     const loadSettings = async () => {
       try {
-        // ⚡ FIX: Added fallback 'none' variables to prevent PostgREST syntax errors!
-        const safeWorkspaceId = workspaceId || 'none';
-        const safeOrgId = organization?.id || 'none';
+        const orClauses: string[] = ['is_preset.eq.true'];
+        if (workspaceId && workspaceId.length > 10) orClauses.unshift(`workspace_id.eq.${workspaceId}`);
+        if (organization?.id) orClauses.unshift(`organization_id.eq.${organization.id}`);
 
         const { data, error } = await supabase
           .schema('app_private')
           .from('mini_apps')
           .select('*')
           .eq('name', appName)
-          .or(`workspace_id.eq.${safeWorkspaceId},organization_id.eq.${safeOrgId},is_preset.eq.true`)
+          .or(orClauses.join(','))
           .order('organization_id', { ascending: false })
           .limit(1)
-          .single();
+          .maybeSingle();
         
         if (!error && data) {
           setActualDbId(data.id);
@@ -276,7 +276,7 @@ const MiniAppAdvancedSettings: React.FC<MiniAppAdvancedSettingsProps> = ({
               {/* Default View/Layout */}
               <div className="bg-gray-900/50 rounded-xl p-4" style={{ border: `1px solid rgba(${wsColor.rgb}, 0.2)` }}>
                 <h4 className="text-sm font-mono font-medium text-white mb-3">Default View</h4>
-                <div className="grid grid-cols-4 gap-2">
+                <div className="grid grid-cols-3 gap-2">
                   {LAYOUT_OPTIONS.map(opt => {
                     const Icon = opt.icon;
                     const isActive = defaultView === opt.key;

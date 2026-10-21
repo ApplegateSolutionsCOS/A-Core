@@ -9,28 +9,128 @@
 import React, { useState, useEffect } from 'react';
 import { useConnection } from '@/contexts/ConnectionContext';
 import { useAuth } from '@/contexts/AuthContext';
+import {
+  evaluateThirtyDayOfflineLease,
+  recordMonotonicLeaseTick,
+  renewThirtyDayOfflineLease,
+  LeaseEvaluation,
+} from '@/lib/sessionManager';
+import {
+  cancelHoneypotAlert,
+  reinstateAccountAndSecurityLocks,
+} from '@/lib/qcoreSecurity';
 
-// ─── Connection Status Banner ────────────────────────────────
+// ─── Connection Status & 30-Day Q-CORE Lease Banner ──────────────────────────
 
 export const ConnectionBanner: React.FC = () => {
-  const { isBrowserOnline, showBanner, dismissBanner, pendingChanges, isSyncing, triggerManualSync, syncStatus } = useConnection();
-  const { isAuthenticated } = useAuth();
+  const { isBrowserOnline, showBanner, dismissBanner, pendingChanges, isSyncing, triggerManualSync } = useConnection();
+  const { isAuthenticated, isPlatformOwner } = useAuth();
   const [isRetrying, setIsRetrying] = useState(false);
+  const [leaseEval, setLeaseEval] = useState<LeaseEvaluation | null>(null);
+  const [dismissedLeaseBanner, setDismissedLeaseBanner] = useState(false);
 
-  // Only show when:
-  // 1. User is signed in
-  // 2. showBanner is true (set by ConnectionContext when navigator goes offline)
-  // 3. Browser is actually offline (navigator.onLine === false)
-  if (!showBanner || isBrowserOnline || !isAuthenticated) return null;
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    evaluateThirtyDayOfflineLease().then(setLeaseEval);
+
+    const handleSecurityStateChange = () => {
+      setDismissedLeaseBanner(false);
+      evaluateThirtyDayOfflineLease().then(setLeaseEval);
+    };
+    window.addEventListener('qcore-security-state-changed', handleSecurityStateChange);
+
+    const timer = setInterval(() => {
+      recordMonotonicLeaseTick().then(setLeaseEval);
+    }, 60000);
+
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('qcore-security-state-changed', handleSecurityStateChange);
+    };
+  }, [isAuthenticated, isBrowserOnline]);
 
   const handleRetry = async () => {
     setIsRetrying(true);
     await triggerManualSync();
+    const refreshed = await renewThirtyDayOfflineLease(0);
+    setLeaseEval(refreshed);
     setIsRetrying(false);
   };
 
+  const handleReinstateAccount = async () => {
+    setIsRetrying(true);
+    await reinstateAccountAndSecurityLocks();
+    const refreshed = await evaluateThirtyDayOfflineLease();
+    setLeaseEval(refreshed);
+    setDismissedLeaseBanner(false);
+    setIsRetrying(false);
+  };
+
+  const handleCancelAlert = async () => {
+    cancelHoneypotAlert();
+    const refreshed = await renewThirtyDayOfflineLease(0);
+    setLeaseEval(refreshed);
+    setDismissedLeaseBanner(true);
+  };
+
+  // Render Day 26-29 Grace Warning or Day 30+ Read-Only Vault Lock Banner if active
+  // Positioned at top-16 (64px) so TopHeader and Profile button remain 100% visible and accessible
+  if (isAuthenticated && leaseEval?.bannerMessage && !dismissedLeaseBanner) {
+    const isLocked = leaseEval.status === 'EXPIRED_READ_ONLY' || leaseEval.status === 'CLOCK_TAMPERED';
+    return (
+      <div className="fixed top-16 left-0 right-0 z-[58] animate-slideDown">
+        <div
+          className={`border-b backdrop-blur-md px-4 py-2 ${
+            isLocked
+              ? 'bg-gradient-to-r from-red-950/95 via-black/95 to-red-950/95 border-red-500/40 shadow-[0_4px_20px_rgba(239,68,68,0.25)]'
+              : 'bg-gradient-to-r from-amber-950/95 via-black/95 to-amber-950/95 border-amber-500/40 shadow-[0_4px_20px_rgba(245,158,11,0.2)]'
+          }`}
+        >
+          <div className="max-w-screen-2xl mx-auto flex items-center justify-between gap-4 flex-wrap">
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="text-base">{isLocked ? '🔒' : '⚠️'}</span>
+              <span className={`font-mono text-xs sm:text-sm font-bold ${isLocked ? 'text-red-300' : 'text-amber-300'}`}>
+                [Q-CORE 30-DAY LEASE: {leaseEval.status}]
+              </span>
+              <span className="text-gray-200 font-mono text-xs">{leaseEval.bannerMessage}</span>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              {isPlatformOwner() && (
+                <>
+                  <button
+                    onClick={handleReinstateAccount}
+                    disabled={isRetrying}
+                    className="px-3 py-1 bg-emerald-500/20 border border-emerald-500/50 text-emerald-300 rounded-lg hover:bg-emerald-500/30 transition-all font-mono text-xs font-bold whitespace-nowrap"
+                  >
+                    🛡️ Reinstate Account & Unlock
+                  </button>
+                  <button
+                    onClick={handleCancelAlert}
+                    className="px-2.5 py-1 bg-gray-800/80 border border-gray-600/60 text-gray-300 rounded-lg hover:bg-gray-700/80 hover:text-white transition-all font-mono text-xs whitespace-nowrap"
+                  >
+                    ✕ Cancel Alert
+                  </button>
+                </>
+              )}
+              <button
+                onClick={handleRetry}
+                disabled={isRetrying}
+                className="px-3 py-1 bg-cyan-500/20 border border-cyan-500/50 text-cyan-300 rounded-lg hover:bg-cyan-500/30 transition-all font-mono text-xs whitespace-nowrap"
+              >
+                {isRetrying ? 'Verifying Lease...' : '⚡ Sync & Renew 30-Day Lease'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Standard Offline Mode Banner (Days 1-25 Offline)
+  if (!showBanner || isBrowserOnline || !isAuthenticated) return null;
+
   return (
-    <div className="fixed top-0 left-0 right-0 z-[100] animate-slideDown">
+    <div className="fixed top-16 left-0 right-0 z-[58] animate-slideDown">
       <div className="bg-gradient-to-r from-purple-950/70 via-violet-950/70 to-fuchsia-950/70 border-b border-purple-500/25 backdrop-blur-md px-4 py-2.5 shadow-[0_4px_20px_rgba(147,51,234,0.1)]">
 
         <div className="max-w-screen-2xl mx-auto flex items-center justify-between gap-4">

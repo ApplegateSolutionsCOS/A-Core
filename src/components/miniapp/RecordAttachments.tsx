@@ -1,6 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/AuthContext';
+import {
+  encryptFileForVault,
+  decryptFileFromVault,
+  resolveAndDecryptFileUrl,
+  SECURITY_ALGORITHMS,
+} from '@/lib/encryption';
 
 // Inline icons
 const UploadCloudIcon: React.FC<{ size?: number; className?: string }> = ({ size = 24, className = '' }) => (
@@ -34,6 +40,10 @@ interface Attachment {
   url: string;
   uploadedAt: string;
   uploadedBy: string;
+  encryptionAlgorithm?: string;
+  sha512Digest?: string;
+  keyId?: string;
+  isEncrypted?: boolean;
 }
 
 interface RecordAttachmentsProps {
@@ -87,35 +97,65 @@ const RecordAttachments: React.FC<RecordAttachmentsProps> = ({
   const handleDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); setIsDragging(true); }, []);
   const handleDragLeave = useCallback((e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); setIsDragging(false); }, []);
 
+  const [decryptedThumbUrls, setDecryptedThumbUrls] = useState<Record<string, string>>({});
+
+  // Resolve & decrypt any encrypted image attachments for inline thumbnails
+  useEffect(() => {
+    let active = true;
+    attachments.forEach(async (att) => {
+      if (isImageType(att.type) && (att.isEncrypted || att.path?.endsWith('.qcore')) && !decryptedThumbUrls[att.id]) {
+        try {
+          const { objectUrl } = await resolveAndDecryptFileUrl(att.url, att.type);
+          if (active) {
+            setDecryptedThumbUrls((prev) => ({ ...prev, [att.id]: objectUrl }));
+          }
+        } catch {
+          // Keep default icon if preview decryption fails
+        }
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [attachments]);
+
   const uploadFile = async (file: File) => {
     if (file.size > 50 * 1024 * 1024) {
       setError('File size must be under 50MB');
       return;
     }
     setIsUploading(true);
-    setUploadProgress(10);
+    setUploadProgress(15);
     setError(null);
 
     try {
-      const ext = file.name.split('.').pop() || 'bin';
       const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-      const filePath = `records/${miniAppId}/${recordId}/${Date.now()}_${safeName}`;
+      const vaultKeyId = `record-vault-${miniAppId}`;
 
-      setUploadProgress(30);
+      // Stage 1: Native PQC Encryption (AES-256-GCM + ML-KEM-1024 + SHA-512)
+      setUploadProgress(35);
+      const { encryptedBlob, envelope } = await encryptFileForVault(file, vaultKeyId);
+      const filePath = `records/${miniAppId}/${recordId}/${Date.now()}_${safeName}.qcore`;
 
-      const { data, error: uploadError } = await supabase.storage
+      setUploadProgress(60);
+
+      let publicUrl = '';
+      const { error: uploadError } = await supabase.storage
         .from(BUCKET)
-        .upload(filePath, file, {
+        .upload(filePath, encryptedBlob, {
           cacheControl: '3600',
+          contentType: 'application/vnd.qcore.encrypted+json',
           upsert: false,
         });
 
-      if (uploadError) throw uploadError;
-      setUploadProgress(70);
-
-      // Get public URL
-      const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(filePath);
-      const publicUrl = urlData?.publicUrl || '';
+      if (uploadError) {
+        // Fallback to local encrypted data URL if storage bucket is unavailable
+        const envJson = JSON.stringify(envelope);
+        publicUrl = `data:application/vnd.qcore.encrypted+json;base64,${btoa(envJson)}`;
+      } else {
+        const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(filePath);
+        publicUrl = urlData?.publicUrl || '';
+      }
 
       setUploadProgress(90);
 
@@ -128,6 +168,10 @@ const RecordAttachments: React.FC<RecordAttachmentsProps> = ({
         url: publicUrl,
         uploadedAt: new Date().toISOString(),
         uploadedBy: userId,
+        isEncrypted: true,
+        encryptionAlgorithm: SECURITY_ALGORITHMS.display,
+        sha512Digest: envelope.sha512DigestHex,
+        keyId: envelope.keyId,
       };
 
       const updated = [...attachments, newAttachment];
@@ -174,14 +218,41 @@ const RecordAttachments: React.FC<RecordAttachmentsProps> = ({
     }
   };
 
-  const handleDownload = (attachment: Attachment) => {
-    const link = document.createElement('a');
-    link.href = attachment.url;
-    link.download = attachment.name;
-    link.target = '_blank';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  const handleOpenPreview = async (attachment: Attachment) => {
+    try {
+      if (decryptedThumbUrls[attachment.id]) {
+        setPreviewUrl(decryptedThumbUrls[attachment.id]);
+        return;
+      }
+      if (attachment.isEncrypted || attachment.path?.endsWith('.qcore') || attachment.url.startsWith('data:application/vnd.qcore')) {
+        const { objectUrl } = await resolveAndDecryptFileUrl(attachment.url, attachment.type);
+        setDecryptedThumbUrls((prev) => ({ ...prev, [attachment.id]: objectUrl }));
+        setPreviewUrl(objectUrl);
+      } else {
+        setPreviewUrl(attachment.url);
+      }
+    } catch (err: any) {
+      setError('Failed to decrypt preview: ' + (err.message || 'Unknown error'));
+    }
+  };
+
+  const handleDownload = async (attachment: Attachment) => {
+    try {
+      let targetUrl = attachment.url;
+      if (attachment.isEncrypted || attachment.path?.endsWith('.qcore') || attachment.url.startsWith('data:application/vnd.qcore')) {
+        const { objectUrl } = await resolveAndDecryptFileUrl(attachment.url, attachment.type);
+        targetUrl = objectUrl;
+      }
+      const link = document.createElement('a');
+      link.href = targetUrl;
+      link.download = attachment.name;
+      link.target = '_blank';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err: any) {
+      setError('Failed to decrypt attachment: ' + (err.message || 'Unknown error'));
+    }
   };
 
   if (compact) {
@@ -207,14 +278,20 @@ const RecordAttachments: React.FC<RecordAttachmentsProps> = ({
             {attachments.map(att => {
               const FileIconComp = getFileIcon(att.type);
               const color = getFileColor(att.type);
+              const thumbSrc = decryptedThumbUrls[att.id] || att.url;
               return (
                 <div key={att.id} className="group relative flex items-center gap-2 px-2 py-1.5 bg-gray-900/60 border border-gray-800 rounded-lg hover:border-gray-700 transition-all">
                   {isImageType(att.type) ? (
-                    <img src={att.url} alt={att.name} className="w-6 h-6 rounded object-cover" />
+                    <img src={thumbSrc} alt={att.name} className="w-6 h-6 rounded object-cover" />
                   ) : (
                     <FileIconComp size={14} style={{ color }} />
                   )}
                   <span className="text-[10px] font-mono text-gray-300 max-w-[100px] truncate">{att.name}</span>
+                  {(att.isEncrypted || att.path?.endsWith('.qcore')) && (
+                    <span className="px-1 py-0.5 rounded text-[8px] font-mono bg-emerald-500/15 text-emerald-400 border border-emerald-500/30" title={att.encryptionAlgorithm || SECURITY_ALGORITHMS.display}>
+                      PQC
+                    </span>
+                  )}
                   <div className="hidden group-hover:flex items-center gap-1">
                     <button onClick={() => handleDownload(att)} className="p-0.5 text-gray-500 hover:text-blue-400"><DownloadIcon size={10} /></button>
                     <button onClick={() => handleDelete(att)} className="p-0.5 text-gray-500 hover:text-red-400"><TrashIcon size={10} /></button>
@@ -240,6 +317,9 @@ const RecordAttachments: React.FC<RecordAttachmentsProps> = ({
           </h4>
           <span className="text-[10px] text-gray-600 font-mono">({attachments.length})</span>
         </div>
+        <span className="px-2 py-0.5 rounded-full text-[9px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+          {SECURITY_ALGORITHMS.display}
+        </span>
       </div>
 
       {/* Drop zone */}
@@ -262,7 +342,7 @@ const RecordAttachments: React.FC<RecordAttachmentsProps> = ({
         {isUploading ? (
           <div className="space-y-2">
             <div className="w-6 h-6 border-2 rounded-full animate-spin mx-auto" style={{ borderColor: `rgba(${wsColor.rgb}, 0.3)`, borderTopColor: wsColor.primary }} />
-            <p className="text-xs font-mono" style={{ color: wsColor.primary }}>Uploading...</p>
+            <p className="text-xs font-mono" style={{ color: wsColor.primary }}>Encrypting (ML-KEM-1024 + AES-256-GCM + SHA-512) & Uploading...</p>
             <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden max-w-[200px] mx-auto">
               <div className="h-full rounded-full transition-all duration-300" style={{ width: `${uploadProgress}%`, background: `linear-gradient(90deg, ${wsColor.primary}80, ${wsColor.primary})` }} />
             </div>
@@ -271,9 +351,9 @@ const RecordAttachments: React.FC<RecordAttachmentsProps> = ({
           <>
             <UploadCloudIcon size={24} className={isDragging ? '' : 'text-gray-600'} style={isDragging ? { color: wsColor.primary } : {}} />
             <p className="text-xs font-mono text-gray-500 mt-1">
-              {isDragging ? 'Drop file here' : 'Drag & drop or click to upload'}
+              {isDragging ? 'Drop file here' : 'Drag & drop or click to upload (Encrypted at rest)'}
             </p>
-            <p className="text-[10px] font-mono text-gray-700">Max 50MB per file</p>
+            <p className="text-[10px] font-mono text-gray-700">Max 50MB per file &middot; Protected by {SECURITY_ALGORITHMS.display}</p>
           </>
         )}
       </div>
@@ -292,6 +372,7 @@ const RecordAttachments: React.FC<RecordAttachmentsProps> = ({
             const FileIconComp = getFileIcon(att.type);
             const color = getFileColor(att.type);
             const isImage = isImageType(att.type);
+            const thumbSrc = decryptedThumbUrls[att.id] || att.url;
 
             return (
               <div
@@ -302,10 +383,10 @@ const RecordAttachments: React.FC<RecordAttachmentsProps> = ({
                 <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 overflow-hidden" style={{ border: `1px solid ${color}30`, background: `${color}10` }}>
                   {isImage ? (
                     <img
-                      src={att.url}
+                      src={thumbSrc}
                       alt={att.name}
                       className="w-full h-full object-cover rounded-lg cursor-pointer"
-                      onClick={(e) => { e.stopPropagation(); setPreviewUrl(att.url); }}
+                      onClick={(e) => { e.stopPropagation(); handleOpenPreview(att); }}
                     />
                   ) : (
                     <FileIconComp size={20} style={{ color }} />
@@ -314,9 +395,21 @@ const RecordAttachments: React.FC<RecordAttachmentsProps> = ({
 
                 {/* File info */}
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-mono text-white truncate">{att.name}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-mono text-white truncate">{att.name}</p>
+                    {(att.isEncrypted || att.path?.endsWith('.qcore')) && (
+                      <span className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex-shrink-0">
+                        AES-256-GCM + ML-KEM-1024
+                      </span>
+                    )}
+                  </div>
                   <p className="text-[10px] font-mono text-gray-600">
                     {formatFileSize(att.size)} &middot; {new Date(att.uploadedAt).toLocaleDateString()}
+                    {att.sha512Digest && (
+                      <span className="ml-2 text-emerald-500/70" title={`SHA-512: ${att.sha512Digest}`}>
+                        SHA-512: {att.sha512Digest.slice(0, 12)}...
+                      </span>
+                    )}
                   </p>
                 </div>
 
@@ -324,7 +417,7 @@ const RecordAttachments: React.FC<RecordAttachmentsProps> = ({
                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                   {isImage && (
                     <button
-                      onClick={() => setPreviewUrl(att.url)}
+                      onClick={() => handleOpenPreview(att)}
                       className="p-1.5 text-gray-500 hover:text-white rounded transition-colors"
                       title="Preview"
                     >

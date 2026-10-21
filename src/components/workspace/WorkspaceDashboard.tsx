@@ -28,6 +28,8 @@ import {
 import { MessageSquare, MessagesSquare, Activity, CheckSquare, Mail, LayoutDashboard, Megaphone } from 'lucide-react';
 import * as LucideIcons from 'lucide-react'; // ⚡ ADD THIS LINE
 
+import { FEATURES } from '@/config/features';
+
 // Helper to safely map lowercase/dash-case DB icon strings to Lucide's PascalCase exports
 const resolveDashboardIcon = (iconStr: string | null | undefined, appName: string) => {
   if (!iconStr || iconStr === 'grid') return getMiniAppIcon(appName);
@@ -55,6 +57,7 @@ import WorkflowBuilder from '@/components/miniapp/WorkflowBuilder';
 import SecurityWorkspaceView from './SecurityWorkspaceView';
 import { logActivityImmediate } from '@/lib/activityLogger';
 import LeftSlidePanel from '@/components/navigation/LeftSlidePanel';
+import PinnedReportsStrip from '@/components/toolbar/PinnedReportsStrip';
 
 // Mapping human-readable slugs to their unique Database UUIDs
 const WORKSPACE_ID_MAP: Record<string, string> = {
@@ -434,11 +437,16 @@ const WorkspaceDashboard: React.FC<WorkspaceDashboardProps> = ({
           .maybeSingle();
 
         if (localWs?.id) {
-          targetWorkspaceId = localWs.id;
-          setResolvedWorkspaceId(localWs.id);
           const settingsObj = typeof localWs.settings === 'string' ? JSON.parse(localWs.settings || '{}') : (localWs.settings || {});
-          if (settingsObj.tab_order) dbTabOrder = settingsObj.tab_order;
-        } else if (organization.id !== PLATFORM_OWNER_ID && masterWs) {
+          const SYSTEM_PRESET_SLUGS = ['admin', 'accounting', 'personnel', 'main', 'data', 'security'];
+          const isBlockedPreset = !FEATURES.ENABLE_PRESET_WORKSPACES_AND_APPS && SYSTEM_PRESET_SLUGS.includes(workspaceSlug) && !settingsObj.is_custom_lite;
+
+          if (!isBlockedPreset) {
+            targetWorkspaceId = localWs.id;
+            setResolvedWorkspaceId(localWs.id);
+            if (settingsObj.tab_order) dbTabOrder = settingsObj.tab_order;
+          }
+        } else if (FEATURES.ENABLE_PRESET_WORKSPACES_AND_APPS && organization.id !== PLATFORM_OWNER_ID && masterWs) {
           // ⚡ JIT PROVISIONING: AUTO-CREATE WORKSPACE
           const masterSettings = typeof masterWs.settings === 'string' ? JSON.parse(masterWs.settings) : (masterWs.settings || {});
           if (masterSettings.auto_deploy) {
@@ -485,7 +493,7 @@ const WorkspaceDashboard: React.FC<WorkspaceDashboardProps> = ({
         let finalApps = myApps || [];
 
         // 4. ⚡ JIT PROVISIONING: AUTO-DEPLOY MISSING APPS
-        if (organization.id !== PLATFORM_OWNER_ID && masterWs) {
+        if (FEATURES.ENABLE_PRESET_WORKSPACES_AND_APPS && organization.id !== PLATFORM_OWNER_ID && masterWs) {
            // ⚡ FIX: Map both names and slugs to prevent unique constraint cloning errors
            const myAppNames = new Set(finalApps.map(a => a.name));
            const myAppSlugs = new Set(finalApps.map(a => a.slug).filter(Boolean));
@@ -585,14 +593,47 @@ const WorkspaceDashboard: React.FC<WorkspaceDashboardProps> = ({
     loadDynamicApps();
   }, [organization?.id, workspaceSlug, updateKey]);
 
+  useEffect(() => {
+    const handleOpenWfFromQBall = (e: any) => {
+      const targetAppName = e.detail?.appName;
+      const targetAppId = e.detail?.appId;
+      if (targetAppName) {
+        handleEditMiniApp(targetAppName, 'workflows', targetAppId);
+      }
+    };
+    window.addEventListener('openMiniAppWorkflowBuilder', handleOpenWfFromQBall);
+    return () => window.removeEventListener('openMiniAppWorkflowBuilder', handleOpenWfFromQBall);
+  }, [appIdMap, resolvedWorkspaceId, organization?.id]);
+
   // ============================================
-  // ⚡ REALTIME DATABASE SYNC: Auto-remove tabs by ID
+  // ⚡ REALTIME DATABASE SYNC: Auto-add, update & remove tabs live (including Podio webhooks!)
   // ============================================
   useEffect(() => {
     if (!organization?.id) return;
+
+    const handleSchemaEvent = () => {
+      setUpdateKey(Date.now());
+    };
+    window.addEventListener('miniapp_schema_updated', handleSchemaEvent);
     
     const channel = supabase
-      .channel(`sync-miniapps-${workspaceSlug}`)
+      .channel(`sync-miniapps-${workspaceSlug}-${organization.id}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'app_private', table: 'mini_apps', filter: `organization_id=eq.${organization.id}` },
+        () => {
+          // New MiniApp created (e.g. via Podio app.create webhook or importer) -> reload tabs!
+          setUpdateKey(Date.now());
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'app_private', table: 'mini_apps', filter: `organization_id=eq.${organization.id}` },
+        () => {
+          // MiniApp schema updated (e.g. via Podio app.update webhook) -> refresh!
+          setUpdateKey(Date.now());
+        }
+      )
       .on(
         'postgres_changes',
         { event: 'DELETE', schema: 'app_private', table: 'mini_apps' },
@@ -631,7 +672,10 @@ const WorkspaceDashboard: React.FC<WorkspaceDashboardProps> = ({
       )
       .subscribe();
 
-    return () => { supabase.removeChannel(channel); };
+    return () => {
+      window.removeEventListener('miniapp_schema_updated', handleSchemaEvent);
+      supabase.removeChannel(channel);
+    };
   }, [workspaceSlug, organization?.id]);
 
   // ============================================
@@ -666,7 +710,7 @@ const WorkspaceDashboard: React.FC<WorkspaceDashboardProps> = ({
           }
         }
 
-        const globalWsId = WORKSPACE_ID_MAP[workspaceSlug];
+        const globalWsId = FEATURES.ENABLE_PRESET_WORKSPACES_AND_APPS ? WORKSPACE_ID_MAP[workspaceSlug] : null;
         const searchWsIds = [targetWorkspaceId, globalWsId].filter(Boolean); // Filters out any null/undefined values
 
         if (searchWsIds.length === 0) {
@@ -691,12 +735,17 @@ const WorkspaceDashboard: React.FC<WorkspaceDashboardProps> = ({
         const missingPresets = presetNames.filter(name => !existingNames.has(name));
 
         // 3. Load live record counts
-        const { data: allApps } = await supabase
+        let appsQuery = supabase
           .schema('app_private')
           .from('mini_apps')
           .select('id, name')
-          .in('workspace_id', searchWsIds) // Reuses the array from Fix #2
-          .or(`organization_id.eq.${organization.id},is_preset.eq.true`);
+          .in('workspace_id', searchWsIds);
+
+        appsQuery = FEATURES.ENABLE_PRESET_WORKSPACES_AND_APPS
+          ? appsQuery.or(`organization_id.eq.${organization.id},is_preset.eq.true`)
+          : appsQuery.eq('organization_id', organization.id);
+
+        const { data: allApps } = await appsQuery;
 
         if (allApps && allApps.length > 0) {
           const appIdToName: Record<string, string> = {};
@@ -1608,24 +1657,28 @@ const sortedTiles = React.useMemo(() => {
   };
 
   // Open the MiniApp Builder in Edit Mode with properly parsed fields
-  // ⚡ FIX: Added targetTab parameter with default
-  const handleEditMiniApp = async (appName: string, targetTab: 'template' | 'workflows' | 'settings' = 'template') => {
+  const handleEditMiniApp = async (
+    appName: string,
+    targetTab: 'template' | 'workflows' | 'settings' = 'template',
+    explicitAppId?: string
+  ) => {
     if (!organization?.id) {
       console.error('[WorkspaceDashboard] Missing Org ID for edit.');
       return;
     }
 
     try {
-      // 1. Fetch the exact app record from the database using the strictly tracked ID map
-      const exactAppId = appIdMapRef.current[appName] || appIdMap[appName];
+      // 1. Fetch the exact app record from the database using explicitAppId or the tracked ID map
+      const exactAppId = explicitAppId || appIdMapRef.current[appName] || appIdMap[appName];
       
       let query = supabase.schema('app_private').from('mini_apps').select('*');
       
-      // ⚡ FIX: Look up the exact local clone ID to ensure RLS doesn't block saves!
       if (exactAppId) {
         query = query.eq('id', exactAppId);
       } else {
-        query = query.ilike('name', appName).eq('workspace_id', resolvedWorkspaceId || WORKSPACE_ID_MAP[workspaceSlug]);
+        const wsIdToUse = resolvedWorkspaceId || WORKSPACE_ID_MAP[workspaceSlug];
+        query = query.ilike('name', appName).eq('organization_id', organization.id);
+        if (wsIdToUse) query = query.eq('workspace_id', wsIdToUse);
       }
 
       const { data: appRecords, error } = await query.limit(1);
@@ -1827,7 +1880,9 @@ const sortedTiles = React.useMemo(() => {
           { id: 'f6', user_name: 'John Doe', action: 'assigned task to', target: 'Sarah Wilson', created_at: new Date(Date.now() - 1200000).toISOString() },
         ];
 
-        const displayActivities = activities.length > 0 ? activities : fallbackActivities;
+        const displayActivities = activities.length > 0
+          ? activities
+          : (FEATURES.ENABLE_WORKSPACE_MOCK_WIDGETS ? fallbackActivities : []);
 
         return (
           <div>
@@ -1842,21 +1897,27 @@ const sortedTiles = React.useMemo(() => {
               </h3>
             </div>
             <div className={`space-y-2 max-h-[260px] overflow-y-auto ${scrollbarClass}`}>
-              {displayActivities.map((activity, index) => (
-                <div key={activity.id || index} className="flex items-center gap-2 p-2 bg-black/30 rounded-lg" style={{ border: `1px solid rgba(${wsColor.rgb}, 0.15)` }}>
-                  <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-medium font-mono flex-shrink-0" style={{ background: `linear-gradient(135deg, rgba(${wsColor.rgb}, 0.2), rgba(0,0,0,0.8))`, color: wsColor.primary }}>
-                    {activity.user_name.split(' ').map(n => n[0]).join('')}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs text-gray-300 font-mono truncate">
-                      <span className="text-white font-medium">{activity.user_name}</span>
-                      {' '}{activity.action}{' '}
-                      <span style={{ color: wsColor.primary }}>{activity.target}</span>
-                    </p>
-                  </div>
-                  <span className="text-[10px] text-gray-500 font-mono whitespace-nowrap">{timeAgo(activity.created_at)}</span>
+              {displayActivities.length === 0 ? (
+                <div className="p-6 text-center bg-black/30 rounded-lg border border-white/5">
+                  <p className="text-xs text-gray-500 font-mono">No activity recorded in this workspace yet.</p>
                 </div>
-              ))}
+              ) : (
+                displayActivities.map((activity, index) => (
+                  <div key={activity.id || index} className="flex items-center gap-2 p-2 bg-black/30 rounded-lg" style={{ border: `1px solid rgba(${wsColor.rgb}, 0.15)` }}>
+                    <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-medium font-mono flex-shrink-0" style={{ background: `linear-gradient(135deg, rgba(${wsColor.rgb}, 0.2), rgba(0,0,0,0.8))`, color: wsColor.primary }}>
+                      {activity.user_name.split(' ').map(n => n[0]).join('')}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs text-gray-300 font-mono truncate">
+                        <span className="text-white font-medium">{activity.user_name}</span>
+                        {' '}{activity.action}{' '}
+                        <span style={{ color: wsColor.primary }}>{activity.target}</span>
+                      </p>
+                    </div>
+                    <span className="text-[10px] text-gray-500 font-mono whitespace-nowrap">{timeAgo(activity.created_at)}</span>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         );
@@ -2198,8 +2259,8 @@ const sortedTiles = React.useMemo(() => {
                         <div 
                           className="relative group/ws-dropdown flex items-center justify-center" 
                           onClick={(e) => {
-                            // ⚡ FIX: When condensed, the icon is the entire tab. Let the click bubble up to change tabs normally!
-                            if (isTabsCondensed) return;
+                            // ⚡ FIX: When condensed or when preset workspaces are disabled (Basic tier), let the click bubble up to change tabs normally!
+                            if (isTabsCondensed || !FEATURES.ENABLE_PRESET_WORKSPACES_AND_APPS) return;
                             
                             e.stopPropagation();
                             if (activeMiniApp !== appName) handleMiniAppClick(appName);
@@ -2796,17 +2857,16 @@ const sortedTiles = React.useMemo(() => {
           position={{ x: contextMenu.x, y: contextMenu.y }}
           isVisible={true}
           onClose={() => setContextMenu(null)}
-          onEdit={() => { handleEditMiniApp(contextMenu.appName); }}
-          onWorkflows={() => { console.log('Open workflows for', contextMenu.appName); }}
+          onEdit={() => { handleEditMiniApp(contextMenu.appName, 'template'); }}
+          onWorkflows={() => { handleEditMiniApp(contextMenu.appName, 'workflows'); }}
           onHide={() => { console.log('Hide', contextMenu.appName); }}
           onIntegrations={() => { console.log('Open integrations for', contextMenu.appName); }}
           onShare={() => { console.log('Share', contextMenu.appName); }}
           onImport={() => { console.log('Import to', contextMenu.appName); }}
           onExport={() => { console.log('Export from', contextMenu.appName); }}
           onNotifications={() => { console.log('Notifications for', contextMenu.appName); }}
-          // ⚡ DELETED onAdvanced prop here
           onFavorite={() => { toggleFavorite(contextMenu.appName); }}
-          isFavorited={favorites.has(contextMenu.appName)}
+          isFavorited={favorites.has(appName => appName === contextMenu.appName) || favorites.has(contextMenu.appName)}
           wsColor={wsColor}
           isAdmin={isAdmin}
           onDelete={() => { 
@@ -2825,8 +2885,8 @@ const sortedTiles = React.useMemo(() => {
           isAdmin={isAdmin}
           onBack={() => { setActiveMiniApp(null); setMiniAppAddRecord(false); }}
           initialAddRecord={miniAppAddRecord}
-          onEditTemplate={(name) => handleEditMiniApp(name)}
-          wsColor={wsColor} // ⚡ FIX: Explicitly pass the resolved workspace color down!
+          onEditTemplate={(name, _exactAppId, targetTab) => handleEditMiniApp(name, targetTab || 'template')}
+          wsColor={wsColor}
         />
 
       ) : workspaceSlug === 'security' ? (
@@ -2836,11 +2896,12 @@ const sortedTiles = React.useMemo(() => {
       ) : (
 
         <div className="px-4 max-w-full mx-auto pt-4 relative z-10">
-          {/* Active Users Bar */}
+          {/* Active Users Bar / Workspace Summary Bar */}
           <div className="bg-black/50 rounded-xl p-4 mb-4" style={{ border: `1px solid rgba(${wsColor.rgb}, 0.3)`, boxShadow: `0 0 15px rgba(${wsColor.rgb}, 0.1)` }}>
             <div className="flex items-center justify-between gap-4">
               
-              {/* Left Side: Dynamic Users Container */}
+              {/* Left Side: Dynamic Users Container (Pro+) or Real-Data Workspace Summary (Basic) */}
+              {FEATURES.ENABLE_WORKSPACE_MOCK_WIDGETS ? (
               <div className="flex items-center gap-4 flex-1 min-w-0">
                 
                 {/* ⚡ UPDATED: Users Toggle Button with Hover Tooltip */}
@@ -3111,6 +3172,41 @@ const sortedTiles = React.useMemo(() => {
                   </div>
                 </div>
               </div>
+              ) : (
+                <div className="flex items-center gap-4 flex-1 min-w-0">
+                  <div
+                    className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+                    style={{
+                      border: `1px solid rgba(${wsColor.rgb}, 0.4)`,
+                      backgroundColor: `rgba(${wsColor.rgb}, 0.12)`,
+                      color: wsColor.primary,
+                      boxShadow: `0 0 12px rgba(${wsColor.rgb}, 0.2)`
+                    }}
+                  >
+                    <WorkspaceIcon slug={workspaceSlug} size={20} style={{ color: wsColor.primary }} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <h2 className="text-base font-bold font-mono text-white tracking-wide truncate">
+                        {workspaceConfig.name}
+                      </h2>
+                      <span
+                        className="px-2 py-0.5 rounded-md text-[11px] font-mono"
+                        style={{
+                          backgroundColor: `rgba(${wsColor.rgb}, 0.12)`,
+                          border: `1px solid rgba(${wsColor.rgb}, 0.3)`,
+                          color: wsColor.primary
+                        }}
+                      >
+                        {allMiniAppNames.length} {allMiniAppNames.length === 1 ? 'App' : 'Apps'}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-md text-[11px] font-mono bg-white/5 border border-white/10 text-gray-300">
+                        {Object.values(miniAppRecordCounts).reduce((sum, c) => sum + c, 0).toLocaleString()} Records
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* ⚡ UPDATED: Right Side Quick Action Buttons */}
               <div className="flex items-center gap-2 flex-shrink-0 pl-4 border-l border-gray-800/50">
@@ -3138,8 +3234,8 @@ const sortedTiles = React.useMemo(() => {
               </div>
             </div>
 
-            {/* ⚡ NEW: Second Row (Visible only when expanded) */}
-            {showUsersDropdown && mockActiveUsers.length > maxVisibleUsers && (
+            {/* ⚡ NEW: Second Row (Visible only when expanded in Pro+) */}
+            {FEATURES.ENABLE_WORKSPACE_MOCK_WIDGETS && showUsersDropdown && mockActiveUsers.length > maxVisibleUsers && (
               <div className="flex flex-wrap pt-3 pb-1 pl-1 animate-in slide-in-from-top-2 duration-300 gap-y-3">
                 {mockActiveUsers.slice(maxVisibleUsers).map((u, i) => {
                   const actualIndex = maxVisibleUsers + i;
@@ -3356,67 +3452,199 @@ const sortedTiles = React.useMemo(() => {
             )}
           </div>
 
-          {/* Resizable Tiles Container */}
-          <div 
-            ref={containerRef} 
-            // ⚡ FIX: Added flex flex-col gap-4 for mobile, switches back to md:block for absolute desktop!
-            className="relative w-full max-w-full overflow-x-hidden flex flex-col gap-4 md:block" 
-            style={{ minHeight: `${getLowestTileBottom() + 100}px` }}
-          >
+          <PinnedReportsStrip dashboardId={`ws_${workspaceSlug}`} label={`${workspaceConfig.name} Workspace`} />
 
-            {/* ⚡ FIX: Mapping over sortedTiles so DOM flow dictates vertical mobile stack order */}
-            {sortedTiles.map((tile) => {
-              const isBeingDragged = reorderDragTileId === tile.id;
-              const preview = !isBeingDragged ? previewLayout?.[tile.id] : null;
+          {FEATURES.ENABLE_WORKSPACE_MOCK_WIDGETS ? (
+            /* Resizable Tiles Container (Pro+) */
+            <div 
+              ref={containerRef} 
+              // ⚡ FIX: Added flex flex-col gap-4 for mobile, switches back to md:block for absolute desktop!
+              className="relative w-full max-w-full overflow-x-hidden flex flex-col gap-4 md:block" 
+              style={{ minHeight: `${getLowestTileBottom() + 100}px` }}
+            >
 
-              // ⚡ FIX: Removed all the mobileConfig overrides.
-              const displayX = preview?.x ?? tile.position.x;
-              const displayY = preview?.y ?? tile.position.y;
-              const displayWidth = preview?.width ?? tile.size.width;
-              const displayHeight = preview?.height ?? tile.size.height;
+              {/* ⚡ FIX: Mapping over sortedTiles so DOM flow dictates vertical mobile stack order */}
+              {sortedTiles.map((tile) => {
+                const isBeingDragged = reorderDragTileId === tile.id;
+                const preview = !isBeingDragged ? previewLayout?.[tile.id] : null;
 
-              return (
-                <ResizableTile
-                  key={tile.id}
-                  id={tile.id}
-                  isInitialLoad={isInitialLoad}
-                  initialWidth={displayWidth}
-                  initialHeight={displayHeight}
-                  position={{ x: displayX, y: displayY + TILE_Y_OFFSET }}
-                  zIndex={tile.zIndex}
-                  onPositionChange={handlePositionChange}
-                  onSizeChange={handleSizeChange}
-                  onSizeChangeEnd={handleSizeChangeEnd}
-                  onZIndexChange={handleZIndexChange}
-                  onReorderDragStart={handleReorderDragStart}
-                  onReorderDragOver={handleReorderDragOver}
-                  onReorderDrop={handleReorderDrop}
-                  onReorderDragEnd={handleReorderDragEnd}
-                  isDragSource={isBeingDragged}
-                  glowColor={glowColor}
-                  minWidth={150}
-                  minHeight={120}
-                  maxWidth={2000}
-                  maxHeight={700}
-                  allTiles={allTilesData}
-                  canDrag={isAdmin}
-                  onNewWindow={() => {
-                    const url = `${window.location.origin}?workspace=${workspaceSlug}&tile=${tile.id}`;
-                    window.open(url, '_blank', 'width=800,height=600,menubar=no,toolbar=no');
-                  }}
-                  onFullScreen={() => {
-                    document.documentElement.requestFullscreen?.().catch(() => {});
-                  }}
-                  onClose={() => {
-                    setTiles(prev => prev.filter(t => t.id !== tile.id));
-                  }}
-                  canDelete={isAdmin}
-                >
-                  {renderTileContent(tile)}
-                </ResizableTile>
-              );
-            })}
-          </div>
+                // ⚡ FIX: Removed all the mobileConfig overrides.
+                const displayX = preview?.x ?? tile.position.x;
+                const displayY = preview?.y ?? tile.position.y;
+                const displayWidth = preview?.width ?? tile.size.width;
+                const displayHeight = preview?.height ?? tile.size.height;
+
+                return (
+                  <ResizableTile
+                    key={tile.id}
+                    id={tile.id}
+                    isInitialLoad={isInitialLoad}
+                    initialWidth={displayWidth}
+                    initialHeight={displayHeight}
+                    position={{ x: displayX, y: displayY + TILE_Y_OFFSET }}
+                    zIndex={tile.zIndex}
+                    onPositionChange={handlePositionChange}
+                    onSizeChange={handleSizeChange}
+                    onSizeChangeEnd={handleSizeChangeEnd}
+                    onZIndexChange={handleZIndexChange}
+                    onReorderDragStart={handleReorderDragStart}
+                    onReorderDragOver={handleReorderDragOver}
+                    onReorderDrop={handleReorderDrop}
+                    onReorderDragEnd={handleReorderDragEnd}
+                    isDragSource={isBeingDragged}
+                    glowColor={glowColor}
+                    minWidth={150}
+                    minHeight={120}
+                    maxWidth={2000}
+                    maxHeight={700}
+                    allTiles={allTilesData}
+                    canDrag={isAdmin}
+                    onNewWindow={() => {
+                      const url = `${window.location.origin}?workspace=${workspaceSlug}&tile=${tile.id}`;
+                      window.open(url, '_blank', 'width=800,height=600,menubar=no,toolbar=no');
+                    }}
+                    onFullScreen={() => {
+                      document.documentElement.requestFullscreen?.().catch(() => {});
+                    }}
+                    onClose={() => {
+                      setTiles(prev => prev.filter(t => t.id !== tile.id));
+                    }}
+                    canDelete={isAdmin}
+                  >
+                    {renderTileContent(tile)}
+                  </ResizableTile>
+                );
+              })}
+            </div>
+          ) : (
+            /* Clean Real-Data Workspace Overview (Basic Tier) */
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 pb-8">
+              {/* Left 2 Columns: Workspace Applications Directory */}
+              <div
+                className="lg:col-span-2 bg-black/50 rounded-xl p-5"
+                style={{ border: `1px solid rgba(${wsColor.rgb}, 0.3)`, boxShadow: `0 0 15px rgba(${wsColor.rgb}, 0.08)` }}
+              >
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-sm font-semibold text-white flex items-center gap-2 font-mono">
+                    <LayoutDashboard size={16} style={{ color: wsColor.primary }} />
+                    Workspace Applications
+                    <span className="text-xs text-gray-500 font-normal">({allMiniAppNames.length})</span>
+                  </h3>
+                  {isAdmin && !isAtAppLimit && (
+                    <button
+                      onClick={() => {
+                        setEditingApp(null);
+                        setBuilderInitialTab('template');
+                        setShowMiniAppBuilder(true);
+                      }}
+                      className="px-3 py-1.5 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-all bg-green-500/15 hover:bg-green-500/25 text-green-400 border border-green-500/30"
+                    >
+                      <PlusIcon size={13} />
+                      <span>Create App</span>
+                    </button>
+                  )}
+                </div>
+
+                {allMiniAppNames.length === 0 ? (
+                  <div className="p-8 text-center rounded-xl bg-black/40 border border-white/5">
+                    <p className="text-sm font-mono text-gray-400 mb-2">No applications in this workspace yet.</p>
+                    <p className="text-xs font-mono text-gray-500 mb-4">
+                      Create a custom application or import apps from Podio in Organization Admin &rarr; Integrations.
+                    </p>
+                    {isAdmin && (
+                      <button
+                        onClick={() => {
+                          setEditingApp(null);
+                          setBuilderInitialTab('template');
+                          setShowMiniAppBuilder(true);
+                        }}
+                        className="px-4 py-2 rounded-lg text-xs font-mono font-bold inline-flex items-center gap-2 transition-all"
+                        style={{
+                          backgroundColor: `rgba(${wsColor.rgb}, 0.15)`,
+                          border: `1px solid ${wsColor.primary}`,
+                          color: wsColor.primary
+                        }}
+                      >
+                        <PlusIcon size={14} />
+                        <span>Create First Application</span>
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                    {allMiniAppNames.map((appName) => {
+                      const MiniAppIcon = resolveDashboardIcon(appIconMap[appName], appName);
+                      const recordCount = miniAppRecordCounts[appName] || 0;
+                      const isFav = favorites.has(appName);
+                      return (
+                        <div
+                          key={appName}
+                          onClick={() => handleMiniAppClick(appName)}
+                          onContextMenu={(e) => handleContextMenu(e, appIdMap[appName], appName)}
+                          className="group relative rounded-xl p-4 bg-black/60 hover:bg-white/[0.04] transition-all cursor-pointer flex items-center gap-3.5"
+                          style={{
+                            border: `1px solid rgba(${wsColor.rgb}, 0.25)`,
+                          }}
+                        >
+                          <div
+                            className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 transition-transform group-hover:scale-105"
+                            style={{
+                              backgroundColor: `rgba(${wsColor.rgb}, 0.12)`,
+                              border: `1px solid rgba(${wsColor.rgb}, 0.35)`,
+                              color: wsColor.primary
+                            }}
+                          >
+                            <MiniAppIcon size={18} />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              <h4 className="text-sm font-mono font-semibold text-white truncate group-hover:underline">
+                                {appName}
+                              </h4>
+                              {isFav && (
+                                <svg width={11} height={11} viewBox="0 0 24 24" fill={wsColor.primary} stroke="none" className="flex-shrink-0">
+                                  <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26 12,2" />
+                                </svg>
+                              )}
+                            </div>
+                            <p className="text-xs font-mono text-gray-400 mt-0.5">
+                              {recordCount.toLocaleString()} {recordCount === 1 ? 'record' : 'records'}
+                            </p>
+                          </div>
+                          {isAdmin && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleEditMiniApp(appName, 'settings');
+                              }}
+                              className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-white/10 text-gray-400 hover:text-white transition-all"
+                              title="Edit App Settings"
+                            >
+                              <SettingsIcon size={14} />
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Right Column: Real Live Activity Stream */}
+              <div
+                className="bg-black/50 rounded-xl p-5"
+                style={{ border: `1px solid rgba(${wsColor.rgb}, 0.3)`, boxShadow: `0 0 15px rgba(${wsColor.rgb}, 0.08)` }}
+              >
+                {renderTileContent({
+                  id: 'activity',
+                  widgetId: 'activity-stream',
+                  position: { x: 0, y: 0 },
+                  size: { width: 0, height: 0 },
+                  zIndex: 1,
+                })}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

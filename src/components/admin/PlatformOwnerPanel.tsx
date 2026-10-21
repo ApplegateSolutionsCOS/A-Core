@@ -93,6 +93,9 @@ const ExpandIcon: React.FC<{ size?: number; className?: string }> = ({ size = 24
 interface PlatformOwnerPanelProps {
   isOpen: boolean;
   onClose: () => void;
+  initialTab?: 'overview' | 'organizations' | 'platform_users' | 'system' | 'audit_logs' | 'quantum' | 'news' | 'security' | 'financials' | 'features';
+  initialSystemSubTab?: 'apps' | 'integrations' | 'database' | 'embed' | 'legal';
+  initialOpenPodio?: boolean;
 }
 
 // Full 36-Color Core Logic mapped globally for settings panels & tabs
@@ -196,9 +199,9 @@ const NeonStatCard: React.FC<{
   );
 };
 
-const PlatformOwnerPanel: React.FC<PlatformOwnerPanelProps> = ({ isOpen, onClose }) => {
+const PlatformOwnerPanel: React.FC<PlatformOwnerPanelProps> = ({ isOpen, onClose, initialTab, initialSystemSubTab, initialOpenPodio }) => {
   const { changePlatformOwnerEmail, user, organization } = useAuth();
-  const [activeTab, setActiveTab] = useState<'overview' | 'organizations' | 'platform_users' | 'system' | 'audit_logs' | 'quantum' | 'news' | 'security' | 'financials' | 'features'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'organizations' | 'platform_users' | 'system' | 'audit_logs' | 'quantum' | 'news' | 'security' | 'financials' | 'features'>(initialTab || 'overview');
 
   // --- NEW: Dynamic Theme Colors for the God Mode Console ---
   const primaryColor = organization?.primary_color || '#06b6d4';
@@ -370,11 +373,12 @@ const PlatformOwnerPanel: React.FC<PlatformOwnerPanelProps> = ({ isOpen, onClose
 
   useEffect(() => {
     if (isOpen) {
+      if (initialTab) setActiveTab(initialTab);
       fetchData();
       check2FAStatus();
       loadAdminPreferences();
     }
-  }, [isOpen]);
+  }, [isOpen, initialTab]);
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -1190,7 +1194,7 @@ const PlatformOwnerPanel: React.FC<PlatformOwnerPanelProps> = ({ isOpen, onClose
             </div>
           )}
 
-          {activeTab === 'system' && <SystemTab copiedEmbed={copiedEmbed} handleCopyEmbed={handleCopyEmbed} embedCodes={embedCodes} />}
+          {activeTab === 'system' && <SystemTab copiedEmbed={copiedEmbed} handleCopyEmbed={handleCopyEmbed} embedCodes={embedCodes} initialSubTab={initialSystemSubTab} initialOpenPodio={initialOpenPodio} />}
           {activeTab === 'audit_logs' && <AuditLogViewer isPlatformOwner={true} />}
           {activeTab === 'security' && <QCoreSecurityDashboard />}
           {activeTab === 'features' && <FeatureTogglePanel />}
@@ -1447,9 +1451,11 @@ interface SystemTabProps {
   copiedEmbed: string | null;
   handleCopyEmbed: (type: string, code: string) => void;
   embedCodes: { button: string, redirect: string };
+  initialSubTab?: 'apps' | 'integrations' | 'database' | 'embed' | 'legal';
+  initialOpenPodio?: boolean;
 }
 
-const SystemTab: React.FC<SystemTabProps> = ({ copiedEmbed, handleCopyEmbed, embedCodes }) => {
+const SystemTab: React.FC<SystemTabProps> = ({ copiedEmbed, handleCopyEmbed, embedCodes, initialSubTab, initialOpenPodio }) => {
   const { organization } = useAuth();
   const primaryColor = organization?.primary_color || '#06b6d4';
   const primaryRgb = React.useMemo(() => {
@@ -1457,7 +1463,11 @@ const SystemTab: React.FC<SystemTabProps> = ({ copiedEmbed, handleCopyEmbed, emb
     return `${parseInt(c.slice(0, 2), 16)},${parseInt(c.slice(2, 4), 16)},${parseInt(c.slice(4, 6), 16)}`;
   }, [primaryColor]);
 
-  const [activeSubTab, setActiveSubTab] = useState<'apps' | 'integrations' | 'database' | 'embed' | 'legal'>('apps');
+  const [activeSubTab, setActiveSubTab] = useState<'apps' | 'integrations' | 'database' | 'embed' | 'legal'>(initialSubTab || 'apps');
+
+  useEffect(() => {
+    if (initialSubTab) setActiveSubTab(initialSubTab);
+  }, [initialSubTab]);
 
   // --- NEW: Sub-Tab Color State ---
   const [colorPickerSubTabId, setColorPickerSubTabId] = useState<string | null>(null);
@@ -1564,7 +1574,7 @@ const SystemTab: React.FC<SystemTabProps> = ({ copiedEmbed, handleCopyEmbed, emb
         </div>
       )}
 
-      {activeSubTab === 'integrations' && <IntegrationsPanel />}
+      {activeSubTab === 'integrations' && <IntegrationsPanel initialOpenPodio={initialOpenPodio} />}
 
       {activeSubTab === 'database' && (
         <div className="space-y-6">

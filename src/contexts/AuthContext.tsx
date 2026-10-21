@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { supabase } from '@/lib/supabase';
 import { db } from '@/lib/dbProxy';
+import { FEATURES, getGodModePreviewRole } from '@/config/features';
 import { invokeEdgeFunction } from '@/lib/edgeFunctionClient';
 
 import { hashPassword as authHashPassword } from '@/lib/authHash';
@@ -50,6 +51,7 @@ interface AuthContextType extends AuthState {
   
   // Platform Owner checks (God Mode)
   isPlatformOwner: () => boolean;
+  isActualPlatformOwner: () => boolean;
   
   // Platform role checks
   isPlatformUser: () => boolean;
@@ -567,6 +569,33 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             console.warn('[register] plan_tier update threw:', e);
           }
         }
+
+        // ⚡ 2c. LITE MODE CLEAN SLATE:
+        // The Supabase auth.users DB trigger automatically seeds the 6 default workspaces
+        // (admin, accounting, personnel, main, data, security) for every new organization.
+        // In Lite Mode, we immediately remove those trigger-seeded preset workspaces & apps
+        // so the new organization starts 100% clean for Podio import!
+        if ((FEATURES.IS_LITE_MODE || planTier === 'lite') && organization.id) {
+          try {
+            const DEFAULT_PRESET_SLUGS = ['admin', 'accounting', 'personnel', 'main', 'data', 'security'];
+            await supabase
+              .schema('app_private')
+              .from('mini_apps')
+              .delete()
+              .eq('organization_id', organization.id);
+
+            await supabase
+              .schema('app_private')
+              .from('workspaces')
+              .delete()
+              .eq('organization_id', organization.id)
+              .in('slug', DEFAULT_PRESET_SLUGS);
+
+            console.log('[register] Lite Mode: Cleared DB-trigger default workspaces for clean Podio slate.');
+          } catch (cleanErr) {
+            console.warn('[register] Non-fatal error cleaning default workspaces in Lite mode:', cleanErr);
+          }
+        }
       }
 
       // 3. SET LOCAL STATE (AUTO-LOGIN)
@@ -640,7 +669,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // PLATFORM OWNER CHECKS (GOD MODE)
   // ============================================
 
-  const isPlatformOwner = (): boolean => {
+  const isActualPlatformOwner = (): boolean => {
     if (state.userType !== 'platform') return false;
     
     const platformUser = state.user as PlatformUser;
@@ -652,15 +681,28 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     return isOwnerFlag || isOwnerRole;
   };
 
+  const isPlatformOwner = (): boolean => {
+    if (!isActualPlatformOwner()) return false;
+    const previewRole = getGodModePreviewRole();
+    if (previewRole !== 'actual') return false;
+    return true;
+  };
+
   // ============================================
   // PLATFORM ROLE CHECKS
   // ============================================
 
   const isPlatformUser = (): boolean => {
+    if (isActualPlatformOwner() && getGodModePreviewRole() !== 'actual') {
+      return false;
+    }
     return state.userType === 'platform';
   };
 
   const isPlatformAdmin = (): boolean => {
+    if (isActualPlatformOwner() && getGodModePreviewRole() !== 'actual') {
+      return false;
+    }
     if (state.userType !== 'platform') return false;
     const platformUser = state.user as PlatformUser;
     return platformUser?.role === 'platform_owner_admin' ||
@@ -718,18 +760,33 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // ============================================
 
   const isOrganizationAdmin = (): boolean => {
+    if (isActualPlatformOwner()) {
+      const previewRole = getGodModePreviewRole();
+      if (previewRole !== 'actual') {
+        return previewRole === 'organization_admin';
+      }
+    }
     if (state.userType !== 'organization') return false;
     const orgUser = state.user as OrganizationUser;
     return orgUser?.role === 'organization_admin';
   };
 
   const isOrganizationManager = (): boolean => {
+    if (isActualPlatformOwner()) {
+      const previewRole = getGodModePreviewRole();
+      if (previewRole !== 'actual') {
+        return previewRole === 'organization_manager';
+      }
+    }
     if (state.userType !== 'organization') return false;
     const orgUser = state.user as OrganizationUser;
     return isManagerRole(orgUser?.role);
   };
 
   const isOrganizationUser = (): boolean => {
+    if (isActualPlatformOwner() && getGodModePreviewRole() !== 'actual') {
+      return true;
+    }
     return state.userType === 'organization';
   };
 
@@ -800,6 +857,13 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const getUserRole = (): PlatformRole | OrganizationRole | null => {
     if (!state.user) return null;
+
+    if (isActualPlatformOwner()) {
+      const previewRole = getGodModePreviewRole();
+      if (previewRole === 'organization_admin') return 'organization_admin';
+      if (previewRole === 'organization_manager') return 'organization_admin_manager';
+      if (previewRole === 'organization_user') return 'organization_admin_user';
+    }
     
     if (state.userType === 'platform') {
       return (state.user as PlatformUser).role;
@@ -963,6 +1027,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       register,
       logout,
       isPlatformOwner,
+      isActualPlatformOwner,
       isPlatformUser,
       isPlatformAdmin,
       isPlatformTechAdmin,
